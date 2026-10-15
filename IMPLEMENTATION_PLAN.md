@@ -168,7 +168,33 @@ is the `@load` bucket separating cleanly from per-test attribution, and it means
 touches and a non-empty `@between`; an interrupted shard is refused; `cbd build` merges
 and `loadMap` reads back; map bytes and parse ms recorded.
 **Tests**: unit tests over the Recorder with a fake source; shard → map → query round trip.
-**Status**: Not Started
+**Outcome**: complete. 56 core tests green. `Recorder`, the append-only shard with its
+completeness footer, `buildMap`/`saveMap`/`loadMap`, and `testsForFunction`.
+
+On the fixture, a real run records **43 tests (42 passed, 1 skipped)**, **28 `@load`
+touches** and **8 `@between`**; the map is ~11 KB over 26 files and holds the 42 green tests.
+The skipped test is recorded and then excluded from the map, which is amendment 5 working.
+
+Three findings, two of them bugs in what I had written:
+
+1. **`@load` cannot be taken when the shard header is written.** I had `runStart()` take a
+   window, on the reasoning that it is called before the test files import. It is — but the
+   take lands *before* those imports, so it captured nothing and the entire load phase was
+   misfiled as `@between` (28 touches in the wrong bucket). The load window closes at the
+   **first `testStart`**, which is where it is now captured.
+2. **A skipped test emits start and end with `hasError: false`.** Mapping on `hasError`
+   alone recorded the fixture's skipped test as a passing one with an empty window — the
+   exact hazard amendment 5 exists for. `classifyStatus` now takes `isSkipped`/`isTodo` too.
+3. **`group.each.setup` runs outside the test window** — between one test's end and the
+   next one's start. So whatever it touches is unattributable and lands in `@between`,
+   where the selector must treat it as reaching every test. Conservative, but it means a
+   suite that leans on per-test setup inflates `@between`, and that is worth knowing before
+   trusting an all-rate. Worth revisiting in A4.
+
+Also: the import phase is not exclusively module bodies — a `test.group` definition callback
+runs there too — so the useful invariant is narrower: a module body never appears *inside* a
+test window.
+**Status**: Complete
 
 ### Stage A4: diff, select, verify
 **Goal**: every rule in §8.3, plus the money shot.

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
+import { normalize } from '../src/normalize.js'
 import { inProcessSource } from '../src/source/in-process.js'
+
+/** Called from a timer, outside any test window — the `@between` case. */
+function backgroundWork(): number {
+  return 7
+}
 
 test('a take completes synchronously, as the japa adapter requires', async () => {
   const source = await inProcessSource()
@@ -37,6 +43,31 @@ test('scriptParsed is wired up, so maps can be discovered', async () => {
     assert.ok(scripts.size > 0, 'no scripts were recorded from Debugger.scriptParsed')
     const self = [...scripts.values()].find((info) => info.url === import.meta.url)
     assert.ok(self, 'this spec file was not reported by scriptParsed')
+  } finally {
+    source.close()
+  }
+})
+
+// The `@between` bucket, with a real timer rather than a scripted payload: work
+// that runs while no test is on the stack is invisible to the window it happens
+// in, and shows up in whichever take comes next.
+test('work done on a timer between windows is visible to the next take', async () => {
+  const source = await inProcessSource()
+  try {
+    source.takeSync() // drain, so only the timer lands in the next window
+
+    await new Promise<void>((resolve) => {
+      setTimeout(() => {
+        backgroundWork()
+        resolve()
+      }, 5)
+    })
+
+    const touched = normalize(source.takeSync(), source, {})
+    assert.ok(
+      touched.some((touch) => touch.name === 'backgroundWork'),
+      `expected backgroundWork in the window, got: ${touched.map((t) => t.name).join(', ')}`,
+    )
   } finally {
     source.close()
   }

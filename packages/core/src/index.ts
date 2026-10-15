@@ -25,3 +25,43 @@ export {
   type OriginalPosition,
   type ScriptResolver,
 } from './source-maps.js'
+
+export {
+  SHARD_VERSION,
+  FileSink,
+  IncompleteShardError,
+  StringSink,
+  parseShard,
+  summarizeShard,
+  type ShardBucket,
+  type ShardFooter,
+  type ShardHeader,
+  type ShardRecord,
+  type ShardSink,
+  type ShardTest,
+  type TouchRef,
+} from './shard.js'
+
+export {
+  Recorder,
+  classifyStatus,
+  type RecorderOptions,
+  type TestStatus,
+} from './recorder.js'
+
+export {
+  MAP_VERSION,
+  buildMap,
+  functionsInFile,
+  loadMap,
+  mapDir,
+  mapPath,
+  saveMap,
+  testsForFunction,
+  type BuildOptions,
+  type CoverageMap,
+  type FunctionEntry,
+  type LoadedMap,
+  type ShardInput,
+  type TestEntry,
+} from './map.js'
