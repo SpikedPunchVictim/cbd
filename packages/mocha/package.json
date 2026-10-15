@@ -1,0 +1,27 @@
+{
+  "name": "@cbd/mocha",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Mocha adapter: turns a plain mocha run into per-test coverage windows.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./auto": "./dist/src/auto.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@cbd/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.6.5",
+    "mocha": "^10.8.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -295,7 +295,47 @@ Two consequences:
 minimist collects repeated `--run a --run b` into an array — an arbitrary selected subset can
 be passed directly, and it accepts `src/…` paths, rewriting `/^src/` → `out`.
 
-Not yet done: `npm ci` (running), transpile, T_full, and green-on-`src/vs/platform`.
+**The mocha adapter — `packages/mocha` (`@cbd/mocha`), built and green (2 tests).**
+
+VS Code runs **mocha**, not japa, so the only lifecycle wiring Phase A had did not apply. The
+core seam held up: `inProcessSource`, `Recorder`, `normalize`, the map and the selector are
+untouched, and the adapter is a patch plus a pair of hooks.
+
+`mocha.rootHooks()` turned out not to be a special mechanism — it attaches ordinary
+`beforeEach`/`afterEach` to the **root suite** (`mocha/lib/mocha.js`, verified in the installed
+10.8.2). Mocha runs root hooks outermost, so the window brackets the test *and* its own
+suite-level `beforeEach`/`afterEach`. That is strictly better than japa's window, where
+`group.each.setup` fell between tests and had to be filed as `@between` (A3 finding 3); the
+setup a test causes is now attributed to the test that caused it.
+
+`Mocha.prototype.run` is the single funnel — `test/unit/node/index.js` builds its own `Mocha`
+instance and calls `runner.run(cb)`, so the CLI's `--require` root hooks would land on a
+different, empty instance. Hence `NODE_OPTIONS="--import …/auto.js"` (auto.ts), which patches
+that one method and writes the shard footer from inside the `run` callback — the only point
+ahead of mocha's own `process.exit`. The top-level `await` in `auto.ts` is load-bearing:
+`run()` is synchronous and cannot await an inspector connection, so the session is opened
+while Node is still resolving the `--import` list.
+
+Nothing else calls the adapter directly in the test: a plain `mocha spec/calc.spec.js` with
+only `--import` added comes out the other side as per-test windows, which is the seam the
+whole project rests on.
+
+**Two findings from building it:**
+
+1. **Mocha runs root hooks for a *pending* test.** I asserted the opposite in a comment and the
+   test disagreed. So a skipped test does open a window and arrives with `state` undefined —
+   japa's trap in different clothing (A3 finding 2), defended the same way, by reading the
+   pending flag before trusting the state that is present. The status keeps it out of the map.
+2. **A path alias silently empties the whole map.** Node's ESM loader resolves symlinks, so the
+   script URLs V8 reports carry the realpath. On macOS `tmpdir()` is `/var/…` and its realpath
+   is `/private/var/…`, so a projection rule written with the unresolved prefix matches no
+   script, every script is dropped, and the map comes out empty. This is **fail-safe** (nothing
+   is under-selected — every change becomes `unknown-file` → `mode: all`) but it is a *silent
+   total* failure: the entire speedup disappears with no error. Worth either realpath-ing the
+   projection prefixes once at configuration time or emitting a loud warning when a run that
+   passed the prefilter yielded zero files. Not done yet — flagged rather than folded in.
+
+Not yet done: transpile, `T_full`, and green-on-`src/vs/platform`. (`npm ci` completed clean.)
 
 ### Stage B1: the measurement run
 **Goal**: the numbers that decide the project.
