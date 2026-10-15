@@ -9,3 +9,9 @@ out/
 # generated spike corpora (.explore/spike/measure.mjs regenerates them)
 .explore/spike/corpus-*/
 .explore/spike/ordinal-corpus/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
