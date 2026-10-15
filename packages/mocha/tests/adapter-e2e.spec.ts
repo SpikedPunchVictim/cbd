@@ -10,7 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -59,21 +59,20 @@ const SPEC = [
 ].join('\n')
 
 function makeProject(): { root: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-project-'))
-  // `realpathSync` is load-bearing, not tidiness. Node's ESM loader resolves
-  // symlinks, so the script URLs V8 reports carry the *real* path — and on macOS
-  // `tmpdir()` is `/var/...` whose realpath is `/private/var/...`. A projection
-  // rule written with the unresolved prefix matches no script at all, every script
-  // is dropped, and the map comes out empty. That is a silent total failure: no
-  // under-selection, but `mode: all` for ever and the entire speedup gone.
-  const root = realpathSync(dir)
+  // Deliberately the *unresolved* `tmpdir()` path. Node canonicalizes script URLs
+  // through symlinks — on macOS this is `/var/...` whose realpath is
+  // `/private/var/...` — so configuring the projection with what `tmpdir()` returns
+  // is exactly how a user would get it wrong, and it used to drop every script and
+  // empty the map with no error. `canonicalProjectionRules` is what makes this work;
+  // `projection.spec.ts` holds the hermetic version with a symlink it creates itself.
+  const root = mkdtempSync(join(tmpdir(), 'cbd-mocha-project-'))
   mkdirSync(join(root, 'src'), { recursive: true })
   mkdirSync(join(root, 'out/src'), { recursive: true })
   mkdirSync(join(root, 'spec'), { recursive: true })
   writeFileSync(join(root, 'src/calc.ts'), CALC)
   writeFileSync(join(root, 'out/src/calc.js'), CALC)
   writeFileSync(join(root, 'spec/calc.spec.js'), SPEC)
-  return { root, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+  return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
 function runMocha(root: string, shardPath: string): void {

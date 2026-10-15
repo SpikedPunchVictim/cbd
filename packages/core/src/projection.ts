@@ -11,6 +11,7 @@
  * For a 1:1 build (no bundling, no code moved between files) this is a pure
  * string transform and needs no map at all.
  */
+import { realpathSync } from 'node:fs'
 
 export interface ProjectionRule {
   /** Absolute prefix of the build output, e.g. `<root>/out-nomaps`. */
@@ -57,4 +58,63 @@ export function projectPath(file: string, rules: ProjectionRule[]): string | nul
     return swapExtension(joined, rule.extensions ?? DEFAULT_EXTENSIONS)
   }
   return null
+}
+
+/**
+ * Resolve a path's symlinks, or hand it back untouched if it does not exist.
+ *
+ * Exported because the other half of the comparison needs it: `from` is not the
+ * only side of the prefix match that can be spelled two ways. See
+ * `createProjectionResolver`, which canonicalizes the generated path as well, so
+ * that neither spelling decides the outcome.
+ */
+export function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    // A missing prefix is not an error. `from` normally exists when a run happens,
+    // but `to` may name a tree that has not been built yet.
+    return path
+  }
+}
+
+const canonicalCache = new WeakMap<readonly ProjectionRule[], ProjectionRule[]>()
+
+/**
+ * `from` prefixes, resolved through any symlinks. The `to` side is left alone, and
+ * that asymmetry is the point.
+ *
+ * Node canonicalizes the paths it hands the inspector: `import.meta.url`, and so
+ * every script URL V8 reports, is a realpath. Paths a user writes into a config come
+ * out exactly as typed. On macOS `os.tmpdir()` is `/var/…` whose realpath is
+ * `/private/var/…`, so a `from` spelled with the symlinked prefix matches no script
+ * at all — every script is dropped, the map comes out empty, and every change
+ * degrades to `mode: all` for ever, with no error to say why. It fails safe, never
+ * under-selecting, but the entire speedup disappears silently.
+ *
+ * Known and unfixed in the ecosystem: nyc has carried this since 2018
+ * (istanbuljs/nyc#1301, plus its many duplicates) and c8 drops symlinked
+ * first-party code for the same reason (aspect-build/rules_js#2933). Both of the
+ * postmortems written about it reach for the same fix — canonicalize before
+ * comparing.
+ *
+ * Only `from`, though. `from` describes where Node decided to put the generated
+ * files, which is not the user's choice and has to be matched as Node spells it.
+ * `to` describes where the source files live as the *rest of the toolchain* names
+ * them — git above all, since `changesSince` returns paths built on the repo root
+ * it was handed. Canonicalizing `to` would move every map key away from what
+ * `changesSince` produces, trading one mismatch for another.
+ *
+ * The generated path is canonicalized too, at the comparison, rather than here —
+ * canonicalizing one side only would just move the failure to whichever spelling
+ * the other side happened to use.
+ *
+ * Memoized on the rules array's identity, because `scan` runs once per test window.
+ */
+export function canonicalProjectionRules(rules: readonly ProjectionRule[]): ProjectionRule[] {
+  const cached = canonicalCache.get(rules)
+  if (cached !== undefined) return cached
+  const resolved = rules.map((rule) => ({ ...rule, from: canonicalPath(rule.from) }))
+  canonicalCache.set(rules, resolved)
+  return resolved
 }

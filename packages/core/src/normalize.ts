@@ -37,7 +37,7 @@
  */
 import { FileCache } from './line-index.js'
 import { createScriptResolver } from './source-maps.js'
-import type { ProjectionRule } from './projection.js'
+import { canonicalProjectionRules, type ProjectionRule } from './projection.js'
 import type { Source, V8Function, V8Range, V8ScriptCoverage } from './types.js'
 
 export interface Definition {
@@ -109,7 +109,10 @@ export function scan(
   options: ScanOptions = {},
 ): Definition[] {
   const cache = new FileCache()
-  const projection = options.projection ?? []
+  const projection =
+    options.projection === undefined || options.projection.length === 0
+      ? []
+      : canonicalProjectionRules(options.projection)
   const prefilter = options.prefilter ?? defaultPrefilter
   const scripts = source.scripts()
 

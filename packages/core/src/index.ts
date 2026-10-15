@@ -10,7 +10,7 @@ export { inProcessSource } from './source/in-process.js'
 
 export { normalize, scan, type Definition, type ScanOptions, type Touch } from './normalize.js'
 
-export { projectPath, type ProjectionRule } from './projection.js'
+export { canonicalProjectionRules, projectPath, type ProjectionRule } from './projection.js'
 
 export {
   buildLineIndex,

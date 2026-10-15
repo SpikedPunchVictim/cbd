@@ -24,7 +24,7 @@ import {
   type Bias,
 } from '@jridgewell/trace-mapping'
 import { columnAt, lineAt, type FileCache, type LineIndex } from './line-index.js'
-import { projectPath, type ProjectionRule } from './projection.js'
+import { canonicalPath, projectPath, type ProjectionRule } from './projection.js'
 import type { ScriptInfo } from './types.js'
 
 export interface OriginalPosition {
@@ -145,7 +145,13 @@ function createProjectionResolver(
   index: LineIndex,
   rules: ProjectionRule[],
 ): ScriptResolver | null {
-  const projected = projectPath(generatedPath, rules)
+  // Canonicalize the generated path to meet the rules, which are canonicalized in
+  // turn (`canonicalProjectionRules`). Both sides have to be, because either can be
+  // the one written the other way: Node reports the realpath of a script, while a
+  // prefix in a config is exactly as typed. Comparing one canonical form against one
+  // literal form matches nothing, drops every script and empties the map — without
+  // an error, and without under-selecting, which is why it is easy to miss.
+  const projected = projectPath(canonicalPath(generatedPath), rules)
   if (projected === null) return null
   return {
     via: 'projection',

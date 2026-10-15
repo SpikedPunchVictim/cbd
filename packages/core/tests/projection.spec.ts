@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
-import { projectPath } from '../src/projection.js'
+import { normalize } from '../src/normalize.js'
+import { canonicalProjectionRules, projectPath } from '../src/projection.js'
+import type { ScriptInfo, Source, V8ScriptCoverage } from '../src/types.js'
 
 const rules = [{ from: '/repo/out-nomaps', to: '/repo' }]
 
@@ -43,4 +49,93 @@ test('tries rules in order, so a narrow rule can precede a broad one', () => {
 test('tolerates a trailing slash on either prefix', () => {
   const trailing = [{ from: '/repo/out-nomaps/', to: '/repo/' }]
   assert.equal(projectPath('/repo/out-nomaps/src/x.js', trailing), '/repo/src/x.ts')
+})
+
+// ---------------------------------------------------------------------------
+// The alias trap.
+//
+// Node resolves symlinks when it turns a module path into a URL, so the script URL
+// V8 reports is a realpath, while a prefix written into a config is exactly as
+// typed. On macOS `os.tmpdir()` is `/var/...` whose realpath is `/private/var/...`,
+// so a rule using the symlinked prefix matches no script at all: every script is
+// dropped, the map comes out empty, and every change degrades to `mode: all` for
+// ever — no error, no under-selection, just no speedup at all.
+// ---------------------------------------------------------------------------
+
+const MODULE = ['function alpha() {', '  return 1', '}', ''].join('\n')
+
+function fakeSource(scripts: Map<string, ScriptInfo> = new Map()): Source {
+  return {
+    kind: 'fake',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => scripts,
+    close: () => {},
+  }
+}
+
+function payloadFor(url: string): V8ScriptCoverage[] {
+  return [
+    {
+      scriptId: '1',
+      url,
+      functions: [
+        {
+          functionName: 'alpha',
+          isBlockCoverage: false,
+          ranges: [{ startOffset: 0, endOffset: MODULE.indexOf('}') + 1, count: 1 }],
+        },
+      ],
+    },
+  ]
+}
+
+/** A real directory, plus a symlink pointing at it. Returns the real path. */
+function makeSymlinkedTree(): { dir: string; cleanup: () => void } {
+  // `realpathSync` first, so the tree's own root is already canonical and the only
+  // alias left in play is the one this test creates.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-projection-')))
+  mkdirSync(join(dir, 'real/out/src'), { recursive: true })
+  writeFileSync(join(dir, 'real/out/src/mod.js'), MODULE)
+  symlinkSync(join(dir, 'real'), join(dir, 'link'), 'dir')
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
+}
+
+test('a from-prefix reached through a symlink still matches', () => {
+  const tree = makeSymlinkedTree()
+  try {
+    // The real path is what Node reports; the link is what a config would say.
+    const url = pathToFileURL(join(tree.dir, 'real/out/src/mod.js')).href
+    const touched = normalize(payloadFor(url), fakeSource(), {
+      projection: [{ from: join(tree.dir, 'link/out'), to: join(tree.dir, 'real') }],
+    })
+
+    assert.equal(
+      touched.length,
+      1,
+      'every script was dropped, so the map would have come out empty',
+    )
+    assert.equal(touched[0]?.file, join(tree.dir, 'real/src/mod.ts'))
+  } finally {
+    tree.cleanup()
+  }
+})
+
+// Pins the deliberate asymmetry, so it does not get "fixed" into a different bug.
+test('canonicalizes the from-prefix but leaves the to-prefix as written', () => {
+  const tree = makeSymlinkedTree()
+  try {
+    const [rule] = canonicalProjectionRules([
+      { from: join(tree.dir, 'link/out'), to: join(tree.dir, 'link') },
+    ])
+    assert.equal(rule?.from, join(tree.dir, 'real/out'))
+    assert.equal(
+      rule?.to,
+      join(tree.dir, 'link'),
+      'the to-prefix has to keep agreeing with the repo root changesSince was handed',
+    )
+  } finally {
+    tree.cleanup()
+  }
 })
