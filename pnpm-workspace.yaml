@@ -1,0 +1,4 @@
+packages:
+  - 'packages/*'
+  # Stage A0 only: hook-order probe. Deleted once the japa adapter lands.
+  - 'probe'

@@ -1,0 +1,17 @@
+{
+  "name": "@cbd/probe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stage A0 only: verifies japa hook semantics against the installed version. Not shipped.",
+  "scripts": {
+    "test": "node bin/test.js",
+    "introspect": "node introspect.mjs"
+  },
+  "dependencies": {
+    "@japa/runner": "^5.4.0"
+  },
+  "devDependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31"
+  }
+}

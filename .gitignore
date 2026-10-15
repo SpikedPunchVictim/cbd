@@ -1,0 +1,10 @@
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+
+# CBD's own artifacts
+.cbd/
+
+# generated spike corpora (.explore/spike/measure.mjs regenerates them)
+.explore/spike/corpus-*/

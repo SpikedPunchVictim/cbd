@@ -1,0 +1,343 @@
+[
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/nx",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 3110,
+    "per_class": {
+      "ignored": 786,
+      "test": 744,
+      "code": 865,
+      "data": 530,
+      "asset": 47,
+      "alwaysall": 137,
+      "typesonly": 1
+    },
+    "all_mode": 92,
+    "all_mode_no_asset": 89,
+    "all_mode_rate": 0.368,
+    "all_mode_rate_no_asset": 0.356,
+    "reasons": {
+      "data:.rs": 237,
+      "data:.snap": 125,
+      "data:.json": 90,
+      "alwaysall:.ts": 62,
+      "alwaysall:.json": 59,
+      "asset:.md": 46,
+      "data:.cs": 25,
+      "alwaysall:.md": 16,
+      "data:.json__tmpl__": 8,
+      "data:.txt": 8,
+      "data:.tsx__tmpl__": 7,
+      "data:.kt": 6,
+      "data:.ts__tmpl__": 6,
+      "data:.toml": 5,
+      "data:.xml": 5,
+      "data:.template": 2,
+      "asset:.ico": 1,
+      "data:.mts__tmpl__": 1
+    },
+    "examples": {
+      "data:.kt": "994ecba4 packages/maven/batch-runner/src/main/kotlin/dev/nx/maven/data/MavenBatchOptions.kt",
+      "data:.toml": "994ecba4 packages/nx/Cargo.toml",
+      "data:.json": "994ecba4 packages/nx/schemas/nx-schema.json",
+      "data:.rs": "994ecba4 packages/nx/src/native/affected/tasks/dependency_closure.rs",
+      "data:.snap": "994ecba4 packages/nx/src/native/tui/components/snapshots/nx__native__tui__components__tasks_list__tests__readiness_words_full_width.snap",
+      "asset:.md": "48a517e1 packages/react-native/readme-template.md",
+      "alwaysall:.md": "e4571225 packages/nx/src/migrations/update-24-0-0/find-custom-hashers.md",
+      "alwaysall:.ts": "e4571225 packages/nx/src/migrations/update-24-0-0/find-custom-hashers.spec.ts",
+      "data:.template": "e4571225 packages/plugin/src/generators/executor/files/hasher/hasher.spec.ts.template",
+      "alwaysall:.json": "e31a37ad packages/remix/package.json",
+      "data:.tsx__tmpl__": "e31a37ad packages/remix/src/generators/application/files/common/app/entry.client.tsx__tmpl__",
+      "asset:.ico": "e31a37ad packages/remix/src/generators/application/files/common/public/favicon.ico",
+      "data:.json__tmpl__": "e31a37ad packages/remix/src/generators/application/files/common/tsconfig.app.json__tmpl__",
+      "data:.mts__tmpl__": "e31a37ad packages/remix/src/generators/application/files/common/vite.config.mts__tmpl__",
+      "data:.gitignore__tmpl__": "e31a37ad packages/remix/src/generators/application/files/non-root/.gitignore__tmpl__",
+      "data:.ts__tmpl__": "e31a37ad packages/remix/src/generators/cypress-component-configuration/files/cypress.config.ts__tmpl__",
+      "data:.mts__tpl__": "e31a37ad packages/remix/src/generators/storybook-configuration/files/vite.config.mts__tpl__",
+      "data:.txt": "493945ee packages/gradle/src/plugin-v1/utils/__mocks__/gradle-composite-dependencies.txt",
+      "data:.xml": "a310000d packages/maven/batch-runner-adapters/pom.xml",
+      "data:.js__tmpl__": "9a4da9e7 packages/web/src/generators/application/files/app-webpack/webpack.config.js__tmpl__",
+      "typesonly:.ts": "032dcd81 packages/nx/src/daemon/message-types/ultracache-configuration-version.ts",
+      "data:.cs": "80b202de packages/dotnet/analyzer.Tests/AnalyzerSmokeTests.cs",
+      "data:.csproj": "27dec59c packages/dotnet/analyzer/MsbuildAnalyzer.csproj",
+      "data:<none>": "87918e53 packages/angular/src/generators/setup-ssr/files/v20+/server-builder/server/__serverFileName__"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/strapi",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 2640,
+    "per_class": {
+      "test": 419,
+      "code": 1055,
+      "data": 61,
+      "ignored": 434,
+      "typesonly": 25,
+      "alwaysall": 645,
+      "asset": 1
+    },
+    "all_mode": 101,
+    "all_mode_no_asset": 101,
+    "all_mode_rate": 0.404,
+    "all_mode_rate_no_asset": 0.404,
+    "reasons": {
+      "alwaysall:.json": 627,
+      "data:.json": 60,
+      "typesonly:.ts": 25,
+      "alwaysall:.ts": 18,
+      "asset:.md": 1,
+      "data:.gitignore": 1
+    },
+    "examples": {
+      "data:.json": "49af5dd9 packages/plugins/i18n/server/src/constants/iso-locales.json",
+      "typesonly:.ts": "f246f934 packages/core/types/src/core/config/features.ts",
+      "alwaysall:.json": "dd8ecfbe packages/core/content-manager/package.json",
+      "alwaysall:.ts": "93875d38 packages/core/database/src/migrations/__tests__/discover.test.ts",
+      "asset:.md": "a58f0877 packages/plugins/documentation/README.md",
+      "data:.gitignore": "8f33dce8 packages/utils/typescript/.gitignore"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/directus",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 3695,
+    "per_class": {
+      "ignored": 2240,
+      "data": 409,
+      "test": 234,
+      "code": 536,
+      "typesonly": 19,
+      "asset": 45,
+      "alwaysall": 212
+    },
+    "all_mode": 47,
+    "all_mode_no_asset": 45,
+    "all_mode_rate": 0.188,
+    "all_mode_rate_no_asset": 0.18,
+    "reasons": {
+      "data:.vue": 230,
+      "alwaysall:.json": 205,
+      "data:.yaml": 128,
+      "data:<none>": 33,
+      "asset:.md": 21,
+      "asset:.svg": 20,
+      "typesonly:.ts": 19,
+      "alwaysall:.ts": 7,
+      "data:.json": 4,
+      "data:.liquid": 3,
+      "data:.editorconfig": 2,
+      "data:.example": 2,
+      "data:.gitignore": 2,
+      "data:.npmrc": 2,
+      "data:.prettierignore": 2,
+      "asset:.css": 2,
+      "asset:.ico": 2,
+      "data:.snap": 1
+    },
+    "examples": {
+      "data:.yaml": "9dca3724 packages/specs/src/definitions/query.yaml",
+      "typesonly:.ts": "11e689a5 packages/types/src/settings.ts",
+      "asset:.md": "197d141a api/src/ai/tools/collections/prompt.md",
+      "alwaysall:.json": "ce5fd562 api/package.json",
+      "alwaysall:.ts": "f8a684c0 api/src/database/migrations/20260727A-add-default-save-action.ts",
+      "data:.liquid": "f4d144dc api/src/cli/utils/create-env/env-stub.liquid",
+      "data:.snap": "699c432f packages/validation/src/errors/__snapshots__/failed-validation.test.ts.snap",
+      "data:<none>": "6f262df4 api/license",
+      "data:.editorconfig": "8fdc6ce7 packages/visual-editing/test-website/.editorconfig",
+      "data:.example": "8fdc6ce7 packages/visual-editing/test-website/.env.example",
+      "data:.gitignore": "8fdc6ce7 packages/visual-editing/test-website/.gitignore",
+      "data:.npmrc": "8fdc6ce7 packages/visual-editing/test-website/.npmrc",
+      "data:.prettierignore": "8fdc6ce7 packages/visual-editing/test-website/.prettierignore",
+      "data:.json": "8fdc6ce7 packages/visual-editing/test-website/.prettierrc.json",
+      "data:.vue": "8fdc6ce7 packages/visual-editing/test-website/app/app.vue",
+      "asset:.css": "8fdc6ce7 packages/visual-editing/test-website/app/assets/css/tailwind.css",
+      "asset:.svg": "8fdc6ce7 packages/visual-editing/test-website/app/assets/images/directus-logo-white.svg",
+      "asset:.ico": "8fdc6ce7 packages/visual-editing/test-website/public/favicon.ico"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/n8n",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 2997,
+    "per_class": {
+      "test": 1255,
+      "code": 1208,
+      "data": 324,
+      "typesonly": 13,
+      "asset": 59,
+      "alwaysall": 34,
+      "ignored": 104
+    },
+    "all_mode": 128,
+    "all_mode_no_asset": 106,
+    "all_mode_rate": 0.512,
+    "all_mode_rate_no_asset": 0.424,
+    "reasons": {
+      "data:.vue": 198,
+      "data:.json": 114,
+      "asset:.md": 46,
+      "alwaysall:.ts": 23,
+      "typesonly:.ts": 13,
+      "alwaysall:.json": 11,
+      "asset:.svg": 9,
+      "data:.yml": 9,
+      "asset:.scss": 4,
+      "data:.snap": 2,
+      "data:.mjml": 1
+    },
+    "examples": {
+      "data:.vue": "ce20d1de packages/frontend/editor-ui/src/features/agents/components/AgentEvalChecksPanel.vue",
+      "data:.json": "53d1fd59 packages/frontend/@n8n/i18n/src/locales/en.json",
+      "typesonly:.ts": "53d1fd59 packages/frontend/editor-ui/src/features/settings/context/context.types.ts",
+      "asset:.md": "160c126c packages/cli/src/modules/promotions.ee/git-hosts/README.md",
+      "asset:.svg": "f0a38cfe packages/modules/mcp/frontend/src/assets/client-icons/antigravity.svg",
+      "alwaysall:.json": "bd221056 packages/@n8n/agents/package.json",
+      "alwaysall:.ts": "1f27b983 packages/@n8n/db/src/migrations/common/1791542683581-AddTimeoutSecondsToScheduler.ts",
+      "asset:.scss": "e2b4fee0 packages/frontend/editor-ui/src/features/agents/styles/agent-panel.module.scss",
+      "data:.yml": "ce1be847 packages/cli/src/public-api/v1/openapi.decorator-routes.generated.yml",
+      "data:.snap": "09436b78 packages/frontend/editor-ui/src/features/core/auth/components/__snapshots__/ChangePasswordModal.test.ts.snap",
+      "data:.mjml": "19e1f70e packages/cli/src/user-management/email/templates/agent-budget-alert.mjml"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/nest",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 1440,
+    "per_class": {
+      "ignored": 1311,
+      "alwaysall": 47,
+      "code": 31,
+      "test": 34,
+      "typesonly": 1,
+      "asset": 16
+    },
+    "all_mode": 18,
+    "all_mode_no_asset": 16,
+    "all_mode_rate": 0.072,
+    "all_mode_rate_no_asset": 0.064,
+    "reasons": {
+      "alwaysall:.json": 47,
+      "asset:.md": 16,
+      "typesonly:.ts": 1
+    },
+    "examples": {
+      "alwaysall:.json": "98a6a3c7 packages/platform-fastify/package.json",
+      "typesonly:.ts": "9612c861 packages/common/interfaces/http/message-event.interface.ts",
+      "asset:.md": "92bc05d9 packages/common/Readme.md"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/langchainjs",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 2170,
+    "per_class": {
+      "ignored": 618,
+      "asset": 254,
+      "alwaysall": 633,
+      "code": 387,
+      "test": 266,
+      "data": 10,
+      "typesonly": 2
+    },
+    "all_mode": 116,
+    "all_mode_no_asset": 109,
+    "all_mode_rate": 0.464,
+    "all_mode_rate_no_asset": 0.436,
+    "reasons": {
+      "alwaysall:.json": 633,
+      "asset:.md": 254,
+      "data:<none>": 8,
+      "typesonly:.ts": 2,
+      "data:.json": 1,
+      "data:.jsonc": 1
+    },
+    "examples": {
+      "asset:.md": "62fc484b libs/langchain-classic/CHANGELOG.md",
+      "alwaysall:.json": "62fc484b libs/langchain-classic/package.json",
+      "data:<none>": "39f338e0 libs/providers/langchain-google-cloud-sql-pg/LICENSE",
+      "data:.json": "f7e50fb8 libs/providers/langchain-google/src/openapi/gemini-openapi.json",
+      "data:.jsonc": "f7e50fb8 libs/providers/langchain-google/typegen.jsonc",
+      "typesonly:.ts": "1ba71319 libs/langchain-core/src/language_models/event.ts"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/opentelemetry-js",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 2358,
+    "per_class": {
+      "ignored": 1876,
+      "code": 131,
+      "typesonly": 11,
+      "test": 110,
+      "alwaysall": 204,
+      "asset": 9,
+      "data": 17
+    },
+    "all_mode": 32,
+    "all_mode_no_asset": 29,
+    "all_mode_rate": 0.128,
+    "all_mode_rate_no_asset": 0.116,
+    "reasons": {
+      "alwaysall:.json": 204,
+      "data:.eslintignore": 15,
+      "typesonly:.ts": 11,
+      "asset:.md": 9,
+      "data:.npmignore": 1,
+      "data:<none>": 1
+    },
+    "examples": {
+      "typesonly:.ts": "f278e3b8 packages/sdk-trace/src/types.ts",
+      "alwaysall:.json": "efbce48d packages/opentelemetry-context-zone-peer-dep/package.json",
+      "asset:.md": "8bec6624 packages/opentelemetry-propagator-jaeger/README.md",
+      "data:.npmignore": "e8b0b761 packages/sdk-trace/.npmignore",
+      "data:<none>": "e8b0b761 packages/sdk-trace/LICENSE",
+      "data:.eslintignore": "baef99b9 packages/opentelemetry-context-async-hooks/.eslintignore"
+    }
+  },
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/backstage",
+    "ref": "HEAD",
+    "commits": 250,
+    "files": 1641,
+    "per_class": {
+      "ignored": 1260,
+      "code": 101,
+      "test": 48,
+      "data": 38,
+      "asset": 95,
+      "alwaysall": 97,
+      "typesonly": 2
+    },
+    "all_mode": 36,
+    "all_mode_no_asset": 27,
+    "all_mode_rate": 0.144,
+    "all_mode_rate_no_asset": 0.108,
+    "reasons": {
+      "alwaysall:.json": 97,
+      "asset:.md": 94,
+      "data:.hbs": 27,
+      "data:<none>": 7,
+      "data:.yaml": 3,
+      "typesonly:.ts": 2,
+      "data:.yml": 1,
+      "asset:.css": 1
+    },
+    "examples": {
+      "data:.hbs": "a178067f packages/create-app/templates/default-app/app-config.yaml.hbs",
+      "asset:.md": "14a3d5f5 packages/connections/report.api.md",
+      "alwaysall:.json": "80e65ffe packages/app-defaults/package.json",
+      "typesonly:.ts": "4271005a packages/connections/src/api/ConnectionsService.ts",
+      "data:.yml": "9138f342 packages/create-app/templates/default-app/.github/workflows/ci.yml",
+      "data:.yaml": "2c7cc559 packages/cli-module-new/templates/catalog-processor-module/portable-template.yaml",
+      "data:<none>": "4c416898 packages/create-app/templates/default-app/packages/backend/Dockerfile",
+      "asset:.css": "52a58bed packages/ui/src/components/Table/Table.module.css"
+    }
+  }
+]

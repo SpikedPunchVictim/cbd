@@ -1,0 +1,36 @@
+[
+  {
+    "repo": "/Users/spikedpunchvictim/temp/enterprise-apps/vscode",
+    "commits": 300,
+    "files": 2250,
+    "per_class": {
+      "code": 848,
+      "test": 565,
+      "ignored": 605,
+      "asset": 227,
+      "typesonly": 3,
+      "alwaysall": 1,
+      "data": 1
+    },
+    "all_mode": 110,
+    "all_mode_no_asset": 4,
+    "all_mode_rate": 0.367,
+    "all_mode_rate_no_asset": 0.013,
+    "reasons": {
+      "asset:.css": 101,
+      "asset:.md": 82,
+      "asset:.png": 44,
+      "typesonly:.ts": 3,
+      "alwaysall:.json": 1,
+      "data:.ahp-version": 1
+    },
+    "examples": {
+      "asset:.md": "78a7b6c2 src/vs/platform/agentHost/node/claude/roadmap.md",
+      "asset:.css": "441790ef src/vs/workbench/contrib/chat/browser/promptTimeline/media/promptTimeline.css",
+      "asset:.png": "321e0ee7 src/vs/workbench/contrib/chat/browser/widget/media/chatPet/buddy-press-button-insiders-96.png",
+      "typesonly:.ts": "58dc6129 src/vs/base/common/defaultAccount.ts",
+      "alwaysall:.json": "db01d2a5 src/vs/sessions/test/e2e/extensions/sessions-e2e-mock/package.json",
+      "data:.ahp-version": "9176207e src/vs/platform/agentHost/common/state/protocol/.ahp-version"
+    }
+  }
+]

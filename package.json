@@ -1,0 +1,10 @@
+{
+  "name": "cbd-workspace",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.17.0",
+  "engines": {
+    "node": ">=20"
+  }
+}
