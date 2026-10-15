@@ -176,8 +176,16 @@ export function createScriptResolver(
   if (index === null) return null
 
   if (info?.sourceMapURL) {
-    const viaMap = createMapResolver(info.sourceMapURL, scriptUrl, index)
-    if (viaMap) return viaMap
+    // A declared map is a promise about how the build was made. If it cannot be
+    // honoured, the script is unresolvable — do NOT fall back to projection.
+    // Projection assumes a line-preserving build, which is false of anything
+    // esbuild transpiled (it strips type-only lines and rewrites enums, class
+    // fields and decorators, shifting everything below). Guessing there yields
+    // plausible line numbers that are wrong, and a range that has slipped can
+    // sit outside the hunk that really touched the function — under-selection.
+    // Returning null drops the script: its file never enters the map, and a
+    // change to it escalates through the unknown-file rule to `all`.
+    return createMapResolver(info.sourceMapURL, scriptUrl, index)
   }
   return createProjectionResolver(generatedPath, index, options.projection)
 }
