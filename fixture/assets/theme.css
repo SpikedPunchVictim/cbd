@@ -1,0 +1,13 @@
+/*
+ * A non-code asset inside the tree. Nothing imports it and no test can reach
+ * it, so under the measured defaults it is an "asset" that forces mode: all —
+ * the class amendment 2 exists to stop forcing a full run.
+ */
+:root {
+  --fixture-accent: #2f6f4e;
+}
+
+.fixture-badge {
+  color: var(--fixture-accent);
+  font-weight: 600;
+}

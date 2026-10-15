@@ -1,0 +1,5 @@
+{
+  "name": "cbd-fixture",
+  "retries": 3,
+  "features": ["selection", "shards"]
+}

@@ -92,7 +92,31 @@ fixture read with `fs`; a type-only module; and **two build outputs — one with
 one without** — so amendment 1 is exercised rather than assumed. Own git repo, so
 `changesSince` can be tested against real history.
 **Tests**: the fixture's own suite runs green; a script asserts both build outputs load.
-**Status**: Not Started
+**Outcome**: complete, in `fixture/`. **15 spec files, 43 tests (42 pass, 1 skipped)**, run
+green from *both* builds — 29 compiled modules each.
+Shapes covered: cross-cutting helpers on both sides (`src/helpers.ts`, `tests/support/harness.ts`);
+a two-hop chain (test → `strings` → `helpers`); a barrel (`src/index.ts`); a JSON fixture
+read with `fs` (`data/settings.json`); a `.snap` golden file under `__snapshots__/`;
+a type-only module imported with `import type`; a module with import-time work (`@load`);
+an never-imported module (`src/uncovered.ts`); an unimported asset (`assets/theme.css`);
+nested directories; generics and callbacks; async/timer paths.
+`scripts/check-builds.mjs` asserts the difference structurally — out-maps pairs every `.js`
+with a `sourceMappingURL`, out-nomaps has none — and was verified to *fail* when the
+premise is broken, rather than passing vacuously.
+
+Two deviations from the criteria as written, both deliberate:
+
+- **15 spec files, not 40–80.** A1's job is *shape* diversity, and 15 files cover every class
+  the selector must handle. Scale belongs to B1 (a real repo) and to an optional generator
+  if A3's map-size numbers turn out to need it. Uniform generated files would have added
+  volume without adding a single new shape.
+- **No git history yet.** The fixture is a normal tracked directory rather than a nested
+  git repo: a nested `.git` inside this repo is a submodule-shaped headache, and a
+  *scripted* history in a temp directory is both deterministic and real git. But the
+  script's exact content is dictated by which commit shapes A4's tests need (a version-only
+  `package.json` bump, hunks with accumulating offsets, a rename-with-modification), so
+  writing it now would be guessing. **Moved to A4**, where it has a consumer.
+**Status**: Complete
 
 ### Stage A2: sources and Normalizer
 **Goal**: from a running test, get a stable set of `(file, function)` touches.

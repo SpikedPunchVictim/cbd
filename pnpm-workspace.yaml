@@ -2,3 +2,6 @@ packages:
   - 'packages/*'
   # Stage A0 only: hook-order probe. Deleted once the japa adapter lands.
   - 'probe'
+  # Stage A1 onward: the fixture project CBD is developed and tested against.
+  # Not published — a stand-in for a real consumer repo.
+  - 'fixture'

@@ -1,0 +1,8 @@
+# golden snapshot v1
+# Keyed by name; the file's own name is what ties it to golden.spec.ts.
+[titleCase/hello world]
+Hello World
+[/titleCase/hello world]
+[truncate/long sentence]
+the quick b…
+[/truncate/long sentence]

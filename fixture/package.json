@@ -1,0 +1,21 @@
+{
+  "name": "@cbd/fixture",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stand-in for a real consumer repo. Exists to exercise the shapes the Normalizer and selector must handle; not published.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check:builds": "node scripts/check-builds.mjs",
+    "test": "node scripts/build.mjs && node scripts/check-builds.mjs && node bin/test-maps.js",
+    "test:nomaps": "node scripts/build.mjs && node bin/test-nomaps.js",
+    "test:all": "node scripts/build.mjs && node scripts/check-builds.mjs && node bin/test-maps.js && node bin/test-nomaps.js"
+  },
+  "dependencies": {
+    "@japa/runner": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}
