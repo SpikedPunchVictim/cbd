@@ -1,0 +1,62 @@
+---
+okf_version: "0.2"
+---
+
+# CBD architecture decisions
+
+Decision records for CBD, in [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format)
+v0.2. Frontmatter is OKF; the body follows Google's ADR chapters — *authors · context and
+problem · requirements · critical user journey · options · decision and reasons*.
+
+**Trust is read from the frontmatter, not asserted here.** A record with `status: draft` and no
+`verified` key is *unverified*: drafted from measurements that are already committed, but not yet
+read by a human. Adding `verified: { by: human:<id> }` and flipping `status` to `stable` is how a
+record becomes reviewed. Nothing in OKF forces either — a consumer is required to tolerate a
+missing family.
+
+## Decisions
+
+| # | decision | status |
+|---|---|---|
+| [0001](decisions/0001-observation-over-call-graph.md) | Observe execution instead of building a call graph | draft |
+| [0002](decisions/0002-resolve-at-build-time.md) | Resolve coverage at build time, not in the test window | draft |
+| [0003](decisions/0003-factory-and-two-tiers.md) | One factory, five verbs, two tiers | draft |
+
+## Planned
+
+Backfilled from `.explore/` and the commit history; tracked as `cbd` issues under the *arch/*
+epic rather than as a list that goes stale here.
+
+- canonicalize both sides of a projection prefix match
+- refuse to project a script whose declared source map is unreadable
+- the framework root hook is the window
+- take the diff from the map's commit, not the branch base
+- one map per commit
+- the source array is the integration seam
+
+## Adding a decision
+
+One file per decision at `decisions/NNNN-slug.md`, numbered sequentially. Frontmatter must carry
+a non-empty `type` — that is OKF's only always-required key:
+
+```yaml
+---
+type: Architecture Decision
+title: "ADR-NNNN: <the decision, as an imperative>"
+description: <one sentence>
+status: draft                      # draft | stable | deprecated; absent means stable
+tags: [<facet>, <facet>]
+generated: { by: <actor>, at: <ISO 8601 with offset> }
+sources:
+  - id: <stable-key>
+    resource: /<bundle-relative path or URL>
+    title: <what it is>
+---
+```
+
+Then the chapters, as `##` headings. Cite a source inline with a footnote whose label is its
+`sources[].id` — OKF keys footnotes rather than numbering them positionally.
+
+Do not add a `related:` or `links:` field. OKF has no relationships field on purpose: lineage is
+markdown links in the body, and a consumer reads them as directed edges of an untyped
+relationship.

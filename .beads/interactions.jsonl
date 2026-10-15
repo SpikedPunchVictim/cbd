@@ -1,0 +1,1 @@
+{"id":"int-133526f64b31b4b2b86774baa8849a48","kind":"field_change","created_at":"2026-10-15T23:32:57.349769Z","actor":"SpikedPunchVictim","issue_id":"cbd-crv","extra":{"field":"status","new_value":"closed","old_value":"in_progress","reason":"arch/ bundle established: index.md (okf_version 0.2), log.md, and ADR-0001..0003 as unreviewed drafts"}}

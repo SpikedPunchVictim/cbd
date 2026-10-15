@@ -16,6 +16,19 @@ are all **out of scope** — they exist for out-of-process suites. `inProcessSou
 Goal metric: `E[time] = P(all)·T_full + (1 − P(all))·T_subset` on a ~20 min suite that
 should be ~2 min. See `.explore/FINDINGS.md` §7.
 
+### Where things live
+
+- **`arch/`** — decision records, in Google's Open Knowledge Format. Frontmatter is OKF;
+  the body is Google's ADR chapters. Read `arch/index.md` first. A record marked `draft`
+  with no `verified` key has been written but not reviewed by a human.
+- **beads (`bd`)** — the task graph beneath these stages: one epic per stage, tasks with
+  real blocking edges. `bd ready` answers "what can I start now"; this file answers "why".
+  The stage names here match the epic titles there.
+- **`.explore/`** — measurements and recon, never shipped.
+
+This file stays the stage-level roadmap; beads holds the tasks. When a stage's tasks are all
+closed, the stage is done and its section here can go.
+
 ---
 
 ## Design amendments forced by measurement (before any code)
@@ -253,7 +266,9 @@ optimisation for large maps, and `select` reads the whole thing either way); and
 **Goal**: `test-node` green on `src/vs/platform` from a temp clone.
 **Success criteria**: cloned outside the user's tree; `npm ci` done; transpile done;
 `--runGlob` selects the subtree; T_full recorded. Expect ~1 h and ~2 GB.
-**Status**: In Progress
+**Status**: Complete. `T_full` = **104 s** for the 629-file platform scope, 16,017 passing,
+165 pending, 1 failing (`CopilotAgent`, failing on a `.agent-session-cwd-*` directory leaking
+in from the harness shell's cwd — a harness artefact, not the code).
 
 Recon, before anything was run. Clone landed at **VS Code 1.143.0, `a8f47b48`**,
 depth 400 so B1 keeps a real commit range, 622 MB, in `~/temp/cbd-b0/vscode`.
@@ -366,7 +381,12 @@ authoritative and the transform's line shifts never reach the map. Projection re
 right answer for a genuinely map-less build (the fixture's `out-nomaps`), and would be the
 *wrong* answer for esbuild output, which is what `e9058df` enforces.
 
-Not yet done: `T_full` (running), then the recording run and the map.
+**A correction to the premise, recorded before it hardens.** The target was 20 min → 2 min, but
+this scope already runs in 104 s and the full VS Code unit suite (2,512 files) would be roughly
+4× that. The *ratio* transfers; the absolute payoff does not. VS Code is therefore the right
+instrument for **soundness** — does the mechanism ever under-select — and the wrong one for
+**payoff**, which has to be measured on the real suite the user cares about. That question is
+still open.
 
 ### Stage B1: the measurement run
 **Goal**: the numbers that decide the project.
@@ -375,14 +395,21 @@ T_full and T_subset; collection overhead as a % of T_full; take p50/p95 on a rea
 isolate; normalize cost over ~2,000 real TS files; map bytes and parse ms;
 **all-rate with reasons**, and `mode` broken down by `always-all / load / unknown-file /
 between / stale-map`; and `verify`'s **miss count** — the one number that decides safety.
-**Status**: Blocked on B2.
+**Status**: Blocked on B2 and B3, and it runs after both despite its number. A miss count needs a
+repeatable command to produce it, and hand-calling `buildMap`/`saveMap` will not survive a
+20-commit replay. Reordering the labels would break their references in the commit history and in
+`.explore/`, so the number stays and the ordering is stated here instead.
 
 ### Stage B2: stop normalizing in the hot loop
 **Goal**: make the per-test overhead small enough for B1 to measure anything else.
 **Success criteria**: recording overhead under ~10% of `T_full`; the shard records raw
 byte ranges and no resolved paths; `buildMap` resolves each `(script, function)` once.
-**Status**: Not Started — this is the first thing B1 found, and it is the reason B1 is
-blocked.
+**Status**: In Progress. Tracked in beads as the epic *B2 — defer coverage resolution to build
+time*. One addition to the design below, forced by writing it down: because a byte offset only
+means anything against the exact bytes it was taken from, the shard must carry a per-script
+content signal and `cbd build` must refuse a shard whose script has changed since the run.
+Otherwise a rebuild between the run and the build silently misattributes, in the
+under-selecting direction. Same rule as the unreadable-declared-map fix: refuse, do not guess.
 
 **The measurement that forces it.** `T_full` for the 629-file platform scope is **104 s**
 (16,017 passing, 165 pending, 1 failing — `CopilotAgent` in `agentHost`, which fails on
@@ -427,6 +454,56 @@ It also closes three other things at once:
 
 **Fallback if that size is unacceptable**: cache `FileCache` and `TraceMap` across windows, as
 `OrdinalRegistry` already is. Measured ceiling ~23%, so it is a mitigation and not a fix.
+
+### Stage B3: the CLI, and the public surface
+
+**Goal**: make `cbd build` a real command, and fix the library surface before anything is built
+against it.
+**Success criteria**: `createCbd(config)` returns `build` / `select` / `explain` / `stats` /
+`verify`; one committed `cbd.config.json`; `cbd collect -- <test command>` records and builds and
+reports in one line; `cbd select` exits 3 for `all` so a script can branch on it; adapter
+internals move behind `@cbd/core/adapter`.
+**Tests**: each verb against the fixture; `verify` as a pure function over recorded outcomes; the
+CLI's exit codes; a config with an unknown key is tolerated.
+**Status**: Not Started. Tracked as the beads epic *B3 — @cbd/cli and the createCbd factory*.
+See `arch/decisions/0003-factory-and-two-tiers.md`.
+
+B2 is what makes this necessary rather than nice. Before it, `buildMap` was a cheap merge that
+could be a function call from `auto.ts`. After it, the build has a cost, output on disk and
+failure modes of its own — which is what makes it a command.
+
+Two shapes inherited from ADR-0003 that should not drift: `collect` lives here and not in core,
+because running the tests is process orchestration and core stays free of `child_process`; and
+`verify` takes outcomes as data, for the same reason, which also makes it unit-testable.
+
+The post-run build runs **in-process**, printing one line, rather than detached. A detached build
+can be raced by the next run reading a half-written map, and that is a silent-wrong-answer bug —
+the class this project keeps having to pay for.
+
+---
+
+## Phase C — integration tests
+
+Deferred deliberately, and designed for from the start (ADR-0003). The only thing that differs
+between unit and integration is where coverage comes from, and `RecorderOptions.sources` is
+already an array. So integration adds source implementations and a correlation strategy, and
+**never a verb**.
+
+| scenario | source | correlation | status |
+|---|---|---|---|
+| I1 server in-process | `inProcessSource` | none needed | works today |
+| I2 out-of-process, request/response | `inspectorSource({ url })` | request-id header | designed, not built |
+| I3 workers / child processes | several targets | parent window | designed, escalates |
+| I4 queue/async, no boundary | `inspectorSource` | **none possible** | escalates to `all` |
+| I5 browser | `browserSource` | — | out of scope |
+
+**The honest limit is I4.** With no request boundary there is no way to attribute server-side
+execution to a test by timing, and the answer is escalation rather than cleverness. The second
+genuine risk is the one coverage alone cannot close: asynchronous work that outlives its window
+is attributed to whichever test is running when it lands. That is why `settleMs` exists and why
+`verify`'s miss count is the arbiter.
+
+**Status**: Not Started. Tracked as the beads epic *C1 — integration seam*.
 
 ---
 
