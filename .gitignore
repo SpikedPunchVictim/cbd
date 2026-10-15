@@ -8,3 +8,4 @@ out/
 
 # generated spike corpora (.explore/spike/measure.mjs regenerates them)
 .explore/spike/corpus-*/
+.explore/spike/ordinal-corpus/

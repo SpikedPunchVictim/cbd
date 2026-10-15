@@ -11,13 +11,23 @@
  * Both must load, or the projection work in A2 is being built against a fiction.
  */
 import { execFileSync } from 'node:child_process'
+import { rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)))
 const tsc = join(root, 'node_modules', '.bin', 'tsc')
 
-for (const project of ['tsconfig.maps.json', 'tsconfig.nomaps.json']) {
+const TARGETS = [
+  { project: 'tsconfig.maps.json', outDir: 'out-maps' },
+  { project: 'tsconfig.nomaps.json', outDir: 'out-nomaps' },
+]
+
+for (const { project, outDir } of TARGETS) {
+  // tsc does not clean its outDir, so turning source maps off would otherwise
+  // leave the previous build's .map files behind — and the no-maps build would
+  // quietly still have maps, defeating the whole point of having two builds.
+  rmSync(join(root, outDir), { recursive: true, force: true })
   execFileSync(tsc, ['-p', project], { cwd: root, stdio: 'inherit' })
 }
 

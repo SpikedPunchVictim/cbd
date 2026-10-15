@@ -125,7 +125,42 @@ URL, keeps functions with count > 0, maps back through source maps **and** throu
 projection, and yields `name@ordinal` keys stable across edits elsewhere in the file.
 **Tests**: fixture-driven units; a function not called in a window is absent; the
 same fixture normalized from the no-source-map build produces the same `src/` keys.
-**Status**: Not Started
+**Outcome**: complete, in `packages/core`. 29 tests green. `inProcessSource` with both
+`takeSync()` and async `take()` (amendment 6), `normalize`, `scan`, path projection and
+source-map resolution.
+
+**The stage's central result.** The collector runs the fixture's suite twice — once per
+build — and normalises each test's window in both. `out-maps` resolves 177 touches through
+source maps and 0 by projection; `out-nomaps` resolves 0 through maps and 177 by
+projection; and the two produce **byte-identical key sets for all 43 tests**. Amendment 1
+is no longer a design note.
+
+Attribution is transitive and specific: `toSlug delegates to the shared slug helper`
+yields both `src/strings.ts::toSlug@0` and `src/helpers.ts::slug@0`, and 8 tests reach
+`src/helpers.ts` — the cross-cutting case a filename rule cannot express.
+
+Three findings that changed the code:
+
+1. **V8 reports zero-count functions inside any script that has coverage.**
+   (`.explore/spike/ordinal-probe.mjs`: three same-named `parse` methods, counts 0, 1, 0.)
+   So ordinals are assigned over the file's *whole* function list, not the executed subset —
+   otherwise a window running only the middle `parse` would call it `parse@0` while a window
+   running both would call it `parse@1`, and keys would drift on every selection. `scan` is
+   therefore the primitive and `normalize` is a filter over it, which also makes the inverse
+   map free.
+2. **`originalPositionFor` returns `source` in its RESOLVED form** — a `file:` URL — not the
+   raw string in `map.sources`. Keying a lookup table on the raw form makes every lookup
+   miss, and the script then resolves to nothing at all, silently. Cost an hour.
+3. **`tsc` does not clean its `outDir`.** Turning `sourceMap` off left the previous build's
+   `.map` files behind, so the no-maps build still had maps. Caught by A1's
+   `check-builds.mjs` guard doing exactly its job; `build.mjs` now removes the output
+   directory first.
+
+A useful negative result: **no module body ever appears in a test window.** Every module is
+imported before the first test starts, so the module body's count is 0 in every window. That
+is the `@load` bucket separating cleanly from per-test attribution, and it means a
+`<module>@0` touch in a window is a real signal that a test lazily loaded something.
+**Status**: Complete
 
 ### Stage A3: Recorder, shards, build, map reader
 **Goal**: bucket assignment and the on-disk map.

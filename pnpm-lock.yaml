@@ -21,6 +21,22 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/core:
+    dependencies:
+      '@jridgewell/trace-mapping':
+        specifier: ^0.3.31
+        version: 0.3.31
+    devDependencies:
+      '@japa/runner':
+        specifier: ^5.4.0
+        version: 5.4.0
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   probe:
     dependencies:
       '@japa/runner':

@@ -1,0 +1,24 @@
+{
+  "name": "@cbd/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Framework-neutral core: coverage sources, normalization, and the coverage map.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && pnpm --filter @cbd/fixture run build && node bin/test.js"
+  },
+  "dependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}
