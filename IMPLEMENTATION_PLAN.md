@@ -335,7 +335,38 @@ whole project rests on.
    projection prefixes once at configuration time or emitting a loud warning when a run that
    passed the prefilter yielded zero files. Not done yet — flagged rather than folded in.
 
-Not yet done: transpile, `T_full`, and green-on-`src/vs/platform`. (`npm ci` completed clean.)
+**Transpile and scope.**
+
+`npm ci` completed clean (~1.5 GB incl. per-extension workspaces). `npm run transpile-client`
+— esbuild, `--exclude-tests` not set — reports **10,270 files → `out/` in 4.2 s**. Fast enough
+that a per-commit re-transpile in B1 costs nothing.
+
+`out/` holds **2,512** `.test.js` files. The unit scope for `src/vs/platform` is **629**:
+`vs/platform/**/test/{common,node}/**/*.test.js`. That brace glob reproduces the set the
+runner's own `excludeGlobs` would leave (629 exactly, verified both directions) — which
+matters because **`--runGlob` bypasses `excludeGlobs`**, so a naive `--runGlob
+"vs/platform/**/test/**/*.test.js"` would pull in 695 files and load `electron-main` tests
+that cannot run under node.
+
+The runner is reached directly with `node test/unit/node/index.js --runGlob …`, no mocha CLI.
+Smoke run: 30 tests in 9 ms, 0.2 s wall.
+
+**Source maps, and a correction to the recon.** `src/tsconfig.json`'s `"sourceMap": false`
+describes the *gulp/tsc* build. The transcompile path that `watch-transpile` uses emits an
+inline map per file, and its `sources` is an **absolute** path with no `sourceRoot`:
+
+```
+sources: ["/Users/…/vscode/src/vs/platform/markers/common/markerService.ts"]
+```
+
+So for VS Code the **source-map** resolver carries the whole map and projection is only a
+fallback — the opposite of amendment 1's premise, which was written against the tsc build.
+This is also why the esbuild-is-not-line-preserving point is moot here: the map is
+authoritative and the transform's line shifts never reach the map. Projection remains the
+right answer for a genuinely map-less build (the fixture's `out-nomaps`), and would be the
+*wrong* answer for esbuild output, which is what `e9058df` enforces.
+
+Not yet done: `T_full` (running), then the recording run and the map.
 
 ### Stage B1: the measurement run
 **Goal**: the numbers that decide the project.
