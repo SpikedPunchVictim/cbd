@@ -21,19 +21,24 @@ const lines = readFileSync(shardPath, 'utf8').trim().split('\n')
 const records = lines.map((line) => JSON.parse(line))
 
 const header = records.find((r) => r.type === 'shard')
-const footer = records.find((r) => r.type === 'footer')
+// The completeness record is `end`, not `footer`. Getting this wrong made a
+// perfectly complete shard report as truncated, which is a bad way to spend an hour.
+const footer = records.find((r) => r.type === 'end')
 const buckets = records.filter((r) => r.type === 'bucket')
 const tests = records.filter((r) => r.type === 'test')
 
 console.log(`shard      : ${shardPath}`)
 console.log(`commit     : ${header?.commit}`)
-console.log(`complete   : ${footer ? 'yes' : 'NO — the footer is missing, the run was cut short'}`)
+console.log(`complete   : ${footer ? `yes — ${footer.tests} test(s)` : 'NO — no `end` record, the run was cut short'}`)
 console.log()
 
 const bucketOf = (name) => buckets.find((b) => b.bucket === name)
 for (const name of ['load', 'teardown', 'between']) {
   const bucket = bucketOf(name)
-  console.log(`@${name.padEnd(8)} : ${bucket ? bucket.touches.length : 0} touches`)
+  // `Recorder.#bucket` does not write an empty bucket, so these two are the same
+  // observation from a shard: an absent record can mean "captured nothing", which
+  // is what a resolver misconfiguration looks like, or "never captured".
+  console.log(`@${name.padEnd(8)} : ${bucket ? `${bucket.touches.length} touches` : 'absent (empty, or never captured)'}`)
 }
 
 const byStatus = tests.reduce((acc, t) => ({ ...acc, [t.status]: (acc[t.status] ?? 0) + 1 }), {})

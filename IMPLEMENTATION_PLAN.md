@@ -375,7 +375,58 @@ T_full and T_subset; collection overhead as a % of T_full; take p50/p95 on a rea
 isolate; normalize cost over ~2,000 real TS files; map bytes and parse ms;
 **all-rate with reasons**, and `mode` broken down by `always-all / load / unknown-file /
 between / stale-map`; and `verify`'s **miss count** — the one number that decides safety.
-**Status**: Not Started
+**Status**: Blocked on B2.
+
+### Stage B2: stop normalizing in the hot loop
+**Goal**: make the per-test overhead small enough for B1 to measure anything else.
+**Success criteria**: recording overhead under ~10% of `T_full`; the shard records raw
+byte ranges and no resolved paths; `buildMap` resolves each `(script, function)` once.
+**Status**: Not Started — this is the first thing B1 found, and it is the reason B1 is
+blocked.
+
+**The measurement that forces it.** `T_full` for the 629-file platform scope is **104 s**
+(16,017 passing, 165 pending, 1 failing — `CopilotAgent` in `agentHost`, which fails on
+`.agent-session-cwd-*` leaking in from the shell's working directory, i.e. the harness's own
+artefact, not the code). Source maps carry the map with **no projection configured at all**,
+which settles amendment 1 for VS Code.
+
+Then the overhead, from `.explore/spike/probe-first-take.mjs` over 10 modules:
+
+| | |
+|---|---|
+| `takeSync()` | **3 ms** — 90 scripts, 1,731 functions |
+| `normalize()` | **108 ms** → 137 touches |
+
+**We spend 36× longer processing coverage than collecting it.** A fresh pass over the same
+payload costs ~23 ms of that in reading files and re-parsing source maps, so caching is worth
+~23% and does not close the gap — the remaining ~83 ms is the per-function `originalPositionFor`
+lookups. Per script, ~1.2 ms; across VS Code's 10,270 scripts and 16,017 windows that is tens of
+minutes of overhead on a 104-second suite.
+
+**It is structural, not a bug.** Every window re-reads and re-indexes every file it touches,
+re-parses every source map, and re-resolves every function's position — and a function in a
+cross-cutting file is resolved once per window it appears in. `lifecycle.ts` appears in 284 of
+30 windows in a small run. The work is `O(windows × functions in window)` when it should be
+`O(distinct (script, function))`.
+
+**The fix.** Stop resolving at take time. The shard records, per window, only the executed
+functions' **byte ranges** — script id, start offset, end offset. No paths, no names, no line
+numbers. Every map lookup, file read and ordinal assignment moves to `cbd build`, where each
+unique `(script, function)` is resolved exactly once. This is the `file` record CBD.md §6.3
+already describes.
+
+It also closes three other things at once:
+
+1. **Ordinals become stable by construction** — assigned from the union over every window, which
+   is the proper fix A4 could only flag as a limitation.
+2. **Our own normalization work stops being attributed to the following test window.** Traces of
+   it are visible in the fixture too, filtered out only because they are outside the project root.
+3. Bytes on disk replace CPU in the hook, which is the right trade: a first estimate is ~150
+   executed functions per window at ~15 B each, so ~50 MB for a 16 k-window run, deleted once the
+   map is built.
+
+**Fallback if that size is unacceptable**: cache `FileCache` and `TraceMap` across windows, as
+`OrdinalRegistry` already is. Measured ceiling ~23%, so it is a mitigation and not a fix.
 
 ---
 
