@@ -253,7 +253,49 @@ optimisation for large maps, and `select` reads the whole thing either way); and
 **Goal**: `test-node` green on `src/vs/platform` from a temp clone.
 **Success criteria**: cloned outside the user's tree; `npm ci` done; transpile done;
 `--runGlob` selects the subtree; T_full recorded. Expect ~1 h and ~2 GB.
-**Status**: Not Started
+**Status**: In Progress
+
+Recon, before anything was run. Clone landed at **VS Code 1.143.0, `a8f47b48`**,
+depth 400 so B1 keeps a real commit range, 622 MB, in `~/temp/cbd-b0/vscode`.
+
+**VS Code has two build pipelines and they differ exactly on amendment 1's axis:**
+
+| | `compile-client` (`npm run gulp compile`) | `transpile-client` (`build/next/index.ts transpile`) |
+|---|---|---|
+| compiler | tsc | **esbuild**, per file |
+| source maps | `src/tsconfig.json` → `"sourceMap": false` | **`sourcemap: 'inline'`** |
+| output | `out/vs/…` | `src/…` → `out/…`, a pure prefix rewrite |
+
+The recon note that "VS Code sets `sourceMap: false`" is true of the gulp/tsc path and
+**false of the transpile path**, which is the one a developer runs day to day
+(`watch-transpile`). `build/next/transpile.ts` sets `sourcemap: 'inline'`, and
+`rewriteSourceMappingURL` only fires for production bundles, so the inline map survives
+into `out/`.
+
+Two consequences:
+
+1. **The projection rule for VS Code is `src/` ↔ `out/`** — a pure string rewrite, which is
+   what A2 implements, and `SRC_DIR`/`OUT_DIR` in `build/next/index.ts:65` confirm it. But
+   projection *also* assumes line-preservation, and **esbuild's TS transform is not
+   line-preserving**: it strips type-only lines and rewrites enums, class fields and
+   decorators. So on the transpile build the correct path is source-map resolution, which is
+   available; projection would be wrong there even though the paths match. Amendment 1
+   stands for the tsc build and for genuinely map-less repos, not for esbuild output.
+2. **This exposed a latent under-selection bug**, now fixed and committed (`e9058df`):
+   `createScriptResolver` fell back to projection when a script declared a `sourceMapURL`
+   that would not load or parse. The fixture could not catch it — `out-maps` always has
+   readable maps, `out-nomaps` declares none, so the fallback fired in neither build and 92
+   tests stayed green over it. It now returns `null`, dropping the script so the unknown-file
+   rule escalates. Regression test added (`tests/source-maps.spec.ts`), control plus both
+   failure modes.
+
+**Selection injection point**: `test/unit/node/index.js:72` sets the test root to `out/`
+(`path.join(REPO_ROOT, out)`) and the default glob is `**/test/**/*.test.js` against it.
+`--runGlob` globs from there, but the useful hook is `--run`, which takes a **`string`**, so
+minimist collects repeated `--run a --run b` into an array — an arbitrary selected subset can
+be passed directly, and it accepts `src/…` paths, rewriting `/^src/` → `out`.
+
+Not yet done: `npm ci` (running), transpile, T_full, and green-on-`src/vs/platform`.
 
 ### Stage B1: the measurement run
 **Goal**: the numbers that decide the project.
