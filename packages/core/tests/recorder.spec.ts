@@ -15,6 +15,7 @@ import type { ShardRecord } from '../src/shard.js'
 import type { Source, V8Function, V8ScriptCoverage } from '../src/types.js'
 
 const MODULE = [
+  '// a leading comment, so the first function does not start at offset 0',
   'function alpha() {',
   '  return 1',
   '}',

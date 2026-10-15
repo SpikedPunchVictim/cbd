@@ -39,9 +39,14 @@ export interface ShardTest {
   touches: TouchRef[]
 }
 
-/** Executed outside any test window: at import time, or between tests. */
+/**
+ * Executed outside any test window. Three buckets, and the difference matters
+ * because §8.3 treats them differently: a file reached only by `@load` or
+ * `@teardown` is startup code and forces `mode: all`, while `@between` has its
+ * own policy knob.
+ */
 export interface ShardBucket {
-  type: 'load' | 'between'
+  type: 'load' | 'between' | 'teardown'
   touches: TouchRef[]
 }
 
@@ -119,6 +124,7 @@ export function summarizeShard(records: ShardRecord[]): {
   tests: ShardTest[]
   load: TouchRef[]
   between: TouchRef[]
+  teardown: TouchRef[]
 } {
   const header = records.find((r): r is ShardHeader => r.type === 'shard')
   if (header === undefined) throw new IncompleteShardError('shard has no header')
@@ -126,10 +132,12 @@ export function summarizeShard(records: ShardRecord[]): {
   const tests: ShardTest[] = []
   const load: TouchRef[] = []
   const between: TouchRef[] = []
+  const teardown: TouchRef[] = []
   for (const record of records) {
     if (record.type === 'test') tests.push(record)
     else if (record.type === 'load') load.push(...record.touches)
     else if (record.type === 'between') between.push(...record.touches)
+    else if (record.type === 'teardown') teardown.push(...record.touches)
   }
-  return { header, tests, load, between }
+  return { header, tests, load, between, teardown }
 }

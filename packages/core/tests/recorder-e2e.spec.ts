@@ -13,8 +13,10 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
+import type { Change } from '../src/changes.js'
 import { buildMap, testsForFunction } from '../src/map.js'
 import { loadMap, saveMap } from '../src/map.js'
+import { select } from '../src/select.js'
 import { parseShard, summarizeShard } from '../src/shard.js'
 
 const coreRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -99,6 +101,71 @@ test('a real run yields a complete shard, a map, and a working query', () => {
       reaching.some((t) => t.title === 'add sums two numbers'),
       `query returned: ${reaching.map((t) => t.title).join(', ')}`,
     )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * `select` against the real recorded map, rather than the hand-built one the unit
+ * tests use. The unit tests pin each rule's logic; this one checks that a map
+ * produced by an actual run has the shape `select` expects — the join between the
+ * two halves of the pipeline, which nothing else exercises.
+ */
+test('select works against a map built from a real recording', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-select-'))
+  try {
+    const shardPath = join(dir, 'shard.jsonl')
+    record('out-maps', shardPath)
+    const records = parseShard(readFileSync(shardPath, 'utf8'), shardPath)
+    const map = buildMap([{ name: 'shard.jsonl', records }], { commit: 'fixture-head' })
+
+    const mathFile = join(fixtureRoot, 'src/helpers.ts')
+    const slug = map.files[mathFile]?.['slug@0']
+    assert.ok(slug, 'expected slug@0 in src/helpers.ts')
+
+    // A change landing inside the mapped function.
+    const inside: Change = {
+      path: mathFile,
+      status: 'M',
+      hunks: [{ start: slug.startLine, end: slug.startLine }],
+    }
+    const selection = select(map, [inside], { alwaysAll: ['**/package.json'] })
+
+    assert.equal(selection.mode, 'subset')
+    assert.deepEqual(selection.tests, slug.tests)
+    assert.equal(selection.untested.length, 0)
+    assert.equal(selection.unmapped.length, 0)
+
+    // The cross-cutting property. It belongs to the FILE, not to one function:
+    // a change inside `slug` reaches only its own callers, but a change to the
+    // shared module reaches every test that goes through any of its exports —
+    // which is the case a filename-based rule cannot express at all.
+    const wholeFile = new Set<number>()
+    for (const entry of Object.values(map.files[mathFile]!)) {
+      for (const index of entry.tests) wholeFile.add(index)
+    }
+    assert.ok(
+      wholeFile.size >= 5,
+      `expected several tests to reach src/helpers.ts, got ${wholeFile.size}`,
+    )
+    // And a change outside every function widens to exactly that set.
+    const outside = select(map, [{ path: mathFile, status: 'M', hunks: [{ start: 1, end: 1 }] }])
+    assert.deepEqual(outside.tests, [...wholeFile].sort((a, b) => a - b))
+
+    // A change to a file the map never saw escalates, as rule 7 requires.
+    const unknown: Change = {
+      path: join(fixtureRoot, 'src/brand-new.ts'),
+      status: 'M',
+      hunks: [{ start: 1, end: 1 }],
+    }
+    assert.equal(select(map, [unknown]).mode, 'all')
+
+    // And a package.json change, which the map genuinely cannot answer for.
+    const manifest: Change = { path: join(fixtureRoot, 'package.json'), status: 'M', hunks: [] }
+    const escalated = select(map, [manifest], { alwaysAll: ['**/package.json'] })
+    assert.equal(escalated.mode, 'all')
+    assert.deepEqual(escalated.tests, [])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

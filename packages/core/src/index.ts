@@ -65,3 +65,28 @@ export {
   type ShardInput,
   type TestEntry,
 } from './map.js'
+
+export { matchesAnyGlob, matchesGlob } from './glob.js'
+
+export {
+  changesSince,
+  intersects,
+  parseUnifiedDiff,
+  sameCommit,
+  type Change,
+  type ChangeStatus,
+  type ChangesOptions,
+  type LineRange,
+} from './changes.js'
+
+export {
+  select,
+  verify,
+  type AllWhy,
+  type MapInfo,
+  type Miss,
+  type Reason,
+  type SelectConfig,
+  type Selection,
+  type Verification,
+} from './select.js'

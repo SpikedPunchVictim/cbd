@@ -40,6 +40,17 @@ export interface CoverageMap {
   load: TouchRef[]
   /** Executed outside any window. Unattributable, so it reaches every test. */
   between: TouchRef[]
+  /** Post-run activity — global teardown, late timers. */
+  teardown: TouchRef[]
+  /**
+   * Every file the map has any evidence for, including ones no test reaches.
+   *
+   * `files` only holds functions a test touched, so a changed file that was
+   * loaded but never exercised would otherwise be indistinguishable from a file
+   * the map has never seen — and §8.3 gives those two cases opposite answers
+   * (`untested`, nothing selected, versus `unknown-file`, everything selected).
+   */
+  seen: string[]
   /** Names of the shards merged in, for provenance. */
   shards: string[]
 }
@@ -82,6 +93,7 @@ export function buildMap(shards: ShardInput[], options: BuildOptions): CoverageM
   const files = new Map<string, Map<string, FunctionEntry>>()
   const load = new Map<string, TouchRef>()
   const between = new Map<string, TouchRef>()
+  const teardown = new Map<string, TouchRef>()
   const included: string[] = []
 
   const indexOfTest = (title: string, file: string | null): number => {
@@ -99,6 +111,7 @@ export function buildMap(shards: ShardInput[], options: BuildOptions): CoverageM
     included.push(shard.name)
     mergeRefs(load, summary.load)
     mergeRefs(between, summary.between)
+    mergeRefs(teardown, summary.teardown)
 
     for (const test of summary.tests) {
       if (!options.includeNonGreen && test.status !== 'passed') continue
@@ -133,14 +146,26 @@ export function buildMap(shards: ShardInput[], options: BuildOptions): CoverageM
     sortedFiles[file] = sorted
   }
 
+  const byPath = (a: TouchRef, b: TouchRef): number =>
+    a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1
+
+  const loadRefs = [...load.values()].sort(byPath)
+  const betweenRefs = [...between.values()].sort(byPath)
+  const teardownRefs = [...teardown.values()].sort(byPath)
+
+  const seen = new Set<string>(Object.keys(sortedFiles))
+  for (const ref of [...loadRefs, ...betweenRefs, ...teardownRefs]) seen.add(ref[0])
+
   return {
     version: MAP_VERSION,
     commit: options.commit,
     builtAt: options.builtAt ?? new Date().toISOString(),
     tests,
     files: sortedFiles,
-    load: [...load.values()].sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1)),
-    between: [...between.values()].sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : 1) : a[0] < b[0] ? -1 : 1)),
+    load: loadRefs,
+    between: betweenRefs,
+    teardown: teardownRefs,
+    seen: [...seen].sort(),
     shards: included,
   }
 }

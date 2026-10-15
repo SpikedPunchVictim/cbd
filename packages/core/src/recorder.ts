@@ -16,7 +16,7 @@
  *              module, work between tests. Unattributable, so the selector has to
  *              treat it as reaching every test.
  */
-import { normalize, type ScanOptions, type Touch } from './normalize.js'
+import { normalize, type OrdinalRegistry, type ScanOptions, type Touch } from './normalize.js'
 import { SHARD_VERSION, type ShardSink, type TouchRef } from './shard.js'
 import type { Source } from './types.js'
 
@@ -64,6 +64,13 @@ export class Recorder {
   #now: () => number
   #testCount = 0
   #loadCaptured = false
+  /**
+   * Keys must not be recomputed window by window: V8 stops reporting a script's
+   * full function list after the take that follows its compilation, so ordinals
+   * derived from a later window would be drawn from a subset and two different
+   * functions could collide on one key. One registry per run.
+   */
+  #ordinals: OrdinalRegistry = new Map()
   #open: { title: string; file: string | null; startedAt: number } | null = null
 
   constructor(options: RecorderOptions) {
@@ -77,7 +84,8 @@ export class Recorder {
 
   #take(): TouchRef[] {
     try {
-      return toRefs(normalize(this.#source.takeSync(), this.#source, this.#scan))
+      const payload = this.#source.takeSync()
+      return toRefs(normalize(payload, this.#source, { ...this.#scan, ordinals: this.#ordinals }))
     } catch {
       // A dead inspector session must not take the test run down with it. An
       // empty window under-selects for that test, which is why the run should
@@ -86,7 +94,7 @@ export class Recorder {
     }
   }
 
-  #bucket(kind: 'load' | 'between'): void {
+  #bucket(kind: 'load' | 'between' | 'teardown'): void {
     const touches = this.#take()
     if (touches.length === 0) return
     this.#sink.append(JSON.stringify({ type: kind, touches }))
@@ -150,7 +158,10 @@ export class Recorder {
       this.#loadCaptured = true
       this.#bucket('load')
     }
-    this.#bucket('between')
+    // Post-run activity — global teardown hooks, a timer from the last test that
+    // fired late. Filed separately from @between because §8.3 treats a file
+    // reached only by teardown as startup code, like @load.
+    this.#bucket('teardown')
     this.#sink.append(
       JSON.stringify({
         type: 'end',

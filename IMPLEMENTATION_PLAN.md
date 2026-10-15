@@ -203,7 +203,49 @@ test window.
 rename-with-modification selects the tests touching `from`; `verify` reports a
 deliberately planted miss.
 **Tests**: a fixture git repo built in a temp directory per test, as §12 Stage 3 specifies.
-**Status**: Not Started
+**Outcome**: complete. 89 core tests green. `changesSince` (parsing `git diff -U0` directly),
+`select` with all ten §8.3 rows, and `verify`. Temp git repos per test, real `git`, no stubs.
+
+**The bug this stage found is the most serious of the project so far.**
+
+`name@ordinal` was silently wrong. I had assumed — and the ordinal probe *seemed* to confirm —
+that a take reports a script's whole function list, so ordinals could be computed from any
+window. They cannot. V8 reports the full list only on the take following a script's
+compilation; afterwards it reports only what had activity. Measured on the fixture's
+`src/helpers.js`: a mid-run take reported **two** functions where the file has six.
+
+The consequence was not a missing entry but a **collision**. Two different anonymous arrows,
+each the only anonymous function in its own window, both became `<anonymous>@0`; merging by key
+fused them into a single function spanning lines 8–24 — which then matched any hunk in between
+and selected the wrong tests. A change to `slug` selected eight tests instead of two.
+
+The fix is a per-script ordinal registry, seeded on first sighting and consulted thereafter,
+keyed by generated offset (exact within a process, where offsets never move). CBD.md §6.3's
+`file` record exists for precisely this. After the fix every function has one coherent range and
+exactly its enclosing function's test set.
+
+**Known limitation, recorded rather than papered over:** the first sighting is not always
+complete either — during import, a take already omitted one arrow — so a late-appearing function
+gets an appended ordinal rather than its source-order one. Ordinals are therefore deterministic
+for a given build and suite, which is all selection needs (the map is rebuilt per commit, and a
+hunk is matched against line ranges, never against another map's keys), but they are not
+guaranteed to survive an arbitrary edit elsewhere in the file as CBD.md hoped. Fixing that
+properly means deferring key assignment to `cbd build`, where the union over every window is
+known. **Worth doing before the map is relied on across a long-lived branch.**
+
+Two smaller findings:
+
+- A change with no content — a mode change, a pure rename — emits no `---`/`+++` lines, so the
+  path must come from the `diff --git a/X b/Y` header.
+- The `@teardown` bucket is a third bucket after all. I had collapsed it into `@between`; §8.3
+  gives `@load` and `@teardown` one answer (startup code, `all`) and `@between` its own policy,
+  and `seen` had to be added to the map so rule 6 (`untested`) and rule 7 (`unknown-file`) —
+  which have *opposite* answers — can be told apart.
+
+Deviations: the map is one `map.json` rather than §8.1's five files (the doc's layout is an
+optimisation for large maps, and `select` reads the whole thing either way); and no CLI, so
+`buildMap`/`saveMap`/`loadMap` are called directly.
+**Status**: Complete
 
 ## Phase B — measurement against VS Code
 
