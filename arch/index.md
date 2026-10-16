@@ -21,6 +21,7 @@ missing family.
 | [0001](decisions/0001-observation-over-call-graph.md) | Observe execution instead of building a call graph | draft |
 | [0002](decisions/0002-resolve-at-build-time.md) | Resolve coverage at build time, not in the test window | draft |
 | [0003](decisions/0003-factory-and-two-tiers.md) | One factory, five verbs, two tiers | draft |
+| [0004](decisions/0004-success-metric.md) | The success metric is a product, and it is constrained | draft |
 
 ## Planned
 

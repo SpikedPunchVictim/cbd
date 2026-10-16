@@ -13,8 +13,33 @@ Target use case under test throughout (narrowed from CBD.md by the user, 2026-10
 `inspectorSource`/CDP, `--target`/`--listen`, the HTTP control server and `browserSource`
 are all **out of scope** — they exist for out-of-process suites. `inProcessSource` only.
 
-Goal metric: `E[time] = P(all)·T_full + (1 − P(all))·T_subset` on a ~20 min suite that
-should be ~2 min. See `.explore/FINDINGS.md` §7.
+Goal metric: **`S = (1 − P)(1 − φ)(1 − r) ≥ 0.60`**, subject to **miss count = 0**.
+`P` = P(all); `φ` = the irreducible startup/load fraction of a run; `r` = the fraction of the
+reducible work actually run. The saving is a *product* of three independent factors, so any one
+of them at zero kills it however good the other two are. This replaces the original absolute goal
+("20 min → 2 min"), which did not travel between repositories and rested on two irreconcilable
+readings of the same all-rate. See `arch/decisions/0004-success-metric.md`.
+
+### Before anything else: the two gates
+
+Both fall out of the metric, both are cheap, and the first needs no CBD code at all.
+
+| gate | threshold | how to measure |
+|---|---|---|
+| **A — startup floor** | `φ ≤ 26%` at a 19% all-rate | time three runs using only the runner's own filtering: full, ~10% of tests, one test |
+| **B — escalation ceiling** | `P(all) < 0.40`, strictly | the `select` all-rate over a real commit range |
+
+`P(all) ≥ 0.40` makes the target **arithmetically impossible at any selection quality**. Gate A is
+the same shape: CBD chooses which tests run and cannot make them load faster, so if a run
+selecting almost nothing still costs more than a quarter of the full suite, no amount of good
+selection reaches 60%.
+
+Gate A passes trivially for VS Code's platform scope — 30 tests in 9 ms against 0.2 s wall inside
+a 104 s full run, so φ ≈ 0.2% — but that runner is hand-rolled, and japa and vitest are not.
+
+**Neither gate is behind B2.** Gate A needs nothing at all. Gate B needs a map, which B2 produces
+on a VS Code-sized repo but which one affordable recording produces on a smaller one. Both are
+tracked in beads under the *Gates* epic.
 
 ### Where things live
 
@@ -509,14 +534,21 @@ is attributed to whichever test is running when it lands. That is why `settleMs`
 
 ## Success / kill criteria
 
-- **Kill** if, at a realistic unit-scope config and a ~5-commit window, `verify` finds a
-  miss at a rate that cannot be driven to zero. Under-selection is the only unacceptable
-  failure; everything else is tunable.
-- **Kill** if `E[time]` at realistic `P(all)` is not meaningfully below T_full, i.e. if the
-  policy levers in amendments 2–4 cannot get `P(all)` low enough to matter.
-- **Proceed** if misses are zero across a real commit range and `P(all)` is driven low
-  enough that `E[time] ≪ T_full`. The mechanism is then proven and the remaining work is
-  the adapters in CBD.md §7.
+The objective is constrained, never scalar: `S` **improves when we under-select**, so a saving is
+never reported without the miss count beside it.
+
+- **Kill** if Gate A fails — `φ > 26%` on the target suite. Selection cannot recover a startup cost
+  that is already spent.
+- **Kill** if Gate B fails — `P(all) ≥ 0.40` over a real commit range. The target is then
+  unreachable at any selection quality.
+- **Kill** if `verify` finds a miss at a rate that cannot be driven to zero. Under-selection is the
+  only unacceptable failure; everything else is tunable.
+- **Proceed** if misses are zero across a real commit range and `S ≥ 0.60` at `p50`, with `p90`
+  reported beside it. The mechanism is then proven and the remaining work is the adapters in
+  CBD.md §7.
+
+Two inputs are still missing and should not be assumed: whether 60% is a floor to defend or a
+first estimate, and **where the target suite lives**. Every gate above depends on the second.
 
 ## Open decisions
 
