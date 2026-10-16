@@ -275,3 +275,59 @@ python3 -I alwaysall_kind.py --commits 250 \
 ```
 
 All read-only. Artifacts: `vscode.json`, `multi.json`, `windows.json`.
+
+## 9. Gate A — the startup floor, measured (2026-10-15)
+
+The metric is `S = (1−P)(1−φ)(1−r)` (ADR-0004). `φ` is the part of a run you pay no matter how
+little you select. CBD chooses *which* tests run; it cannot make them load faster, so a large `φ`
+caps `S` at any selection quality.
+
+**Method.** `.explore/spike/gate-a.mjs` times runs at several selection sizes and reports the
+floor. Files are sampled evenly across the tree, not taken as a prefix — a prefix of a sorted
+list is one subtree, and cost per test is not uniform across a tree.
+
+```
+node .explore/spike/gate-a.mjs --cwd ~/temp/cbd-b0/vscode \
+  --list-cmd "find out/vs/platform -name '*.test.js' | grep -E '/test/(common|node)/'" \
+  --run-cmd "node test/unit/node/index.js" --run-flag "--run" --ks 1,10,100,all --runs 3
+```
+
+629 test files, `--run` with evenly spaced selections (note: `--run` resolves against the *repo
+root*, so paths need the `out/` prefix; `src/…` also works and is rewritten).
+
+| k (test files) | median wall | per file | samples |
+|---|---|---|---|
+| 1 | **0.142 s** | 142 ms | 0.14, 0.14, 0.17 |
+| 10 | 0.622 s | 62 ms | 0.60, 0.62, 0.77 |
+| 100 | 15.106 s | 151 ms | 9.35, 15.11, 20.27 |
+| 629 | **86.406 s** | 137 ms | 86.41 |
+
+**φ ≤ 0.16%** — `T(1)/T(full) = 0.142/86.4`. A one-file run is the practical floor and still pays
+for that one file, so the true floor is below this, somewhere between 0.01% and 0.16%. **Gate A
+passes decisively for VS Code.** At φ = 0.16%, `S_max = (1−P)(1−φ)` is 81% at a 19% all-rate,
+against a 60% target.
+
+Two things make the floor irrelevant rather than merely small, and both are worth keeping:
+
+- **The cost is loading, not running.** 33 tests execute in 10 ms, but one test file costs 142 ms
+  wall. Almost all of it is importing the transpiled module graph. Node caches modules within a
+  process, so the cost tracks the *union* of the selected files' imports, not the number of tests
+  — which is why `r`'s effect on time is not worse than its effect on test count, the assumption
+  the whole payoff estimate rests on.
+- **The curve is superlinear, not linear.** Per-file cost rises from ~62 ms at k=10 to ~137–151 ms
+  at k≥100. If that holds, a subset saves *more* time than its test-count share, which makes the
+  payoff model conservative rather than optimistic.
+
+**Caveats, and they are real.** The full run measured 86.4 s here against 104 s in B0 — a 17%
+spread in the baseline itself, so the baseline needs repeating before being quoted. The k=100
+point has a 2× spread (9.35–20.27 s), which means the *shape* of the curve is not yet
+established; only the floor is, and it is small enough that the shape does not change the verdict.
+The line fit reports a 0.000 s intercept, which is an artefact of fitting a straight line to
+superlinear data and should not be quoted — `T(1)` is the honest estimate.
+
+**What this does not settle.** Gate A must be measured on the *target* suite, which is still
+unnamed. VS Code's node runner is hand-rolled and loads only the selected files; japa and vitest
+are not, and vitest in particular pays Vite's transform pipeline on every start. The harness takes
+any repo and any runner via `--list-cmd` / `--run-cmd` / `--run-flag`, so the remaining work is
+supplying a command, not writing code.
+
