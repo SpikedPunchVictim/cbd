@@ -1,7 +1,7 @@
 ---
 type: Architecture Decision
 title: "ADR-0004: The success metric is a product, and it is constrained"
-description: S = (1−P)(1−φ)(1−r) ≥ 0.60, subject to a zero miss count.
+description: S = (1−P)(1−r) ≥ 0.60, subject to a zero miss count, over a suite that clears the startup floor.
 status: draft
 tags: [metrics, goals, soundness]
 generated: { by: process:cbd-adr-backfill, at: 2026-10-15T00:00:00Z }
@@ -15,6 +15,12 @@ sources:
   - id: all-rate
     resource: /IMPLEMENTATION_PLAN.md
     title: Amendment 2 — the measured all-rate, and its two framings
+  - id: findings-7d
+    resource: /.explore/FINDINGS.md
+    title: What unit-tests-only removes from the design
+  - id: target-suite
+    resource: /Users/spikedpunchvictim/projects/grizzly/grizzly-platform/typescript
+    title: grizzly-platform TypeScript monorepo — sdk/, the suite this metric is measured on
 ---
 
 # Authors and the team
@@ -64,40 +70,50 @@ Option 2, with the absolute retained as context. Stated as a floor rather than a
 S ≥ 0.60,  subject to  miss count = 0
 ```
 
-Decomposing `S` gives the decision its force. Let `φ` be the *irreducible* startup and load
-fraction of a run — what a run pays even when it selects almost nothing — and `r` the fraction of
-the *reducible* work actually run. Then
+Decomposing `S` gives the decision its force. Let `r` be the fraction of the *reducible* work
+actually run — the work a subset run still pays for, once startup is set aside. Then
 
 ```
-E[T] = P·T_full + (1−P)·[φ + r(1−φ)]·T_full
-
-  S  = (1−P) · (1−φ) · (1−r)
+S  = (1 − P) · (1 − r)
 ```
 
-**The saving is a product of three independent factors.** That is the whole model, and it is what
-the goal document lacked. You must not escalate (P → 0), you must not pay startup (φ → 0), and you
-must select well (r → 0). *Any one factor at zero kills the product however good the other two
-are.*
+**The saving is a product of two independent factors.** You must not escalate (`P → 0`) and you
+must select well (`r → 0`). Either one at zero kills the product however good the other is.
 
-Setting each factor to its own limit gives two hard gates, and one of them is fatal on its own:
+*Amended 2026-10-16 — startup was previously a third factor, `(1 − φ)`, and has been taken out of
+the product.* Start-up is a cost the run pays whether or not CBD does anything: it is identical in
+the baseline and in the subset, so it cancels when the two are compared, and it is nothing the
+selector controls or influences. Leaving it in made `S` a compound of one thing CBD does and one
+thing it merely inherits, and it made a suite with a heavy warm-up look like a failure of selection
+when it is nothing of the kind. The floor is still load-bearing, but as an admissibility test on the
+*suite* rather than as a factor in the *selector's* score — see the gate below.
 
-| P(all) | max φ (at r=0) | max r (at φ=0) |
-|---|---|---|
-| 0.10 | 33% | 33% |
-| 0.19 | 26% | 26% |
-| 0.25 | 20% | 20% |
-| 0.30 | 14% | 14% |
-| **≥ 0.40** | **0** | **0 — impossible** |
+This leaves one hard gate on selection quality:
+
+| P(all) | max r |
+|---|---|
+| 0.10 | 33% |
+| 0.19 | 26% |
+| 0.25 | 20% |
+| 0.30 | 14% |
+| **≥ 0.40** | **0 — impossible** |
 
 **Consequences.** Three follow directly, and they are the reason this record exists.
 
-*Gate A is measurable with no CBD code at all.* `φ` is obtained by timing three runs on the
-target suite using only the test runner's own filtering: the full suite, a run selecting roughly
-10% of tests, and a run selecting one. If `φ > 26%`, the 60% target is unreachable at *any*
-selection quality, because CBD chooses which tests run and cannot make them load faster. This is
-an afternoon's work and it can end the project for free. For VS Code's platform scope it already
-passes — a smoke run of 30 tests was 9 ms of test time against 0.2 s wall, set against a 104 s full
-run, giving φ ≈ 0.2% — but that runner is hand-rolled, and japa and vitest are not.
+*Gate A — the startup floor — is a separate admissibility test on the suite.* Let `φ` be the
+*irreducible* startup and load fraction of a run: what it pays even when it selects almost nothing.
+At best — no escalation, perfect selection — a run still costs `φ · T_full`, so **the largest
+wall-clock improvement any selector can deliver is `1 − φ`.** For a run to be 60% faster its suite
+must have `φ ≤ 40%`. Below that line no selection quality and no amount of engineering reaches the
+goal, and the honest answer is to find a different suite rather than a better selector.
+
+`φ` is measured with no CBD code at all: time runs of different sizes using only the test runner's
+own filtering, and take the floor directly by selecting a file that does not exist. It is an
+afternoon's work and it can end the project for free. Measured 2026-10-16 — VS Code's platform scope
+≤ 0.16%; the grizzly `tests/stores` suites ≈ 0.5%; the grizzly `int-cli` unit suite 17–21.5%; the
+grizzly `sdk-unit` suite **42.6%, which fails**. Because the floor is roughly constant for a given
+toolchain, `φ` is really a statement about suite *size*, and it is the reason the target moved from
+the unit suite to the stores suite.
 
 *Gate B is a ceiling no selection quality can lift.* `P(all) ≥ 0.40` makes the target impossible at
 any `r`. The measured range is 7–49%, so the top of that range is fatal. This makes the previously
@@ -115,11 +131,43 @@ what is felt, so `p50` and `p90` of `S` are reported alongside the mean: if esca
 with the changes a developer most wants to be fast — shared helpers, configuration, startup files
 — the mean overstates the benefit.
 
-Two questions are left open by this record rather than answered, and neither should be silently
-assumed later. Whether 60% is a defended floor or a first estimate is unstated by the author; at a
-25% all-rate it demands running under a fifth of the tests, which is a demanding specification.
-And the suite the metric is to be measured on is still unnamed, which is the one input every gate
-above depends on.
+# The suite the metric is measured on
+
+**Decided 2026-10-16**, replacing the choice made the day before. The target is the `tests/stores`
+suites of the grizzly-platform TypeScript monorepo — the project this design was written from
+[^target-suite], and the suite `CBD.md` §1 describes: *backend suites that drive a separately
+started HTTP server*. japa 5.0.0. Ten spec files, six suites, 1555 tests in 548.6 s.
+
+```
+node tools/dev-cli/bin/dev.js lane up      # a private server + Postgres per lane
+cd tests/stores && eval "$(node ../../tools/dev-cli/bin/dev.js lane env <id> --format dotenv)"
+npm test                                    # plus: npm run test:signing
+```
+
+**Why the first choice was wrong.** On 2026-10-15 this record named `sdk-unit`, reasoning that the
+stores suites were the out-of-process shape cut from v1 when the scope narrowed to unit tests.
+Gate A was run on `sdk-unit` the next day and it failed: `T_full` 1.69 s against a floor of 0.72 s,
+so `φ = 42.6%`, above the 40% line. The stores suites — same repository, same framework, same
+toolchain — measure ≈ 0.5%. They differ in size by a factor of 325 and in nothing else that
+matters.
+
+So the scope decision had the premise backwards. The unit suites are 1.7 s and 5 s, far too fast
+for selection to be worth anything, and the suite that hurts is the one that was excluded. What
+`FINDINGS.md` §7d removed with the out-of-process machinery was not v2 polish; it was the only
+place the tool pays. The full measurements are in `.explore/FINDINGS.md` §10–11.
+
+**The cost, stated plainly.** Two items are now real debts rather than footnotes. There was no
+japa adapter, though `CBD.md` calls japa the first and budgets a day for it (`cbd-cpy`). And Gate B
+— designed to be the cheap, early gate — cannot be measured on these suites until the server is
+instrumented, because a map blind to server-side code resolves a key-server change to an unknown
+file and escalates to `all` for an artefactual reason (`cbd-a3v`). The gates are no longer nearly
+free, and that is a price of the retarget rather than a surprise.
+
+One question remains open rather than answered, and it should not be silently assumed later.
+Whether 60% is a defended floor or a first estimate is unstated by the author; at a 25% all-rate it
+demands running under a fifth of the tests, which is a demanding specification.
 
 [^all-rate]: Amendment 2 of the plan, measured at whole-repo scope, `FINDINGS.md` §3.
 [^cbd-goals]: CBD design document section 1 states the original absolute goal.
+[^findings-7d]: `.explore/FINDINGS.md` §7d, "What unit-tests-only removes from the design".
+[^target-suite]: The suite the design document was written from; `CBD.md` §1 and §7.1.

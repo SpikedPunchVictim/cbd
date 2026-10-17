@@ -139,6 +139,30 @@ export function select(
     return out
   }
 
+  /**
+   * Rules 2, 9, 7, 6 — the file has no per-test touches, so the map has nothing
+   * to name and the answer is a policy question rather than an evidence one.
+   *
+   * Reached from two places: a deleted file the map never indexed, and an
+   * ordinary file the map has no functions for. They must not drift apart —
+   * both are asking the same question — so the ladder exists once, here.
+   */
+  const noTouches = (path: string): void => {
+    if (loadFiles.has(path) || teardownFiles.has(path)) {
+      unmapped.push(path)
+      forceAll('load', path)
+    } else if (betweenFiles.has(path)) {
+      unmapped.push(path)
+      if (betweenPolicy === 'all') forceAll('between', path)
+    } else if (seen.has(path)) {
+      // Rule 6 — the map has evidence for this file and no test reaches it.
+      untested.push(path)
+    } else {
+      unmapped.push(path)
+      if (unknownPolicy === 'all') forceAll('unknown-file', path)
+    }
+  }
+
   for (const change of changes) {
     const path = change.path
     if (!include(path)) continue
@@ -175,17 +199,8 @@ export function select(
         const tests = testsTouchingFile(path)
         for (const index of tests) selected.add(index)
         reasons.push({ kind: 'file', file: path, tests })
-      } else if (loadFiles.has(path) || teardownFiles.has(path)) {
-        unmapped.push(path)
-        forceAll('load', path)
-      } else if (betweenFiles.has(path)) {
-        unmapped.push(path)
-        if (betweenPolicy === 'all') forceAll('between', path)
-      } else if (seen.has(path)) {
-        untested.push(path)
       } else {
-        unmapped.push(path)
-        if (unknownPolicy === 'all') forceAll('unknown-file', path)
+        noTouches(path)
       }
       continue
     }
@@ -227,20 +242,8 @@ export function select(
       continue
     }
 
-    // Rules 2, 9, 7, 6 — the file has no per-test touches.
-    if (loadFiles.has(path) || teardownFiles.has(path)) {
-      unmapped.push(path)
-      forceAll('load', path)
-    } else if (betweenFiles.has(path)) {
-      unmapped.push(path)
-      if (betweenPolicy === 'all') forceAll('between', path)
-    } else if (seen.has(path)) {
-      // Rule 6 — the map has evidence for this file and no test reaches it.
-      untested.push(path)
-    } else {
-      unmapped.push(path)
-      if (unknownPolicy === 'all') forceAll('unknown-file', path)
-    }
+    // Rules 2, 9, 7, 6 — see `noTouches`.
+    noTouches(path)
   }
 
   // Rule 10 — a map that is dirty or far behind cannot be trusted to be complete.

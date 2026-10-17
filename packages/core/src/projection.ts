@@ -27,8 +27,15 @@ export interface ProjectionRule {
 
 const DEFAULT_EXTENSIONS: Record<string, string> = { '.js': '.ts' }
 
-/** True when `file` is inside `prefix`, on a path boundary. */
-function within(file: string, prefix: string): boolean {
+/**
+ * True when `file` is inside `prefix`, on a path boundary.
+ *
+ * Exported because relocation does the same prefix test on a resolved path — see
+ * `relocate.ts`, which shares this and nothing else from here. A plain `startsWith`
+ * would rewrite `/repo/out-nomaps-extra/...` under a rule for `/repo/out-nomaps`,
+ * pointing the map at files that do not exist.
+ */
+export function within(file: string, prefix: string): boolean {
   if (file === prefix) return true
   const normalized = prefix.endsWith('/') ? prefix : `${prefix}/`
   return file.startsWith(normalized)

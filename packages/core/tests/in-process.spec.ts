@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
 import { normalize } from '../src/normalize.js'
 import { inProcessSource } from '../src/source/in-process.js'
+import { sourceContract } from './support/source-contract.js'
 
 /** Called from a timer, outside any test window — the `@between` case. */
 function backgroundWork(): number {
@@ -72,3 +73,7 @@ test('work done on a timer between windows is visible to the next take', async (
     source.close()
   }
 })
+
+// The shared contract, so the in-process source and the out-of-process one cbd-a3v
+// will build are held to the same shape rather than to two private opinions.
+sourceContract('in-process', inProcessSource, { supportsSync: true })

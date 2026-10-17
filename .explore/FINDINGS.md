@@ -331,3 +331,187 @@ are not, and vitest in particular pays Vite's transform pipeline on every start.
 any repo and any runner via `--list-cmd` / `--run-cmd` / `--run-flag`, so the remaining work is
 supplying a command, not writing code.
 
+## 10. Gate A on the target suite — it fails, and the reason generalises (2026-10-15)
+
+The target suite was named earlier the same day as `sdk-unit` in `grizzly-platform/typescript/sdk`
+(japa 5.0.0, 18 spec files, offline, DI test doubles). §9's caveat said the target suite was
+unnamed; it no longer is, so Gate A was re-run on it. **It fails.**
+
+```
+node .explore/spike/gate-a.mjs --cwd .../grizzly-platform/typescript/sdk \
+  --list-cmd "ls tests/*.spec.ts" \
+  --run-cmd "TS_NODE_PROJECT=tsconfig.test.json node --import ts-node-maintained/register/esm bin/test.ts sdk-unit" \
+  --run-flag "--files" --ks 1,3,6,9,all --runs 5
+```
+
+japa's `--files` accumulates across repeats, so the harness drives it unmodified. 164 tests.
+
+| k (spec files) | median wall | per file |
+|---|---|---|
+| 1 | 0.750 s | 750 ms |
+| 3 | 0.992 s | 331 ms |
+| 6 | 1.161 s | 194 ms |
+| 9 | 1.203 s | 134 ms |
+| 18 | **1.567 s** | 87 ms |
+
+The fit gives φ = 40.1%, but the fit *understates* it, because `T(1)` still pays for one file's
+work. The floor can be measured directly instead — select a glob that matches nothing and time what
+is left:
+
+| what is running | wall |
+|---|---|
+| bare `node -e ''` | 0.055 s |
+| `+ ts-node-maintained/register/esm` | 0.20 s |
+| `+ import @japa/runner` | 0.32 s |
+| `+ bin/test.ts`, **zero files selected** | **0.80 s** |
+| full suite (18 files) | 1.57 s |
+
+**φ = 0.80 / 1.57 = 51%.** At P = 0 and r = 0, `S = 0.49` — below the 0.60 floor. The target is
+unreachable at *any* selection quality and *any* all-rate, not merely at a 19% one.
+
+**Correction — the margin is much thinner than that, and the first reading was sloppy.** Those two
+numbers came from different thermal states: the 0.80 s floor was a cold first run, the 1.57 s full
+run was warm after the harness had already repeated. Re-measured on the freshest clean clone
+(`grizzly-pl`, 2026-10-15, same 164 tests), warm throughout:
+
+| clone | floor (zero files) | T_full | φ |
+|---|---|---|---|
+| `grizzly-platform` (2026-10-09) | 0.79–0.92 s | 1.567 s | 51% |
+| `grizzly-pl` (2026-10-15) | **0.71–0.73 s** | **1.69 s** | **42.6%** |
+
+At P = 0 the target needs φ ≤ 40%, so the honest miss is **2.6 points**, not 11. The verdict is
+unchanged — `S_max = 0.574 < 0.60` at P = 0, so no selection quality reaches it — but it is a near
+miss rather than a demolition, and that matters strategically: of the 0.72 s floor, roughly 0.145 s
+is `ts-node` registration alone. **A floor that thin is attackable**, and a build step that took
+ts-node off the test path could plausibly flip this gate. That is a toolchain question, not a CBD
+one, and it was invisible until the two numbers were measured in the same thermal state.
+
+### The same measurement on a bigger unit suite in the same repo passes
+
+`tools/int-cli` has a suite called `unit` — 28 spec files, 1082 tests, same framework, same
+ts-node toolchain, same monorepo.
+
+| k | median wall |
+|---|---|
+| 1 | 1.263 s |
+| 4 | 2.094 s |
+| 7 | 2.546 s |
+| 14 | 3.756 s |
+| 28 | **5.161 s** |
+
+Fit: φ = 21.5%. Direct floor measurement (zero files): 0.86 s, giving φ = 16.7%. Honest range
+**φ ∈ [17%, 21.5%]**, so `S_max = 63.6%` at a 19% all-rate. **Gate A passes — but only while
+P(all) ≤ 23.6%**, which is a thin margin, and P(all) is the thing Gate B exists to measure.
+
+### What generalises, and it is the useful part of this section
+
+φ is not a property of the framework or the code. It is `floor / T_full`, and the floor is roughly
+constant for a given toolchain:
+
+| suite | framework | floor | T_full | φ | verdict |
+|---|---|---|---|---|---|
+| VS Code `vs/platform` | hand-rolled | — | 86.4 s | ≤ 0.16% | passes hugely |
+| grizzly `sdk-unit` | japa + ts-node | 0.80 s | 1.57 s | **51%** | **fails** |
+| grizzly `int-cli unit` | japa + ts-node | 0.86 s | 5.16 s | **17–21.5%** | passes, thin |
+| grizzly `tests/libs`, `edge-server`, `job-runner` | japa | ~0.8 s | smaller than `sdk-unit` | > 51% | fail, by the same argument |
+
+Solving `floor / T_full ≤ 0.236` for a ts-node + japa project gives **T_full ≳ 4 s** as the point
+below which selection cannot pay. That is a real design rule, and it was not in ADR-0004: the
+record has two gates for the *quality* of selection and none for the *size* of the suite it is
+applied to. A suite can now pass Gate B, pass Gate A's arithmetic, and still be worthless because
+60% of four seconds is two seconds.
+
+### The uncomfortable finding
+
+Every unit suite in this repo is under six seconds. The premise the project was justified by — a
+~20 minute suite that should take ~2 — **does not hold anywhere in unit scope**. The suites that
+are actually slow are the ones in `tests/stores` (`integrations.spec.ts` 831 KB, `auth-store.spec.ts`
+427 KB, `asset.spec.ts` 404 KB, `key-store.spec.ts` 205 KB), and those are `@japa/api-client`
+suites driving a separately started server, i.e. integration — the scope that was explicitly
+excluded, and whose support machinery (out-of-process `@between`, the remote inspector path) §7d
+cut from v1.
+
+So Gate A has not merely failed on one suite. It has found that the scope decision and the premise
+point in opposite directions: **the only suites where subsetting would pay are the ones that were
+scoped out.**
+
+**Caveats.** The stores suite was **not** measured — it needs a server on `localhost:3000` and
+nothing was listening, so its 20-minute claim is a project recollection, not a measurement, and the
+paragraph above leans on it. The int-cli pass is thin enough that Gate B could overturn it. Both
+grizzly numbers are single-machine and warm; `T_full` for `sdk-unit` read 2.31 s cold against
+1.57 s warm, so the *ratio* is steadier than either absolute.
+
+## 11. The stores suite, measured — and it is the whole ballgame (2026-10-16)
+
+§10 left the stores suite unmeasured and flagged that its runtime was a recollection. It has now
+been measured, and it reverses §10's conclusion.
+
+The project has a documented way to run these: `tools/dev-cli` **lanes** — a private composite
+server plus its own `postgres:16.0-alpine` container per invocation, built from a copy of the
+current `dist/`, so lanes cannot truncate each other. One lane was raised and used for every
+reading below, then taken down.
+
+```
+node tools/dev-cli/bin/dev.js lane up                    # -> blinking-grumpy, server :53846
+cd tests/stores && eval "$(node ../../tools/dev-cli/bin/dev.js lane env <id> --format dotenv)"
+/usr/bin/time -p npm test
+node tools/dev-cli/bin/dev.js lane down <id>
+```
+
+| suite | tests | wall | failures |
+|---|---|---|---|
+| `npm test` — key-server, auth-server, user-service, assets, dashboard-api, integrations | 1555 | **548.61 s (9m09s)** | 0 |
+| `test:signing` | 198 | 62.48 s | 0 |
+| `test:resilience` | 64 | 42.36 s | **21 failed** — see below |
+| `test:key` alone, measured separately | 311 | 169.33 s | 0 |
+
+**Clean total: 1753 tests, ~611 s, just over ten minutes.**
+
+`test:resilience` is not a clean reading. It ran in 42 s but 21 of 64 failed. The stores
+`bin/test.ts` documents why, in its own words: both integration suites run their own Dispatcher
+instances, so the server's dispatch loop must be OFF or it competes for the same claims, and
+"four live-delivery tests then fail intermittently with nothing in the output naming why." The
+lane's server is not configured for that suite. That is an environment mismatch, not a defect, and
+the suite's timing should not be quoted until it is run in a correctly configured lane.
+
+### Gate A on the stores suite
+
+| suite | toolchain | floor | T_full | φ | verdict |
+|---|---|---|---|---|---|
+| `grizzly-platform` `sdk-unit` | japa + ts-node | 0.72 s | 1.69 s | **42.6%** | **fails** |
+| `grizzly-platform` `int-cli unit` | japa + ts-node | 0.86 s | 5.16 s | 17–21.5% | passes, thin |
+| **`grizzly-platform` `tests/stores`** | **japa + ts-node + api-client** | **~1–3 s** | **548.6 s** | **≈ 0.5%** | **passes hugely** |
+| VS Code `vs/platform` | hand-rolled | — | 86.4 s | ≤ 0.16% | passes hugely |
+
+The stores floor was **not** measured directly; it is inferred from the unit-suite floors, which
+share the toolchain. That is a real gap, but the conclusion is insensitive to it: even at a 3 s
+floor, φ = 0.55% and `S_max = 80.4%` at a 19% all-rate, against a 60% target. It passes.
+
+Note what the table now says. `φ = floor / T_full` again, and the two suites at opposite ends are
+the *same repository, same framework, same toolchain* — differing only in size by a factor of 325.
+**Nothing about the framework or the code decides this. Size decides it.**
+
+### What changed
+
+§10 concluded that Gate A had found the scope decision and the premise pointing in opposite
+directions: the only suites where subsetting would pay are the ones scoped out. That conclusion
+survives — but the measurement now says which side gives way. The stores suites are where the
+pain is, they are exactly what `CBD.md` §1 describes ("backend suites that drive a separately
+started HTTP server"), and Gate A passes there with more margin than anywhere except VS Code.
+
+So the unit-tests-only scope was the wrong call, and `FINDINGS.md` §7d — which cut the
+out-of-process `@between` machinery, the remote inspector path and the multi-process server
+target list — removed the only suites where the tool pays. Those are not v2 polish. They are v1.
+
+**One correction to the premise itself.** The recalled figure was "20 minutes". `npm test` measures
+9m09s, and with `signing` about ten. Still a suite that hurts and still a large multiple of the
+`~2 min` target, but the recollection was roughly double the measurement, and the numbers in this
+record should be the measured ones.
+
+**Caveats.** Measured on the `grizzly-platform` clone (2026-10-09), which is six days behind
+`origin/ingest` and six days behind the sibling `grizzly-pl` (2026-10-15); the five clones all
+carry the same 10 stores spec files, so the shape is stable, but the absolute figures are from the
+older tree. Single machine, warm. `test:resilience` excluded from the total for the reason above.
+The per-suite time split was not measured — only `key-server` (169.33 s of the 548.61 s) and
+`signing` were timed individually, and output volume is not a proxy for time.
+

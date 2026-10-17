@@ -1,5 +1,5 @@
 {
-  "name": "@cbd/mocha",
+  "name": "@spikedpunch/cbd-mocha",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "test": "node scripts/build.mjs && node bin/test.js"
   },
   "dependencies": {
-    "@cbd/core": "workspace:*"
+    "@spikedpunch/cbd": "workspace:*"
   },
   "devDependencies": {
     "@japa/runner": "^5.4.0",

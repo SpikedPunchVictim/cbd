@@ -24,7 +24,7 @@
  * as possible, `installMochaAdapter` can only run once a mocha instance exists,
  * and `statusOf` is pure and can be tested on its own.
  */
-import { Recorder, type ScanOptions, type ShardSink, type Source, type TestStatus } from '@cbd/core'
+import { Recorder, type ScanOptions, type ShardSink, type Source, type TestStatus } from '@spikedpunch/cbd'
 import type Mocha from 'mocha'
 
 /** Everything the adapter needs that it cannot work out for itself. */

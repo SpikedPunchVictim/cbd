@@ -50,13 +50,15 @@ function plugin() {
   }
 }
 
+// processCLIArgs MUST precede configure — see A0 F11. As in collect-fixture,
+// the full suite is the point here.
+processCLIArgs(process.argv.slice(4))
 configure({
   files: () =>
     globSync(join(fixtureRoot, build, 'tests/**/*.spec.js')).map((p) => pathToFileURL(p)),
   plugins: [plugin()],
 })
 
-processCLIArgs(process.argv.slice(4))
 await run()
 
 // After the runner settles, rather than on `runner:end`: japa does not await

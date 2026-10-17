@@ -220,7 +220,7 @@ test('resolves through a real source map back to the TypeScript source', () => {
   const mapPath = `${generated}.map`
   assert.ok(
     existsSync(mapPath),
-    `fixture is not built: ${mapPath} missing — run \`pnpm --filter @cbd/fixture build\``,
+    `fixture is not built: ${mapPath} missing — run \`pnpm --filter @spikedpunch/cbd-fixture build\``,
   )
 
   const js = readFileSync(generated, 'utf8')

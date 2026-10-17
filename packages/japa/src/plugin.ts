@@ -1,0 +1,190 @@
+/**
+ * The japa plugin — the whole integration point, and the reason there is no
+ * `/auto` entry in this package.
+ *
+ * japa hands its plugins `{ config, cliArgs, runner, emitter }` directly (A0 F7),
+ * so the adapter needs no patch and the consumer's test files need no edit. One
+ * line in the `configure` call they already have:
+ *
+ * ```js
+ * import { cbd } from '@spikedpunch/cbd-japa'
+ * configure({ files: ['tests/**​/*.spec.js'], plugins: [cbd({ shard: process.env.CBD_SHARD })] })
+ * ```
+ *
+ * **Where the mocha adapter ships an `/auto` entry and this one does not.** mocha
+ * has a single funnel — `Mocha.prototype.run` — that a `--import` module can
+ * patch, so `NODE_OPTIONS` alone is enough to record a run nobody edited.
+ * `@japa/runner` exports only functions (`configure`, `run`, …) and no class to
+ * reach; the plugin list is read out of a module-private config, and ESM exports
+ * are read-only bindings, so there is nothing for an injected module to patch.
+ * Recording a japa run therefore costs one explicit line, and pretending otherwise
+ * with a loader hook that rewrote the consumer's own entry point would be a far
+ * larger and more fragile thing than the line it saved.
+ *
+ * **One variable decides whether there is a service to record.** `CBD_SOCKET_DIR`
+ * is the same variable the service's own environment sets to turn on the injected
+ * instrument module (ADR-0005), inherited down the tree. So the plugin does not
+ * need to be told about the service and does not invent a second way to say it: if
+ * that variable is set, a service was instrumented and is expected to be reachable,
+ * and if it is not set there is nothing out there to read. That is the whole rule,
+ * and it costs the consumer nothing to obey because they already set the variable
+ * for the server's benefit.
+ *
+ * **A configured service that cannot be reached is an error, not a shrug.** This is
+ * the case the epic exists for: a map of a suite driving a separately started server
+ * is blind to every server-side file, and a change to one resolves to a file the map
+ * has never seen, which escalates to every test. Skipping the service quietly
+ * reproduces exactly that, so a run that was asked for server coverage and cannot
+ * get it stops and says which directory it looked in.
+ *
+ * The plugin is `async` because japa awaits its plugins and because opening a
+ * coverage source is the one genuinely asynchronous step. That await happens at
+ * *install*, before the test files are imported, which is what lets the window
+ * boundaries stay synchronous — the requirement japa imposes (A0 F1).
+ */
+import {
+  FileSink,
+  SOCKET_DIR_ENV,
+  inProcessSource,
+  rescanningSocketSource,
+  scanFromEnv,
+  type Recorder,
+  type ScanOptions,
+} from '@spikedpunch/cbd'
+import {
+  applyTests,
+  beginShard,
+  installJapaAdapter,
+  type JapaConfigLike,
+  type JapaEmitter,
+} from './adapter.js'
+
+export interface CbdOptions {
+  /** Set `false` to make the plugin inert without removing it from the array. */
+  enabled?: boolean
+  /** Where to write shard records. Defaults to `CBD_SHARD`. */
+  shard?: string
+  /** Defaults to `CBD_COMMIT`, then `'unknown'`. */
+  commit?: string
+  /** Defaults to `scanFromEnv()`. */
+  scan?: ScanOptions
+  /**
+   * Restrict the run to these test titles — the select half.
+   *
+   * Titles, not indices, and *bare* titles: japa filters on the unqualified name
+   * and a qualified one matches nothing (A0 F10). `titlesFor` turns a `Selection`
+   * into this list; resolving the selection itself from a map and a diff is the
+   * caller's job, and is not yet wired.
+   */
+  only?: string[]
+}
+
+/** What japa passes a plugin. The two fields this adapter uses. */
+export interface JapaPluginApi {
+  config: JapaConfigLike
+  emitter: JapaEmitter
+}
+
+export type JapaPlugin = (japa: JapaPluginApi) => Promise<void>
+
+/** What both recorders of a run share. */
+interface Wiring {
+  commit: string
+  scan?: ScanOptions
+}
+
+/**
+ * Where the service's shard goes.
+ *
+ * Derived from the test process's shard rather than configured separately, because
+ * two variables for one run is one variable too many — and a second shard path that
+ * had to be kept in step with the first by hand is a thing to get wrong. The suffix
+ * goes before the extension so that `x.ndjson` and `x.service.ndjson` sort together
+ * and a glob for shards still matches both.
+ *
+ * The last dot is only an extension if nothing after it is a path separator; in
+ * `/tmp/a.b/c` the dot belongs to a directory name, and appending is the honest
+ * answer.
+ */
+export function serviceShardPath(shard: string): string {
+  const dot = shard.lastIndexOf('.')
+  const slash = shard.lastIndexOf('/')
+  if (dot === -1 || dot < slash) return `${shard}.service`
+  return `${shard.slice(0, dot)}.service${shard.slice(dot)}`
+}
+
+/**
+ * The recorders a run needs, opened in the order their windows are taken.
+ *
+ * Returned as a list rather than installed here, so that the decision — is there a
+ * service, and is it reachable — can be exercised without an emitter and without
+ * japa.
+ */
+export async function recordersFor(
+  env: NodeJS.ProcessEnv,
+  shard: string,
+  wiring: Wiring,
+): Promise<Recorder[]> {
+  const dir = env[SOCKET_DIR_ENV]
+
+  // Reached before either shard is opened, so that a service which cannot be
+  // reached leaves nothing behind. Opening the test process's shard first would
+  // drop a header-only file on disk, and a header with no footer is exactly the
+  // "interrupted run" shape a later reader has to stop and reason about.
+  //
+  // Deliberately not wrapped in a try/catch that would fall back to the test
+  // process alone. That fallback is the failure this whole task exists to remove,
+  // and it would be invisible: the shard would be well-formed and the map would
+  // simply have no server-side functions in it.
+  //
+  // `rescanningSocketSource`, not `socketSource`, and the difference only shows up
+  // later: a suite that starts services of its own gets them read too, from the
+  // window that starts them onward (ADR-0007). The install-time contract is
+  // unchanged — a directory with nothing in it is still an error rather than a
+  // silent empty map.
+  const service = dir === undefined || dir === '' ? null : await rescanningSocketSource({ dir })
+
+  const recorders = [
+    beginShard({
+      ...wiring,
+      source: await inProcessSource(),
+      sink: new FileSink(shard),
+    }),
+  ]
+
+  if (service !== null) {
+    recorders.push(
+      beginShard({
+        ...wiring,
+        source: service,
+        sink: new FileSink(serviceShardPath(shard)),
+        // The service's execution is the service's. Both shards are merged later by
+        // `buildMap`, which unions the touch sets of a test recorded twice.
+        pid: service.pid,
+      }),
+    )
+  }
+
+  return recorders
+}
+
+export function cbd(options: CbdOptions = {}): JapaPlugin {
+  return async function cbdPlugin({ config, emitter }: JapaPluginApi): Promise<void> {
+    if (options.enabled === false) return
+
+    const shard = options.shard ?? process.env.CBD_SHARD
+    if (shard !== undefined) {
+      const scan = options.scan ?? scanFromEnv()
+      const commit = options.commit ?? process.env.CBD_COMMIT ?? 'unknown'
+      const recorders = await recordersFor(process.env, shard, {
+        commit,
+        ...(scan === undefined ? {} : { scan }),
+      })
+      installJapaAdapter(emitter, recorders)
+    }
+
+    // Selecting and recording are independent: a run can be narrowed without
+    // being recorded, and recorded without being narrowed.
+    if (options.only !== undefined) applyTests(config, options.only)
+  }
+}

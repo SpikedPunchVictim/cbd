@@ -19,7 +19,7 @@
  * change to it escalates through the unknown-file rule to `all`.
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -94,6 +94,38 @@ test('a script with no source map still projects', () => {
     )
     assert.equal(touched.length, 1)
     assert.equal(touched[0]?.file, join(tree.root, 'mod.ts'))
+    assert.equal(touched[0]?.via, 'projection')
+  } finally {
+    tree.cleanup()
+  }
+})
+
+/**
+ * A script with neither a map nor anything to project is its own original file.
+ *
+ * This is the shape a service under test usually has, and it is the one shape that
+ * had never been exercised: `out-maps` carries readable maps and `out-nomaps` is
+ * always run with a projection rule, so the empty rule list — no map, nothing to
+ * rewrite — was only ever reached by accident. It resolved to `null`, which dropped
+ * the script entirely.
+ *
+ * The cost of getting it wrong is not a wrong map so much as a *useless* one: every
+ * file of that service resolves to unknown and a change to any of them selects the
+ * whole suite. Nothing fails, so nothing says so.
+ */
+test('a script with no map and no projection rule is its own original file', () => {
+  const tree = makeTree('none')
+  try {
+    const url = pathToFileURL(tree.file).href
+    const start = BODY.indexOf('function alpha')
+    const touched = normalize(
+      payloadFor(url, start, BODY.indexOf('}', start) + 1, 1),
+      fakeSource(new Map([['1', { url }]])),
+    )
+    assert.equal(touched.length, 1, 'an unmapped script with nothing to project went missing')
+    // The realpath, because `canonicalPath` resolves symlinks — on macOS the temp
+    // directory is reached through one.
+    assert.equal(touched[0]?.file, realpathSync(tree.file), 'it should be recorded as itself')
     assert.equal(touched[0]?.via, 'projection')
   } finally {
     tree.cleanup()

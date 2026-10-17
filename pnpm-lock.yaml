@@ -37,9 +37,25 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/japa:
+    dependencies:
+      '@spikedpunch/cbd':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@japa/runner':
+        specifier: ^5.4.0
+        version: 5.4.0
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
   packages/mocha:
     dependencies:
-      '@cbd/core':
+      '@spikedpunch/cbd':
         specifier: workspace:*
         version: link:../core
     devDependencies:

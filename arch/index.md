@@ -22,6 +22,9 @@ missing family.
 | [0002](decisions/0002-resolve-at-build-time.md) | Resolve coverage at build time, not in the test window | draft |
 | [0003](decisions/0003-factory-and-two-tiers.md) | One factory, five verbs, two tiers | draft |
 | [0004](decisions/0004-success-metric.md) | The success metric is a product, and it is constrained | draft |
+| [0005](decisions/0005-inject-not-attach.md) | Reach a service by injecting into it, not by attaching to it | draft |
+| [0006](decisions/0006-relocate-a-deployed-copy.md) | Relocate a path that resolved into a deployed copy | draft |
+| [0007](decisions/0007-a-service-the-suite-starts-itself.md) | Attribute a service the suite starts itself | draft |
 
 ## Planned
 

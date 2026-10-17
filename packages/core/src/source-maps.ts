@@ -151,7 +151,23 @@ function createProjectionResolver(
   // prefix in a config is exactly as typed. Comparing one canonical form against one
   // literal form matches nothing, drops every script and empties the map — without
   // an error, and without under-selecting, which is why it is easy to miss.
-  const projected = projectPath(canonicalPath(generatedPath), rules)
+  const canonical = canonicalPath(generatedPath)
+
+  // **No rules is not the same answer as no rule matched.** `projectPath` returns
+  // `null` for a file no rule describes, and that is the right answer when rules
+  // exist: the file is outside the projection, so nothing is known about where it came
+  // from. But an empty rule list means there is no projection in play at all, and then
+  // the script's own file *is* its original file. Reading the two as one dropped every
+  // unmapped script whose path needed no rewriting — a plain JavaScript service, or a
+  // build whose output path is its source path.
+  //
+  // Measured, and the reason this paragraph exists: a service started on its own
+  // (`cbd-a3v.3.4`) reported all six of its functions in every take that arrived over
+  // the socket, and not one of them reached the map. The map was well-formed, the run
+  // was green, and every file of that service resolved to "unknown" — the safe
+  // direction, which escalates to `all` rather than under-selecting, and therefore the
+  // direction nothing was watching.
+  const projected = rules.length === 0 ? canonical : projectPath(canonical, rules)
   if (projected === null) return null
   return {
     via: 'projection',

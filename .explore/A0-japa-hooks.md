@@ -111,14 +111,52 @@ configure({ plugins: [cbd()] })
 ```
 
 with **zero changes to user test files**. This is cleaner than the approach §7 sketches,
-and it is how `@cbd/auto` would inject itself for the "developer runs tests the way they
+and it is how `@spikedpunch/cbd/auto` would inject itself for the "developer runs tests the way they
 always do" requirement.
 
-## F8 — import-time hooks are where the test→file map comes from.
+## F8 — japa hands over the test's file itself: `meta.fileName`. *(Corrected 2026-10-16.)*
 
-`runner.onSuite`, `suite.onTest`, `suite.onGroup` and `group.tap` all fire during *file
-import*, before `runner:start` (observed at seq 000–006, before `runner:start` at 007).
-That is a free, precise source of "test X is defined in file Y" without parsing source.
+**What this said first was wrong.** It claimed `runner.onSuite`, `suite.onTest`,
+`suite.onGroup` and `group.tap` are *where the test→file map comes from* — that catching the
+test at its defining call site during import yields the file. They do all fire during file
+import, before `runner:start` (observed at seq 000–006). But firing at the right *moment* is not
+the same as carrying the *answer*: what those callbacks receive is a title, and a suite is
+configured over a set of files, so neither identifies one file. Later I over-corrected and
+concluded japa exposes no file for a test at all, which was also wrong, and which blocked
+`cbd-cpy` until it was checked against the shipped build.
+
+**The file arrives on `meta`, set by japa, needing nothing from the test author.**
+`runner/build/index.js` sets `executionPlanState.file = fileURLToPath(fileURL)` immediately
+before importing each file; `create_test` then does `testInstance.options.meta.fileName =
+options.file` (and the same for groups); and the core emits `test:start` as
+`{ ...test.options, title, isPinned }`. So the payload carries it.
+
+Verified at runtime with `probe/bin/files.js` — two fixture files, `a.js` and `b.js`, same
+shape, so each observation can be checked against the file it *should* name:
+
+```
+  suite.onTest   import   a-lone      fileName=…/tests/files/a.js
+  group.tap      import   a-grouped   fileName=…/tests/files/a.js
+  suite.onTest   import   b-lone      fileName=…/tests/files/b.js
+  group.tap      import   b-grouped   fileName=…/tests/files/b.js
+  test:start     emitter  a-lone      fileName=…/tests/files/a.js
+  test:end       emitter  a-lone      fileName=…/tests/files/a.js
+  group:start    emitter  a-group     fileName=…/tests/files/a.js
+```
+
+`meta` on `test:start` is `[abort, fileName, group, suite]`. It is present **before the window
+opens**, so the adapter writes the map entry as the window opens rather than buffering to
+retrofit at `test:end`. `TestStartNode = Omit<TestOptions, 'title'> & {…}` and `TestOptions.meta`
+is `Record<string, any>`, so it is in the declared type, not a private field.
+
+**The stack walk is dead, and the probe is why we know.** Every row above shows
+`stack[0] = lib/file-probe-plugin.js` — the plugin's own file. japa invokes these callbacks from
+its own frame, so a stack walk finds the *plugin*, not the test, at both import time and run
+time. Option (a) — an ESM loader hook — is unnecessary. Neither was needed; the file was on the
+payload the whole time.
+
+**Upstream has nothing newer to offer.** Checked 2026-10-16: `@japa/core` 10.4.0 and
+`@japa/runner` 5.4.0 are the latest published, which is what was already installed.
 
 ## F9 — the async/sync seam, and what it means for integration testing later.
 
@@ -143,8 +181,113 @@ integration-testing door open.
 
 ---
 
+## F10 — a test's name is its **bare** title. The group is a separate thing.
+
+`TestRunner#getTitle` (core build, ~line 530):
+
+```js
+#getTitle(dataset) {
+  const title = this.#test.options.title
+  return { original: title, expanded: dataset ? interpolate(title, dataset.row, dataset.index + 1) : title }
+}
+```
+
+**With no dataset, `expanded === original`** — including for a test inside a group. The group
+does *not* prefix the title; it arrives separately as `meta.group`. Observed:
+
+```
+START: {"o":"a-grouped","e":"a-grouped","g":"a-group"}   ← inside test.group('a-group', …)
+START: {"o":"a-lone",   "e":"a-lone"}
+```
+
+This matters because it decides what the map keys a test by, and because japa's filter matches
+the bare title and nothing else (`Refiner#isTestTitleAllowed`, core build line 963):
+
+```js
+#isTestTitleAllowed(test) {
+  if (!this.#filters.tests.length) return true
+  return this.#filters.tests.includes(test.title)
+}
+```
+
+So `--tests a-grouped` selects one test; `--tests "a-group a-grouped"` selects **nothing**,
+silently. Had the adapter recorded a qualified name and emitted it back, every filter would have
+matched zero tests — a *miss*, which is the single failure direction this project forbids. The
+map therefore keys on the bare title, and the adapter emits the bare title.
+
+## F11 — `configure()` snapshots `cliArgs` when it is called, so CLI filters are dropped silently.
+
+`runner` build, index.js 137–142:
+
+```js
+function processCLIArgs(argv) { cliArgs = new CliParser().parse(argv) }
+function configure(options) { runnerConfig = new ConfigManager(options, cliArgs).hydrate() }
+```
+
+`configure` reads the module-level `cliArgs` **at call time**. Call it before `processCLIArgs` —
+which is what every entry point in this repo did — and it hydrates with the initial empty parse,
+where `tests` is `""`. `#getCLIFilters` tests truthiness, so no filter is ever applied.
+
+Demonstrated on CBD's own suite:
+
+```
+$ node bin/test.js --tests zzz-no-such-test-xyz
+Tests  120 passed (120)      ← a filter matching nothing ran everything
+```
+
+**This is a product-level hazard, not a papercut.** CBD's speedup *is* the filter. A discarded
+`--tests` yields a green run, zero speedup, and no error — the developer concludes the tool does
+not help, and nothing anywhere says why. It also means **no selection run in this repo has ever
+actually been filtered**; any earlier "select" result was vacuous, because the CLI args were
+ignored and the full suite ran.
+
+**The fix is to not use CLI args at all.** The plugin receives `config`, and mutating
+`config.filters.tests` there works *regardless* of the consumer's ordering, because the plugin
+runs inside `run()` while the refiner filters are read afterwards by `Planner.plan()`:
+
+```
+$ node bin/dbg2.js    # configured the WRONG way round, on purpose
+START: {"o":"a-grouped","e":"a-grouped"}
+Tests  1 passed (1)
+```
+
+So the adapter's select half sets `config.filters.tests` from the plugin. It requires nothing
+from the user's npm script, cannot be broken by call order, and removes a class of silent
+no-op. Two traps to avoid in the same area: **never emit `--groups`** — `Refiner#allows` line
+1000 rejects every ungrouped test as soon as `groups` is non-empty (`if (this.#filters.groups.length
+&& !testOrGroup.parent) return false`), so it silently drops tests; and be aware bare titles can
+collide across groups, where a filter naming one runs both. Collisions over-select, which is the
+safe direction, but the map should know they exist.
+
+## F12 — `runner:end` **does** await an async listener, so a deferred drain can live there.
+
+F1 says japa does not await `emit` for the per-test events. That is true, and it is not true of
+`runner:end`, and the difference is what makes out-of-process recording possible at all.
+
+An out-of-process window cannot be written when its boundary is crossed — the reply has not come
+back yet. So the drain has to happen somewhere japa waits. `runner.end()` returning a promise and
+japa awaiting it is *not* the same claim as japa awaiting a promise returned by a listener on
+`runner:end`; the first does not imply the second. Emittery does await listener return values, so
+it should hold — which is exactly why it was measured rather than read.
+
+```
+$ node bin/test.js
+  async handlers landed late ....... 5 of 5, at seq [27,28,29,30,31] — after seq 32
+  runner:end awaits an async listener . YES — already settled when run() resolved
+```
+
+Both facts hold at once, and the combination is the design: a 30 ms listener on `test:end` lands
+after every test has finished, while a 30 ms listener on `runner:end` has already settled on the
+line after `await run()` returns. So per-test boundaries must be synchronous and the *end* of the
+run need not be.
+
+The measurement is read on the line immediately after `run()` resolves. Any later read is
+worthless: the probe's own report sleeps to let detached listeners land, which would set the flag
+whether or not japa ever waited for it.
+
 ## Reproduction
 
 ```sh
-cd probe && node bin/test.js
+cd probe && node bin/test.js      # F1–F9, F12: hook order, window boundaries, the end drain
+cd probe && node bin/files.js     # F8/F10, two fixture files, per-file attribution
 ```

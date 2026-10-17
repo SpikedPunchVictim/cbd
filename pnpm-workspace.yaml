@@ -1,6 +1,12 @@
 packages:
   - 'packages/*'
-  # Stage A0 only: hook-order probe. Deleted once the japa adapter lands.
+  # Stage A0: hook-order and test-identity probe. KEPT, not deleted when the japa
+  # adapter landed, because it is the reproduction for the japa facts the decision
+  # records cite — `probe/bin/files.js` is the evidence for A0 F8/F10/F11, which
+  # `arch/decisions/0005-inject-not-attach.md` and `.explore/A0-japa-hooks.md`
+  # both reference. packages/japa/fixture/ is not a substitute: it proves the
+  # adapter works, not that japa behaves as claimed. Revisit if those citations
+  # ever move.
   - 'probe'
   # Stage A1 onward: the fixture project CBD is developed and tested against.
   # Not published — a stand-in for a real consumer repo.

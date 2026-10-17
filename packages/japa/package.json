@@ -1,0 +1,24 @@
+{
+  "name": "@spikedpunch/cbd-japa",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "japa adapter: turns a plain japa run into per-test coverage windows, and selects with them.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@spikedpunch/cbd": "workspace:*"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

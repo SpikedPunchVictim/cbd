@@ -19,7 +19,7 @@ Also wanted: the **inverse map** — "what code does no test reach?" Same data, 
 backwards. Zero under-selection risk.
 
 Seamless integration is a requirement: the developer runs `japa`/`vitest` as usual and CBD
-works behind the scenes. `@cbd/auto` via `NODE_OPTIONS="--import …"`, no `cbd` command to
+works behind the scenes. `@spikedpunch/cbd/auto` via `NODE_OPTIONS="--import …"`, no `cbd` command to
 remember.
 
 ## Layout
@@ -34,7 +34,7 @@ IMPLEMENTATION_PLAN.md     stages, status, kill criteria
   spike/                   measure.mjs, ordinal-probe.mjs (+ generated corpora, gitignored)
 probe/                     A0 hook probe (scaffolding; delete once the adapter lands)
 fixture/                   A1: stand-in consumer repo, 15 specs / 43 tests
-packages/core/             A2: @cbd/core
+packages/core/             A2: @spikedpunch/cbd
 ```
 
 Toolchain: Node 24.18.0, pnpm 11.17.0, TypeScript 7.0.2 (the native port), japa 5.4.0,

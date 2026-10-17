@@ -12,6 +12,7 @@
  * should leave evidence of how far it got.
  */
 import { appendFileSync } from 'node:fs'
+import type { DriftStats } from './types.js'
 
 export const SHARD_VERSION = 1
 
@@ -54,6 +55,23 @@ export interface ShardFooter {
   type: 'end'
   tests: number
   finishedAt: string
+  /**
+   * How far this run's window boundaries landed from where they were meant, when
+   * the source that produced them had a boundary to miss. Absent for a synchronous
+   * source, whose take answers in the tick it was asked and has no distance to
+   * travel.
+   *
+   * It is in the record rather than in a caller's memory because it is a property of
+   * the run, and a run is read long after the process that produced it has gone. A
+   * map built from windows that slid is a map whose attribution is approximate, and
+   * the difference between "this run was sharp" and "this run was not" should be
+   * legible from the shard alone — the alternative is re-reading the source's
+   * docblock and hoping.
+   *
+   * Additive and optional, so a shard written before this field existed still parses
+   * and still means what it said.
+   */
+  drift?: DriftStats
 }
 
 export type ShardRecord = ShardHeader | ShardTest | ShardBucket | ShardFooter

@@ -60,14 +60,14 @@ Option 2, in two tiers.
 the MCP server and a library caller be thin renderers over the same code path rather than three
 implementations. `select` already exists and carries the whole §8.3 rule table.
 
-**Tier 2 — `@cbd/core/adapter`:** `Recorder`, `inProcessSource`, `FileSink`, `parseShard`,
+**Tier 2 — `@spikedpunch/cbd/adapter`:** `Recorder`, `inProcessSource`, `FileSink`, `parseShard`,
 documented as unstable and for adapter authors, which is us.
 
 Two consequences of keeping the surface small that are worth recording as decisions in their own
 right:
 
 - **`collect` is not a core verb.** Running the test suite is process orchestration, so it belongs
-  to `@cbd/cli`. This keeps `child_process` out of a framework-neutral library.
+  to `@spikedpunch/cbd-cli`. This keeps `child_process` out of a framework-neutral library.
 - **`verify` takes outcomes as data, not a command to run.** Same reason, and it makes verification
   unit-testable without spawning anything.
 

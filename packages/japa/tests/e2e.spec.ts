@@ -1,0 +1,98 @@
+/**
+ * End-to-end tests: the built plugin, real japa, real test files.
+ *
+ * `adapter.spec.ts` pins the wiring against a stub recorder, which is the right
+ * level for "which field does the title come from". It cannot answer the question
+ * the package is actually sold on — *does a selection take effect, and does a
+ * recorded run name the file a test lives in?* — because both are properties of
+ * japa's behaviour rather than of this code. So these spawn a child process
+ * running the real thing. A child, because japa's `configure`/`run` are module
+ * globals and there is exactly one run per process.
+ */
+import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { test } from '@japa/runner'
+
+const BIN = fileURLToPath(new URL('../../bin/e2e.js', import.meta.url))
+
+function runE2e(mode: string, env: NodeJS.ProcessEnv = {}): string {
+  return execFileSync(process.execPath, [BIN, mode], {
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+}
+
+/** japa's summary line is the count, and japa colour-codes it with escapes. */
+function passedCount(stdout: string): number {
+  const match = /(\d+) passed/.exec(stdout.replace(/\u001b\[[0-9;]*m/g, ''))
+  assert.ok(match !== null, `no "N passed" in output:\n${stdout}`)
+  return Number(match[1])
+}
+
+type ShardRecord = { type: string; [key: string]: unknown }
+
+function readShard(path: string): ShardRecord[] {
+  return readFileSync(path, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as ShardRecord)
+}
+
+test.group('japa adapter e2e', () => {
+  test('an unselected run runs the whole fixture suite', () => {
+    assert.equal(passedCount(runE2e('full')), 4)
+  })
+
+  // The product claim, stated as a test: selecting narrows the run.
+  test('a selection narrows a real japa run to the selected test', () => {
+    assert.equal(passedCount(runE2e('only')), 1)
+  })
+
+  test('a recorded run names the file each test was defined in', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      runE2e('record', { CBD_SHARD: shard })
+
+      const records = readShard(shard)
+      const tests = records.filter((r) => r.type === 'test')
+
+      assert.equal(tests.length, 4)
+
+      // The whole point of A0 F8: the file comes from japa, not from a stack walk
+      // or from parsing the test source. Each name is checked against the file it
+      // *should* be in, so a shard that merely had some non-null file would fail.
+      const fileOf = (title: string): unknown =>
+        tests.find((t) => t.title === title)?.file
+      for (const title of ['alpha-lone', 'alpha-grouped']) {
+        assert.match(String(fileOf(title)), /fixture\/tests\/a\.spec\.js$/, title)
+      }
+      for (const title of ['beta-lone', 'beta-grouped']) {
+        assert.match(String(fileOf(title)), /fixture\/tests\/b\.spec\.js$/, title)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a recorded run brackets the suite with a header and a footer', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      runE2e('record', { CBD_SHARD: shard })
+
+      const records = readShard(shard)
+      assert.equal(records.at(0)?.type, 'shard')
+      assert.equal(records.at(0)?.commit, 'e2e')
+      assert.equal(records.at(-1)?.type, 'end')
+      assert.equal(records.at(-1)?.tests, 4)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

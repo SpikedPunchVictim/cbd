@@ -24,6 +24,7 @@ const state = {
   betweenHits: new Set(),
   takeSyncWorked: null,
   lateArrivals: 0,
+  runnerEndAwaited: null,
 }
 
 function record(label, detail = '') {
@@ -132,6 +133,25 @@ export function cbdProbe() {
       emitter.on(name, (node) => record(name, pick(node ?? {})))
     }
 
+    // ---- the experiment a deferred window depends on ----------------------
+    //
+    // An out-of-process window cannot be written when its boundary is crossed,
+    // because the reply has not come back yet: it has to be drained somewhere
+    // japa actually waits. `runner:end` is the candidate — but "japa awaits
+    // runner.end()" and "japa awaits a promise *returned by* a runner:end
+    // listener" are different claims, and the first does not imply the second.
+    // Emittery does await listener return values, so this should hold; that is
+    // exactly why it is worth a measurement rather than a reading.
+    //
+    // Read in bin/test.js the instant `run()` resolves. Reading it later would
+    // not distinguish "japa waited" from "it landed on its own while something
+    // else slept", which is the whole question.
+    emitter.on('runner:end', async () => {
+      await new Promise((r) => setTimeout(r, ASYNC_DELAY_MS))
+      state.runnerEndAwaited = true
+      record('runner:end:ASYNC', 'settled')
+    })
+
     runner.onSuite((suite) => {
       record('runner.onSuite', suite.name)
       suite.onTest((t) => record('suite.onTest', t.title))
@@ -146,8 +166,16 @@ export function cbdProbe() {
   }
 }
 
-export async function probeReport() {
-  // Let the deliberately-async listeners land, so the log shows where they
+/**
+ * Whether the async `runner:end` listener had already settled when `run()`
+ * resolved. Must be called immediately after `await run()`, before anything
+ * yields — see the comment on the listener.
+ */
+export function runnerEndSettledBeforeReport() {
+  return state.runnerEndAwaited === true
+}
+
+export async function probeReport(runnerEndAwaitedAtRunEnd) {  // Let the deliberately-async listeners land, so the log shows where they
   // actually fell rather than reporting a count of zero because we raced them.
   await new Promise((r) => setTimeout(r, ASYNC_DELAY_MS * 4))
 
@@ -174,6 +202,13 @@ export async function probeReport() {
   const lastSyncSeq = Math.max(...log.filter((e) => e.label !== 'test:end:ASYNC-late').map((e) => e.seq))
   console.log(`  async handlers landed late ....... ${state.lateArrivals} of ${perTest.size}, at seq [${lateSeqs.join(',')}] — after seq ${lastSyncSeq}`)
   console.log(`  getActiveTest() usable in a hook . ${[...perTest.values()].some((v) => v.activeVisibleInHook) ? 'YES' : 'NO — undefined'}`)
+  console.log(
+    `  runner:end awaits an async listener . ${
+      runnerEndAwaitedAtRunEnd === true
+        ? 'YES — already settled when run() resolved'
+        : 'NO — run() resolved first; a deferred drain cannot live there'
+    }`,
+  )
 
   console.log('\n========== per-test deltas (sync windows) ==========')
   for (const [title, v] of perTest) {

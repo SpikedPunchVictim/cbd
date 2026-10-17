@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
-import { buildMap, parseShard, summarizeShard } from '@cbd/core'
+import { buildMap, parseShard, summarizeShard } from '@spikedpunch/cbd'
 import { statusOf } from '../src/adapter.js'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')

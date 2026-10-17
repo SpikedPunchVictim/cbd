@@ -1,5 +1,5 @@
 /**
- * `NODE_OPTIONS="--import @cbd/mocha/auto"` and mocha records itself.
+ * `NODE_OPTIONS="--import @spikedpunch/cbd-mocha/auto"` and mocha records itself.
  *
  * The same bargain the japa adapter makes: no `cbd` command to remember, and
  * nothing to add to the consumer's test files or npm scripts. japa handed its
@@ -24,7 +24,7 @@
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { FileSink, inProcessSource, type ScanOptions } from '@cbd/core'
+import { FileSink, inProcessSource, scanFromEnv } from '@spikedpunch/cbd'
 import { beginShard, installMochaAdapter, type InstalledAdapter } from './adapter.js'
 import type Mocha from 'mocha'
 
@@ -57,29 +57,7 @@ function resolveMocha(): typeof import('mocha') {
       failures.push(`  from ${base}: ${(error as Error).message}`)
     }
   }
-  throw new Error(`@cbd/mocha/auto could not resolve "mocha":\n${failures.join('\n')}`)
-}
-
-/**
- * The scan options the adapter cannot guess for itself.
- *
- * `CBD_PROJECTION_FROM` / `CBD_PROJECTION_TO` describe one projection rule,
- * `<from>` → `<to>` with the default `.js` → `.ts` extension swap. For VS Code
- * that is `<root>/out` → `<root>`, turning `out/vs/platform/x.js` back into
- * `src/vs/platform/x.ts`. Projection is only needed for a build with no source
- * maps; where maps exist the resolver prefers them, and rightly so — an esbuild
- * transform is not line-preserving, so projecting its output would be a guess.
- */
-function scanFromEnv(): ScanOptions | undefined {
-  const from = process.env.CBD_PROJECTION_FROM
-  const to = process.env.CBD_PROJECTION_TO
-  const include = process.env.CBD_INCLUDE
-
-  const scan: ScanOptions = {}
-  if (from !== undefined && to !== undefined) scan.projection = [{ from, to }]
-  if (include !== undefined) scan.include = (file) => file.startsWith(include)
-
-  return Object.keys(scan).length === 0 ? undefined : scan
+  throw new Error(`@spikedpunch/cbd-mocha/auto could not resolve "mocha":\n${failures.join('\n')}`)
 }
 
 const shardPath = process.env.CBD_SHARD

@@ -1,0 +1,75 @@
+/**
+ * A stand-in for the service under test.
+ *
+ * It imports **nothing** from CBD, and that is the point: the acceptance for
+ * `cbd-a3v.1` is that a process which has never heard of this project instruments
+ * itself because one environment variable was set. A fixture that imported the
+ * instrument module directly would prove only that the module works when called.
+ *
+ * It is compiled rather than hand-written JavaScript, and compiled with source
+ * maps on, because that is the only way to test the thing most likely to be got
+ * wrong: `V8ScriptCoverage` carries no `sourceMapURL`, so if the socket does not
+ * deliver `Debugger.scriptParsed` rows the coverage cannot be resolved back to
+ * this file. Asserting on `main.ts` — a file that does not exist at runtime —
+ * fails unless the whole path works.
+ *
+ * Work is driven from stdin so the test controls the windows. Doing the work at
+ * startup instead would put it in the first take, leaving nothing to show that a
+ * take is a *delta* rather than a running total.
+ *
+ * `neverCalled` is never called by anything. It is the inverse map at socket
+ * scale: if it appears in a take, the delta is wrong.
+ */
+import { createInterface } from 'node:readline'
+
+export function normalizeKey(input: string): string {
+  return input.trim().toLowerCase()
+}
+
+export function reverseKey(input: string): string {
+  return [...normalizeKey(input)].reverse().join('')
+}
+
+export function validateSignature(signature: string): boolean {
+  return normalizeKey(signature).length > 0
+}
+
+/**
+ * A second command's worth of work, and it exists so a test can tell one window
+ * from the next. `run` reaches `reverseKey`; this reaches `persistKey`. Without
+ * two distinguishable functions, "the boundary landed where I meant it to" has no
+ * observable answer — every window would contain the same names.
+ */
+export function persistKey(key: string): string {
+  return `stored:${normalizeKey(key)}`
+}
+
+export function neverCalled(seed: number): number {
+  return seed * 2
+}
+
+const commands = createInterface({ input: process.stdin })
+
+commands.on('line', (line) => {
+  const command = line.trim()
+
+  if (command === 'run') {
+    const key = reverseKey('AbCdEf')
+    process.stdout.write(`ran key=${key} valid=${String(validateSignature(key))}\n`)
+    return
+  }
+
+  if (command === 'store') {
+    process.stdout.write(`${persistKey('GhIjKl')}\n`)
+    return
+  }
+
+  if (command === 'idle') {
+    process.stdout.write('idle\n')
+    return
+  }
+
+  if (command === 'quit') process.exit(0)
+})
+
+process.stdout.write('ready\n')

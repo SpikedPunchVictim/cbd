@@ -186,6 +186,18 @@ Input: one `RawSnapshot` per source. Output: `Touches` — a set of `(file, func
    a `dist/` file) and map the function's start offset to an original file, line and column, using
    `@jridgewell/trace-mapping` (small, fast, no native code). No map → the generated file is the
    source.
+
+   A resolved path is then rewritten by any **relocation rule** that covers it: `from` names the
+   staging root, `to` names the checkout (`CBD_RELOCATE_FROM` / `CBD_RELOCATE_TO`, ADR-0006). This
+   is the case where a service runs from a *copy* of its
+   build, as a deployed lane does: the copy's maps are correct and resolve inside the copy, so
+   without a rule the map is keyed by a path no diff can name, and a repository change either
+   misses the tests that drove it or degrades to `mode: all`. Relocation is deliberately not
+   projection: projection is for a build with no map (the generated file *is* the source), and it
+   is only sound because a 1:1 build preserves lines. Relocation claims something weaker — the
+   copy is the same tree — and is applied after a map has already done the work. Order is map →
+   relocate → include/exclude. A rule assumes the copy was built from the checkout; a stale copy
+   over-selects, which is the acceptable direction.
 4. **Name the function stably.** The key must survive edits elsewhere in the file, so it is not a
    line number. Use `name@ordinal`: the function's name (V8's `functionName`, or the nearest
    enclosing named function plus `>anon`) plus its ordinal among same-named functions in that file.
@@ -280,7 +292,7 @@ export function testKey(id: TestId): string   // "japa:key-server:tests/x.spec.t
 An adapter's whole job: compute a `TestId`, call the Recorder at the right moments, and make sure
 those calls are awaited. Target size: 100–200 lines each.
 
-### 7.1 japa (`@cbd/japa`)
+### 7.1 japa (`@spikedpunch/cbd-japa`)
 
 Facts read from the installed `@japa/runner` 5.0.0 and `@japa/core` 10.4.0:
 
@@ -299,8 +311,8 @@ Facts read from the installed `@japa/runner` 5.0.0 and `@japa/core` 10.4.0:
 The plugin:
 
 ```ts
-import { cbd } from '@cbd/japa'
-import { inProcessSource, inspectorSource } from '@cbd/core'
+import { cbd } from '@spikedpunch/cbd-japa'
+import { inProcessSource, inspectorSource } from '@spikedpunch/cbd'
 
 configure({
   suites: [...],
@@ -356,28 +368,28 @@ imported; and how to await `runEnd` (a runner teardown hook, or `runner.onEnd`, 
    `cbd: running 37 of 1,214 tests (12 changed functions in 4 files); full list: .cbd/last-selection.json`.
    When the selection is `mode: "all"`, it prints the reason and changes nothing.
 
-### 7.2 node:test (`@cbd/node-test`)
+### 7.2 node:test (`@spikedpunch/cbd-node-test`)
 
 `beforeEach` / `afterEach` hooks are awaited. Ship a module to preload with
-`node --import @cbd/node-test/register --test`, which installs global hooks in each test file's
+`node --import @spikedpunch/cbd-node-test/register --test`, which installs global hooks in each test file's
 process (node:test runs files in subprocesses by default, so each has its own in-process source and
 its own shard). The test ID comes from the `TestContext` (`t.name`, `t.fullName` on Node ≥ 22.3).
 
-### 7.3 Vitest (`@cbd/vitest`)
+### 7.3 Vitest (`@spikedpunch/cbd-vitest`)
 
 A `setupFiles` entry with `beforeEach` / `afterEach` (awaited), using `expect.getState()` /
 `task` for the ID. One source per worker. Vitest's own `@vitest/coverage-v8` must be off during a
 CBD collection: two Profiler sessions on one isolate interfere (assumed; verify).
 
-### 7.4 Jest (`@cbd/jest`)
+### 7.4 Jest (`@spikedpunch/cbd-jest`)
 
 A custom `testEnvironment` wrapping the project's one, implementing `handleTestEvent`, which Jest
 awaits: `test_start` → `testStart`, `test_done` → `testEnd`. The ID comes from the event's test and
 its parent `describe` blocks. Jest's `--coverage` off during collection, for the same reason.
 
-### 7.5 Mocha (`@cbd/mocha`)
+### 7.5 Mocha (`@spikedpunch/cbd-mocha`)
 
-A root hook plugin (`--require @cbd/mocha/register`) with `beforeEach` / `afterEach`, using
+A root hook plugin (`--require @spikedpunch/cbd-mocha/register`) with `beforeEach` / `afterEach`, using
 `this.currentTest.titlePath()`.
 
 ### 7.6 Anything else: the manual protocol
@@ -481,11 +493,11 @@ export type Reason =
 
 | package | depends on | contents |
 |---|---|---|
-| `@cbd/core` | `@jridgewell/trace-mapping` only | sources, Normalizer, Recorder, shard writer, map builder and reader, `changesSince`, `select`, queries. No test-framework imports, ever. |
-| `@cbd/cli` | core | the `cbd` binary |
-| `@cbd/japa` | core; peer `@japa/runner` ≥ 5 | the japa plugin |
-| `@cbd/node-test`, `@cbd/vitest`, `@cbd/jest`, `@cbd/mocha` | core; the framework as a peer | later adapters |
-| `@cbd/mcp` | core | optional MCP server |
+| `@spikedpunch/cbd` | `@jridgewell/trace-mapping` only | sources, Normalizer, Recorder, shard writer, map builder and reader, `changesSince`, `select`, queries. No test-framework imports, ever. |
+| `@spikedpunch/cbd-cli` | core | the `cbd` binary |
+| `@spikedpunch/cbd-japa` | core; peer `@japa/runner` ≥ 5 | the japa plugin |
+| `@spikedpunch/cbd-node-test`, `@spikedpunch/cbd-vitest`, `@spikedpunch/cbd-jest`, `@spikedpunch/cbd-mocha` | core; the framework as a peer | later adapters |
+| `@spikedpunch/cbd-mcp` | core | optional MCP server |
 
 (`@cbd` is a placeholder scope; check npm before settling on a name.)
 
@@ -534,7 +546,7 @@ per question; `--format json` gives everything.
 ### 9.4 Library use
 
 ```ts
-import { loadMap, changesSince, select } from '@cbd/core'
+import { loadMap, changesSince, select } from '@spikedpunch/cbd'
 
 const map = await loadMap({ root, near: 'HEAD' })              // nearest ancestor commit with a map
 const changes = await changesSince({ root, since: map.commit, worktree: true })
@@ -617,7 +629,7 @@ stats / verify`.
 **Status**: Not Started
 
 ### Stage 4: The japa adapter (1 day)
-**Goal**: `@cbd/japa` collecting and selecting.
+**Goal**: `@spikedpunch/cbd-japa` collecting and selecting.
 **Success Criteria**: collect on a real japa suite (the originating project's stores suites, through
 its lane mechanism), then for five historical commits `cbd verify` reports zero misses and the
 selection ratio is recorded.

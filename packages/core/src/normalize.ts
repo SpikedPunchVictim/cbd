@@ -38,6 +38,7 @@
 import { FileCache } from './line-index.js'
 import { createScriptResolver } from './source-maps.js'
 import { canonicalProjectionRules, type ProjectionRule } from './projection.js'
+import { createRelocator, type RelocationRule } from './relocate.js'
 import type { Source, V8Function, V8Range, V8ScriptCoverage } from './types.js'
 
 export interface Definition {
@@ -70,6 +71,13 @@ export type OrdinalRegistry = Map<string, Map<number, { name: string; ordinal: n
 export interface ScanOptions {
   /** Rules joining build output back to source when no map exists. */
   projection?: ProjectionRule[]
+  /**
+   * Rules joining a path that resolved into a *copy* of the tree back to the
+   * checkout, applied to the resolved ORIGINAL path — after the map, before
+   * `include`/`exclude`. For a service that runs from a deployment copy, whose
+   * maps resolve inside the copy: see `relocate.ts` and ADR-0006.
+   */
+  relocate?: RelocationRule[]
   /** Applied to the ORIGINAL file path, after resolution. */
   include?: (file: string) => boolean
   exclude?: (file: string) => boolean
@@ -114,6 +122,9 @@ export function scan(
       ? []
       : canonicalProjectionRules(options.projection)
   const prefilter = options.prefilter ?? defaultPrefilter
+  // Rules are canonicalized once here, not per resolved file: `scan` runs once per
+  // test window, and every window resolves the same few hundred paths.
+  const relocate = createRelocator(options.relocate)
   const scripts = source.scripts()
 
   // file -> key -> Definition, so a file loaded by more than one script still
@@ -136,7 +147,7 @@ export function scan(
       if (range === undefined) continue
       const at = resolver.original(range.startOffset)
       if (at === null) continue
-      located.push({ fn, range, file: at.file, startLine: at.line })
+      located.push({ fn, range, file: relocate(at.file), startLine: at.line })
     }
 
     // The module body is the function that contains all the others.

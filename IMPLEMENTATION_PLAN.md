@@ -335,7 +335,7 @@ Two consequences:
 minimist collects repeated `--run a --run b` into an array — an arbitrary selected subset can
 be passed directly, and it accepts `src/…` paths, rewriting `/^src/` → `out`.
 
-**The mocha adapter — `packages/mocha` (`@cbd/mocha`), built and green (2 tests).**
+**The mocha adapter — `packages/mocha` (`@spikedpunch/cbd-mocha`), built and green (2 tests).**
 
 VS Code runs **mocha**, not japa, so the only lifecycle wiring Phase A had did not apply. The
 core seam held up: `inProcessSource`, `Recorder`, `normalize`, the map and the selector are
@@ -487,10 +487,10 @@ against it.
 **Success criteria**: `createCbd(config)` returns `build` / `select` / `explain` / `stats` /
 `verify`; one committed `cbd.config.json`; `cbd collect -- <test command>` records and builds and
 reports in one line; `cbd select` exits 3 for `all` so a script can branch on it; adapter
-internals move behind `@cbd/core/adapter`.
+internals move behind `@spikedpunch/cbd/adapter`.
 **Tests**: each verb against the fixture; `verify` as a pure function over recorded outcomes; the
 CLI's exit codes; a config with an unknown key is tolerated.
-**Status**: Not Started. Tracked as the beads epic *B3 — @cbd/cli and the createCbd factory*.
+**Status**: Not Started. Tracked as the beads epic *B3 — @spikedpunch/cbd-cli and the createCbd factory*.
 See `arch/decisions/0003-factory-and-two-tiers.md`.
 
 B2 is what makes this necessary rather than nice. Before it, `buildMap` was a cheap merge that

@@ -57,6 +57,9 @@ function collector() {
   }
 }
 
+// processCLIArgs MUST precede configure — see A0 F11. Note this script records
+// the whole suite by design, so a `--tests` filter passed here narrows the map.
+processCLIArgs(process.argv.slice(4))
 configure({
   // A callback rather than a glob string: japa resolves glob strings against
   // its cwd, which would turn an absolute path into cwd + absolute path.
@@ -64,7 +67,6 @@ configure({
     globSync(join(fixtureRoot, build, 'tests/**/*.spec.js')).map((p) => pathToFileURL(p)),
   plugins: [collector()],
 })
-processCLIArgs(process.argv.slice(4))
 await run()
 
 mkdirSync(dirname(outFile), { recursive: true })

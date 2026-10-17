@@ -1,5 +1,5 @@
 {
-  "name": "@cbd/core",
+  "name": "@spikedpunch/cbd",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,11 +7,12 @@
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
-    ".": "./dist/src/index.js"
+    ".": "./dist/src/index.js",
+    "./instrument": "./dist/src/instrument.js"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && pnpm --filter @cbd/fixture run build && node bin/test.js"
+    "test": "node scripts/build.mjs && pnpm --filter @spikedpunch/cbd-fixture run build && node bin/test.js"
   },
   "dependencies": {
     "@jridgewell/trace-mapping": "^0.3.31"

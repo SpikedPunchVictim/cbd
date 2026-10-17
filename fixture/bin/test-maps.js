@@ -7,6 +7,8 @@
  */
 import { configure, processCLIArgs, run } from '@japa/runner'
 
-configure({ files: ['out-maps/tests/**/*.spec.js'] })
+// processCLIArgs MUST precede configure — see A0 F11. The reverse order makes
+// japa discard CLI filters silently.
 processCLIArgs(process.argv.slice(2))
+configure({ files: ['out-maps/tests/**/*.spec.js'] })
 await run()

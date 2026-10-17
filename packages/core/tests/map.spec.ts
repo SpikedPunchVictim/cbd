@@ -25,6 +25,11 @@ function header(commit = 'c0ffee'): ShardRecord {
   return { type: 'shard', version: 1, commit, pid: 1, startedAt: 'T0' }
 }
 
+/** A second process's shard, so a test can say the pid is provenance and not identity. */
+function headerFrom(pid: number, commit = 'c0ffee'): ShardRecord {
+  return { type: 'shard', version: 1, commit, pid, startedAt: 'T0' }
+}
+
 function testRecord(
   title: string,
   touches: TouchRef[],
@@ -205,4 +210,64 @@ test('functionsInFile lists what the map knows, sorted', () => {
   )
   assert.deepEqual(functionsInFile(map, A), ['add@0', 'multiply@0'])
   assert.deepEqual(functionsInFile(map, B), [])
+})
+
+/**
+ * Two shards, one test — the shape a suite driving a separately started service
+ * produces, and the reason `cbd-a3v.3` writes the service's coverage to its own
+ * shard rather than trying to fit two processes into one.
+ *
+ * The test process records what the test itself ran; the service's shard records what
+ * the service ran while that test was driving it. Both name the test the same way,
+ * because both are driven by the same japa hooks. If `buildMap` keyed tests by
+ * anything shard-specific, this would produce *two* tests of the same name and a
+ * change reaching either would select one of them — under-selecting by exactly the
+ * server half, which is the failure this work exists to prevent.
+ *
+ * The files differ on purpose. Overlapping files would pass whether the maps merged
+ * or merely collided, since the second entry would be a duplicate of the first.
+ */
+test('two shards naming one test union its touches rather than splitting it', () => {
+  const map = buildMap(
+    [
+      shard('test-process', [
+        header(),
+        testRecord('drives the key server', [ref(A, 'add@0', 1, 3)]),
+        end,
+      ]),
+      shard('service', [
+        headerFrom(9001),
+        testRecord('drives the key server', [ref(B, 'handle@0', 10, 20)]),
+        end,
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+
+  assert.equal(map.tests.length, 1, 'one test, recorded twice, is still one test')
+  assert.deepEqual(Object.keys(map.files).sort(), [A, B])
+  assert.deepEqual(testsForFunction(map, B, 'handle@0').map((t) => t.title), [
+    'drives the key server',
+  ])
+  // And the merged test reaches both halves, which is what makes a change to either
+  // file select it.
+  assert.deepEqual(
+    [...new Set([...functionsInFile(map, A), ...functionsInFile(map, B)])].sort(),
+    ['add@0', 'handle@0'],
+  )
+})
+
+// A shard's pid is provenance, not identity: the merge must not depend on it, or
+// two processes could never contribute to one test.
+test('the pid in a shard header does not affect the merge', () => {
+  const map = buildMap(
+    [
+      shard('a', [header(), testRecord('x', [ref(A, 'add@0', 1, 3)]), end]),
+      shard('b', [headerFrom(4242), testRecord('x', [ref(B, 'helper@0', 1, 2)]), end]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.equal(map.tests[0]?.title, 'x')
+  assert.deepEqual(Object.keys(map.files[A]!), ['add@0'])
+  assert.deepEqual(Object.keys(map.files[B]!), ['helper@0'])
 })
