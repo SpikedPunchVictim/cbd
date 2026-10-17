@@ -133,6 +133,25 @@ interface Target {
  */
 const ATTACH_ATTEMPTS = 2
 
+/**
+ * How often to look for a new target *between* boundaries.
+ *
+ * Attaching costs a connect and a hello, and both are asynchronous. Started at a
+ * boundary, that work lands in the same turn as the window normalization — which
+ * is where the process's own coverage, the largest payload of the run, is reduced
+ * to touches. The loop is busy for tens of milliseconds, the connect cannot
+ * complete, and the child's first take is dispatched late enough to carry the
+ * *next* test's work. Measured as `cbd-ot8`.
+ *
+ * So a socket that appears mid-window is attached while the window is still
+ * running, and by the next boundary it is an ordinary held target: the take is
+ * written synchronously in the boundary tick, before any normalization. The
+ * interval is a bound on how long a newly appeared target waits, not on when its
+ * coverage is attributed — that rule is unchanged, and is still the boundary that
+ * discovers it.
+ */
+const DISCOVERY_INTERVAL_MS = 25
+
 export async function rescanningSocketSource(
   options: RescanningSocketSourceOptions = {},
 ): Promise<QueuedSource> {
@@ -152,8 +171,8 @@ export async function rescanningSocketSource(
   const targets: Target[] = []
   /** Paths never to open again: this process's own, and a pid already held. */
   const refused = new Set<string>()
-  /** Paths with an attach in flight, so two boundaries cannot start two of them. */
-  const attaching = new Map<string, Promise<V8ScriptCoverage[]>>()
+  /** Paths with an attach in flight, so two lookers cannot start two of them. */
+  const attaching = new Map<string, Promise<Target | null>>()
   const failures = new Map<string, number>()
 
   let closed = false
@@ -205,20 +224,21 @@ export async function rescanningSocketSource(
   }
 
   /**
-   * Opens one socket, holds it if it is a process of ours to read, and — mid-run —
-   * takes the window it appeared in.
+   * Opens one socket and holds it if it is a process of ours to read.
    *
-   * `boundary` is false only at install, where the next boundary is the first one of
-   * the run and takes the whole history regardless. See the module docblock.
+   * It deliberately takes nothing. A take is a boundary event, and the boundary
+   * decides which window the target's first take is credited to; attaching is only
+   * discovery, and doing it ahead of the boundary is what keeps that take
+   * synchronous (see `DISCOVERY_INTERVAL_MS`).
    */
-  async function attach(path: string, boundary: boolean): Promise<V8ScriptCoverage[]> {
+  async function attach(path: string): Promise<Target | null> {
     try {
       const source = await socketSource({ socket: path, timeoutMs })
       // The run can end while an attach is in flight, and an unclosed `net.Socket`
       // keeps Node alive: a run that prints its summary and then hangs.
       if (closed) {
         source.close()
-        return []
+        return null
       }
       // This process's own coverage is taken in-process by the adapter's source, so
       // reading it here would double every touch the test process produced. A second
@@ -226,19 +246,66 @@ export async function rescanningSocketSource(
       if (source.pid === process.pid || targets.some((target) => target.pid === source.pid)) {
         source.close()
         refused.add(path)
-        return []
+        return null
       }
       const target: Target = { path, source, pid: source.pid }
       targets.push(target)
-      return boundary ? takeFrom(target) : []
+      return target
     } catch {
       failures.set(path, (failures.get(path) ?? 0) + 1)
-      return []
+      return null
     }
   }
 
-  for (const path of socketPaths(dir)) await attach(path, false)
+  for (const path of socketPaths(dir)) await attach(path)
   if (targets.length === 0) throw noServiceError(dir)
+
+  // Attach while the window is still running, so that the boundary does not have
+  // to. See `DISCOVERY_INTERVAL_MS`.
+  const discovery = setInterval(() => {
+    if (!closed) attachCandidates(false, [])
+  }, DISCOVERY_INTERVAL_MS)
+  discovery.unref()
+
+  /**
+   * Opens any socket not already held.
+   *
+   * `boundary` says whether this look closes a window, in which case each target
+   * this look is responsible for — including one whose attach is already in flight
+   * from a background tick — contributes its first take to that window. Waiting on
+   * an in-flight attach rather than skipping it is what keeps a socket that
+   * appeared late in a window from being credited to the *next* one: skipping it
+   * would make the next boundary the first boundary after it was held, and the
+   * whole history would move with it.
+   */
+  function attachCandidates(
+    boundary: boolean,
+    parts: Array<Promise<V8ScriptCoverage[]>>,
+  ): void {
+    let candidates: string[] = []
+    try {
+      candidates = socketPaths(dir)
+    } catch {
+      // A directory that has become unreadable is not worth taking the run down
+      // for: the targets already held can still be read, and the alternative is
+      // that a whole run's server coverage becomes empty windows.
+      candidates = []
+    }
+
+    for (const path of candidates) {
+      if (refused.has(path)) continue
+      if (targets.some((target) => target.path === path)) continue
+      if ((failures.get(path) ?? 0) >= ATTACH_ATTEMPTS) continue
+
+      let opening = attaching.get(path)
+      if (opening === undefined) {
+        opening = attach(path)
+        attaching.set(path, opening)
+        void opening.then(() => attaching.delete(path))
+      }
+      if (boundary) parts.push(opening.then((target) => (target === null ? [] : takeFrom(target))))
+    }
+  }
 
   function dispatch(): PendingTake {
     if (closed) throw new SocketSourceError('the source is closed')
@@ -252,26 +319,10 @@ export async function rescanningSocketSource(
     // would fold one test's execution into its neighbour's window.
     for (const target of targets) parts.push(takeFrom(target))
 
-    // Then a look at what is new. A directory that has become unreadable is not worth
-    // taking the run down for: the targets already held can still be read, and the
-    // alternative is that a whole run's server coverage becomes empty windows.
-    let candidates: string[] = []
-    try {
-      candidates = socketPaths(dir)
-    } catch {
-      candidates = []
-    }
-
-    for (const path of candidates) {
-      if (refused.has(path) || attaching.has(path)) continue
-      if (targets.some((target) => target.path === path)) continue
-      if ((failures.get(path) ?? 0) >= ATTACH_ATTEMPTS) continue
-
-      const promise = attach(path, true)
-      attaching.set(path, promise)
-      void promise.then(() => attaching.delete(path))
-      parts.push(promise)
-    }
+    // Then a look at what is new. Usually the background interval has already
+    // found and attached it, which is the point: this look is the fallback for a
+    // target that appeared between two ticks.
+    attachCandidates(true, parts)
 
     const settled = Promise.all(parts).then((windows) => windows.flat())
     void settled.then(
@@ -357,6 +408,7 @@ export async function rescanningSocketSource(
     close: () => {
       if (closed) return
       closed = true
+      clearInterval(discovery)
       for (const target of targets) target.source.close()
     },
   }

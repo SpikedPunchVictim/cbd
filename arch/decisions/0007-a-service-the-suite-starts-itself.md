@@ -123,7 +123,15 @@ that would have caught it are not run while the answer still looks complete.
 **A. Re-scan the socket directory at each window boundary.** One `readdirSync` per boundary
 (~393 per grizzly run, microseconds), attaching any target that has appeared since the last look.
 Cheap, obvious, no protocol change, no consumer change, and `discoverSockets` already carries the
-filters. Its one subtlety is that the attach is asynchronous and the boundary is not: a child
+filters. **The implementation also looks between boundaries, every 25 ms** — added after this
+decision was first written and measured as `cbd-ot8`: attaching costs a connect and a hello, and
+started at a boundary both land in the same turn as the window normalization, which is the largest
+synchronous block of a run. The connect then cannot complete for tens of milliseconds, so the
+child's first take is dispatched late enough to carry the *next* test's work. Looking ahead of the
+boundary makes that take a synchronous write in the boundary tick. The interval bounds how long a
+new target waits to be found; it does not change attribution, and an attach still in flight at a
+boundary is chained into that window's take rather than skipped. Its one subtlety is that the
+attach is asynchronous and the boundary is not: a child
 spawned mid-window is attached at that window's close, and the take a freshly attached child
 answers is its **entire** history, which is why it is sent at the moment the socket opens rather
 than at the next boundary — the next boundary is a different window, and the window that started
@@ -218,6 +226,10 @@ cheapest to be correct — a suite whose stand-alone tests are the ones a develo
 - **Every instrumented process pays for the snapshot.** A take in the child is work the consumer
   did not ask for; the interval is therefore a bound on both the cost and the gap, and it has to
   be named and measured rather than chosen by feel.
+- **Discovery has a second clock.** The boundary re-scan is joined by a 25 ms background look, so a
+  target that appears mid-window is attached before the boundary needs it. The cost is one
+  `readdirSync` per tick while the source is open, and the interval is the bound on how long a new
+  target waits to be found. Attribution is unchanged (`cbd-ot8`).
 - **The role vocabulary loses its teeth.** Nothing guards against a future multi-process suite
   where a child genuinely should not be read; if one appears, the guard has to come back as
   something a child cannot inherit by accident.
