@@ -517,3 +517,54 @@ wrong in the one place it did not measure, and the correction changes what the w
 the collector; the ADR read the environment. The gap between "this environment variable is spread into the
 child" and "this environment variable is set" is one grep in another repository, and it was the difference
 between "nobody looks again" and "nothing was ever there to look at".
+
+## 2026-10-18
+
+**Update** — `cbd-0gw` stage 4 ran against grizzly key-server and its rewritten criterion is met. 391 tests,
+527 s, exit 0, recorded from two shards (7.0 MB test process, 12.4 MB service). The lane's client environment
+carried the instrument (`cbd-apq`), so the four `stand-alone-boot` tests — and the fifth in the group — finally
+had a child to read.
+
+*The group, measured.* Each of the five tests holds its own child's start-up: 434–513 touches, 235–268 of them
+under `api/key-server/fastify/src` (`Config.ts`, `Server.ts`, `Routes.ts`, `OpenApi.ts`, `ServerContext.ts`).
+`Config.ts` reaches exactly those five tests and nothing else. The five children lived 345–701 ms and all left
+snapshots with coverage, so both of ADR-0007's mechanisms did the job they were assigned: a child alive across
+a boundary is attached before it, and one that dies inside its window leaves evidence.
+
+*The twelve that must stay empty.* Eleven of the twelve recorded no server execution at all; the twelfth picked
+up a stray touch of real service code, which is the over-attribution direction this project accepts. The signal
+is now masked by `cbd-qly`: almost every window carries `instrument.ts` and `instrument-protocol.ts`, because
+the module serves the take after the reset. That is a separate defect and was not fixed here.
+
+*Four defects were found by making the run possible, and all four are fixed.* They are worth naming together
+because each was invisible until the previous one was fixed.
+
+1. **Two collectors on one isolate split the counters.** `cbd-apq` puts `NODE_OPTIONS` on the test runner,
+   which is how a suite's children get it; the injected module's 500 ms self-take then competes with the
+   in-process source. `takePreciseCoverage` returns and resets counters for the whole isolate: measured, a
+   window that ran a function twice reported `count: 1` when the other client took in between. The module now
+   publishes an off switch and the in-process source stands it down, removing the socket and snapshot and
+   leaving the session connected (`stopPreciseCoverage` is the isolate's switch, not the session's).
+2. **A dead target's whole life was replayed into every later window.** The unnumbered snapshot fallback was
+   returned at every boundary after the death: one child's start-up landed in 74 windows. Numbered windows are
+   now recovered per take; the unnumbered fallback is spent once, by the window that discovered the loss.
+3. **A child too short-lived for the interval left nothing.** Three of five children lived 305–404 ms, less
+   than one 500 ms tick, and their snapshots held scripts but no coverage. `process.on('exit')` can take
+   coverage synchronously when the session is in the same process — measured, three calls reported as
+   `count: 3` from inside the handler — so the final snapshot is exact for a normal exit. ADR-0007's
+   feasibility paragraph, which said this was impossible, is corrected.
+4. **A large reply could stall in the socket buffer.** A child's first take carries its script table and
+   produced a 400 KB reply; the collector received 172 KB and stopped, because the synchronous snapshot write
+   after it blocked the loop that had to flush the rest. Per-take recovery by number makes that a slower path
+   rather than a lost window; the order stays reply-then-snapshot so the client's wait does not include the
+   write.
+
+*The cost, named.* The service shard's drift is 783 windows, mean 1.16 ms, worst 30 ms, depth 18, against a
+tightest boundary gap of 15.6 ms. Before the snapshot-per-take mechanism the same suite measured 114 µs mean;
+the difference is the 12 MB script table written after every served take, on the server's own loop. The worst
+case now exceeds the tightest gap, which is the fact `cbd-a3v.3` exists to report rather than hide. The obvious
+next step is to stop rewriting the whole table per take; filed rather than absorbed.
+
+*One flake, recorded.* An earlier full run of the same code lost one lane-driven test ("should get all
+KeyRings with cursor pagination", a 500 from the server) and reported a 548 ms worst drift. A clean rerun
+passed 391/391 in 527 s with the numbers above, so it is recorded as load-sensitive rather than attributed.

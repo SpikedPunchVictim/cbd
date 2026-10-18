@@ -154,6 +154,7 @@ class SocketClient {
   readonly #timeoutMs: number
   #nextId = 1
   #closed = false
+  #gone = false
 
   constructor(socket: net.Socket, timeoutMs: number) {
     this.#socket = socket
@@ -187,7 +188,21 @@ class SocketClient {
     pending.resolve(response)
   }
 
+  /**
+   * Whether the peer can answer again.
+   *
+   * A socket error or close is terminal — a unix socket stream is not revived. The
+   * source uses it, with `fallbackTaken`, to stop asking once the target's
+   * unnumbered lifetime has been read; numbered windows are still recovered by id.
+   * An unreadable line counts too: the stream cannot be trusted to carry the next
+   * reply.
+   */
+  get gone(): boolean {
+    return this.#gone
+  }
+
   #fail(error: Error): void {
+    this.#gone = true
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer)
       pending.reject(error)
@@ -340,6 +355,13 @@ async function openOne(
 interface Recovered {
   coverage: V8ScriptCoverage[]
   scripts: ScriptRow[]
+  /**
+   * Whether a window numbered for this take was found, rather than the unnumbered
+   * fallback. Numbered windows belong to one take and can be read as often as that
+   * take is asked for; the fallback is a whole lifetime that may be offered only
+   * once. See `fallbackTaken`.
+   */
+  matched: boolean
 }
 
 async function recoverWindow(
@@ -357,19 +379,22 @@ async function recoverWindow(
   if (file.protocol !== INSTRUMENT_PROTOCOL || file.pid !== pid) return null
 
   const coverage: V8ScriptCoverage[] = []
+  let matched = false
   for (const window of file.windows) {
-    if (window.takeId === takeId || window.sentAtUs === sentAtUs) coverage.push(...window.coverage)
+    if (window.takeId === takeId || window.sentAtUs === sentAtUs) {
+      coverage.push(...window.coverage)
+      matched = true
+    }
   }
   // A failed *write* means the request never reached the instrument at all, so
   // there is no numbered window to find. The work it was meant to carry is still
   // accumulated as "taken since the last client take", which is exactly the
   // window this dispatch asked for — so it is the right thing to return rather
-  // than an empty window. If more than one take is lost in a row the same
-  // coverage can be offered more than once; over-attribution is the direction
-  // this project accepts, and the alternative is a window recorded as empty.
-  if (coverage.length === 0) coverage.push(...file.untaken)
+  // than an empty window. It is a whole lifetime, though, not a window, and the
+  // caller may offer it only once.
+  if (!matched) coverage.push(...file.untaken)
   if (coverage.length === 0) return null
-  return { coverage, scripts: file.scripts }
+  return { coverage, scripts: file.scripts, matched }
 }
 
 // ---------------------------------------------------------------------------
@@ -584,8 +609,32 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
     )
   }
 
+  /**
+   * Whether the *unnumbered* fallback has been offered.
+   *
+   * This guards exactly one thing, and the distinction took a measurement to find.
+   * A window the instrument numbered for this take belongs to that take: it may be
+   * recovered whenever that take is asked for, and every take that was served before
+   * the socket died has one. The unnumbered fallback is different — it is the
+   * whole accumulated lifetime, and it is the right answer only for the window that
+   * discovered the loss. Offering it at later boundaries credits one test's
+   * execution to every test that follows: measured on grizzly, one dead child's
+   * start-up landed in 74 windows.
+   *
+   * So numbered windows are always recovered; the fallback is spent once.
+   */
+  let fallbackTaken = false
+
   function dispatch(): PendingTake {
     if (closed) throw new SocketSourceError('the source is closed')
+    // The target is gone and the whole lifetime it left behind has been read. A
+    // window it did not exist for is empty, which is the truth — and asking anyway
+    // would spend a write and a timeout on every remaining test. A take that was
+    // *served* before the death has a numbered window and is recovered below, so
+    // this only skips takes that could never have one.
+    if (client.gone && fallbackTaken) {
+      return { seq: nextSeq++, settle: () => Promise.resolve([]) }
+    }
 
     // Read and written in this tick, with nothing awaited between them: the
     // timestamp and the boundary are the same event or the measurement is a lie.
@@ -624,11 +673,18 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
         // A reply that never arrived is not necessarily a window that never
         // existed: the instrument kept it until we acknowledged it. Look for the
         // exact window this take was sent for.
-        const recovered = await recoverWindow(path, hello.pid, take.id, sentAtUs)
-        if (recovered !== null) {
-          absorb(recovered.scripts)
+        const window = await recoverWindow(path, hello.pid, take.id, sentAtUs)
+        if (window !== null) {
+          absorb(window.scripts)
           client.ack(take.id)
-          return recovered.coverage
+          // The unnumbered fallback is one lifetime, and it belongs to whichever
+          // window discovered that the target is gone. Every other take keeps the
+          // numbered window it was sent for, or nothing.
+          if (!window.matched) {
+            if (fallbackTaken) return []
+            fallbackTaken = true
+          }
+          return window.coverage
         }
         reportLoss(error)
         throw error

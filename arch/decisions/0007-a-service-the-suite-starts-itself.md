@@ -158,10 +158,11 @@ boots its own server, and grizzly's tests are not CBD's to edit.
 process is ending and writes it beside its socket with pid, `startedAt` and `endedAt`; the
 collector harvests the orphans and matches each to the window containing its lifetime. This is
 the only one of the options that reaches a process that died inside its window, which is all four
-of the measured cases. Its cost is real: a process dying from an uncaught error cannot await an
-inspector round-trip, and neither `process.on('exit')` nor `beforeExit` can run one, so the child
-must have snapshotted itself *before* it died — a periodic or event-driven self-take inside the
-instrument — and write that snapshot synchronously at exit.
+of the measured cases. Its cost is smaller than first recorded: an inspector take is synchronous
+when the session is in the same process, so `process.on('exit')` **can** take the exact final
+window — measured, three calls made before exit are reported as `count: 3` from inside the
+handler. What an abrupt death cannot do is run anything at all: a SIGKILL executes no handler, so
+the periodic self-take remains the bound on what a killed process leaves behind.
 
 **F. Do not attribute it; refuse to under-select.** Notice an unopened socket at the close
 boundary and mark the service half of that window unattributable, so the policy escalates to
@@ -221,8 +222,17 @@ cheapest to be correct — a suite whose stand-alone tests are the ones a develo
   by a process that ended. They merge by the same route — a `test` record naming a window — but a
   reader now has two things to hold, and the harvester is a second place where attribution can be
   wrong.
-- **A child that is SIGKILLed still yields nothing,** and so does one that dies between
-  self-snapshots. These stay a gap, and the honest bound is "coverage up to the last snapshot".
+- **A child that is SIGKILLed yields only what its last snapshot caught; one that exits normally
+  yields exactly what it ran.** The exit handler's take is synchronous, so the periodic interval
+  is no longer the bound for a clean exit — measured on grizzly, three of five `stand-alone-boot`
+  children lived 305–404 ms, less than one interval, and left snapshots with no coverage until
+  the final take was made exact. For a killed process the bound stands: "coverage up to the last
+  snapshot".
+- **A dead target's evidence has two shapes, and only one may repeat.** A window the instrument
+  numbered for a take belongs to that take and can be recovered whenever that take is asked for;
+  the unnumbered accumulator is a whole lifetime and may be offered exactly once, to the window
+  that discovered the loss. Without that distinction one dead child's start-up was credited to 74
+  windows on grizzly, because every later take re-read the same snapshot.
 - **Every instrumented process pays for the snapshot.** A take in the child is work the consumer
   did not ask for; the interval is therefore a bound on both the cost and the gap, and it has to
   be named and measured rather than chosen by feel.
@@ -230,6 +240,17 @@ cheapest to be correct — a suite whose stand-alone tests are the ones a develo
   target that appears mid-window is attached before the boundary needs it. The cost is one
   `readdirSync` per tick while the source is open, and the interval is the bound on how long a new
   target waits to be found. Attribution is unchanged (`cbd-ot8`).
+- **The collector is instrumented too, and stands down inside itself.** `NODE_OPTIONS` cannot reach
+  a suite's children without also reaching the suite's own process, so `cbd-apq` puts the injected
+  module inside the test runner. Coverage counters belong to the isolate, not to a session:
+  measured, a window that ran a function twice reports one call when a second inspector session
+  takes in between, because a take returns and resets the counters for everyone. The module
+  therefore publishes an off switch on the global it already used for its duplicate-import guard,
+  and the in-process source calls it once its own session is collecting. The module removes its
+  socket and any snapshot — a process recorded in-process must not also be reachable as a target —
+  and leaves its inspector session connected, because stopping precise coverage is the isolate's
+  switch and would turn off the collector's coverage with it. Its reason to exist in that process
+  is unchanged: being in the environment the children inherit.
 - **The role vocabulary loses its teeth.** Nothing guards against a future multi-process suite
   where a child genuinely should not be read; if one appears, the guard has to come back as
   something a child cannot inherit by accident.
@@ -240,7 +261,9 @@ cheapest to be correct — a suite whose stand-alone tests are the ones a develo
   `NODE_OPTIONS` and `CBD_SOCKET_DIR`, or a suite's own services are uninstrumented and neither
   of these mechanisms has anything to read. That change in turn needs the instrument module to
   stop keeping its host alive — it now `unref()`s its listening socket, without which an
-  instrumented test runner prints a green report and never exits.
+  instrumented test runner prints a green report and never exits — and to stand down when the
+  process containing it is the collector, without which the module's self-snapshot and the
+  in-process source split one isolate's counters and every window is silently short.
 - **Script ids are namespaced by pid, and that is not optional.** A `scriptId` is unique inside
   one isolate and not across processes, and `normalize` resolves `scripts().get(scriptId)` to
   find the `sourceMapURL`. One shard carrying several processes without namespacing would let one

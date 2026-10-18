@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
+import type { InstrumentScope } from '../src/instrument-protocol.js'
 import { normalize } from '../src/normalize.js'
 import { inProcessSource } from '../src/source/in-process.js'
 import { sourceContract } from './support/source-contract.js'
@@ -71,6 +72,37 @@ test('work done on a timer between windows is visible to the next take', async (
     )
   } finally {
     source.close()
+  }
+})
+
+/**
+ * One process, one collector.
+ *
+ * A suite that starts services of its own carries `NODE_OPTIONS`, because that is
+ * how the children are instrumented at all (ADR-0005) — which means the injected
+ * module is running in this process too. Coverage counters belong to the isolate,
+ * so a take from either client resets what the other was about to read: the
+ * module's periodic self-snapshot would silently shorten every window this source
+ * produces. It publishes an off switch for exactly this case, and the source that
+ * is collecting in this process is the one that calls it.
+ */
+test('stands the injected instrument down when one is running in this process', async () => {
+  const scope = globalThis as InstrumentScope
+  let stopped = 0
+  scope.__cbdInstrument = {
+    stop: () => {
+      stopped += 1
+    },
+  }
+  try {
+    const source = await inProcessSource()
+    try {
+      assert.equal(stopped, 1, 'the module in this process was left collecting')
+    } finally {
+      source.close()
+    }
+  } finally {
+    delete scope.__cbdInstrument
   }
 })
 

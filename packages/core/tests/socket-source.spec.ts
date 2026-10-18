@@ -475,6 +475,51 @@ test.group('socketSource dispatch', (group) => {
     })
   })
 
+  /**
+   * A gone target has one lifetime to offer, and only one window may receive it.
+   *
+   * ADR-0007's second mechanism reads a process's whole life from its snapshot when
+   * the socket no longer answers. That life belongs to the window in which the
+   * process died. Asking again at every later boundary would hand the same execution
+   * to every test after the death — measured on grizzly, one dead child's start-up
+   * was credited to 74 windows — and re-read a multi-megabyte file each time.
+   *
+   * The fixture exits through its exit handler, which writes the snapshot
+   * synchronously; the periodic self-take is what put `run`'s work into it, because
+   * an exit handler cannot await an inspector round-trip.
+   */
+  test('a target that died is recovered once, and its later windows are empty', async () => {
+    await withService({}, async (running) => {
+      await waitForSocket(running.socketPath)
+      const source = await socketSource({ dir: running.dir, timeoutMs: 5_000 })
+      try {
+        // Drain start-up, so the window below is about the work after it.
+        await source.take()
+        running.run('run')
+        await settle(700)
+
+        running.run('quit')
+        for (let i = 0; i < 200 && running.proc.exitCode === null; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10))
+        }
+        assert.notEqual(running.proc.exitCode, null, 'the fixture did not exit')
+
+        const recovered = namesOf(await source.take())
+        assert.ok(
+          recovered.has('reverseKey'),
+          `the snapshot's work was not recovered: ${[...recovered].join(', ')}`,
+        )
+
+        // The lifetime has been read and belongs to the window above. A process
+        // that is gone ran nothing in the next one, and returning the same evidence
+        // again would credit it to a test that never touched it.
+        assert.deepEqual(await source.take(), [])
+      } finally {
+        source.close()
+      }
+    })
+  })
+
   test('dispatch after close throws rather than queueing into nothing', async () => {
     await withSource({}, async (source) => {
       source.close()

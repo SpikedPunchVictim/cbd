@@ -10,10 +10,12 @@
  * only have answers outside the process.
  */
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import {
   LineSplitter,
@@ -24,7 +26,14 @@ import {
   type InstrumentResponse,
   type TakeResult,
 } from '../src/instrument-protocol.js'
-import { launchService, waitForSocket, withService } from './support/service.js'
+import {
+  INSTRUMENT_SPECIFIER,
+  launchService,
+  waitForSocket,
+  withService,
+} from './support/service.js'
+
+const PACKAGE_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 interface Client {
   request(op: InstrumentOp): Promise<InstrumentResponse>
@@ -204,5 +213,119 @@ test.group('instrument module', () => {
       await new Promise((resolve) => setTimeout(resolve, 200))
       assert.ok(service.output().includes('idle'), 'the service should still be serving')
     })
+  })
+
+  /**
+   * A process that exits normally leaves everything it ran, not just the last tick.
+   *
+   * This is the shape `cbd-0gw` measured: a stand-alone server booted by a test to
+   * fail — a wrong password, a taken port — lives for a few hundred milliseconds,
+   * which is less than the snapshot interval and gone before its boundary. The
+   * exit handler cannot await an inspector round trip, so the take it performs is
+   * synchronous, and that is only possible because the session is in this process.
+   *
+   * The process below deliberately exits inside the first interval, so the work
+   * exists nowhere but the final write.
+   */
+  test('a process that exits before the first interval still leaves its execution', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-exit-take-'))
+    const script = `
+      function afterTheLastTick() { return 42 }
+      afterTheLastTick(); afterTheLastTick()
+      process.exit(0)
+    `
+    try {
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd: PACKAGE_ROOT,
+        env: {
+          ...process.env,
+          CBD_SOCKET_DIR: dir,
+          NODE_OPTIONS: `--import ${INSTRUMENT_SPECIFIER}`,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+      })
+      assert.equal(result.status, 0, result.stderr)
+
+      const file = JSON.parse(
+        readFileSync(join(dir, `pid-${String(result.pid)}.coverage.json`), 'utf8'),
+      ) as {
+        endedAtUs?: number
+        untaken: Array<{ functions: Array<{ functionName: string; ranges: Array<{ count: number }> }> }>
+        windows: Array<{ coverage: Array<{ functions: Array<{ functionName: string; ranges: Array<{ count: number }> }> }> }>
+      }
+      assert.notEqual(file.endedAtUs, undefined, 'the exit handler did not write a final snapshot')
+
+      const counts = new Map<string, number>()
+      for (const script of [...file.untaken, ...file.windows.flatMap((window) => window.coverage)]) {
+        for (const fn of script.functions) {
+          const count = Math.max(...fn.ranges.map((range) => range.count))
+          counts.set(fn.functionName, Math.max(counts.get(fn.functionName) ?? 0, count))
+        }
+      }
+      assert.ok(
+        (counts.get('afterTheLastTick') ?? 0) >= 2,
+        `the final take did not carry the execution (saw ${String(counts.get('afterTheLastTick'))})`,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /**
+   * The off switch a collector in the same process uses.
+   *
+   * A suite must carry `NODE_OPTIONS` for the services it starts to be instrumented
+   * at all (ADR-0005), which puts this module inside the test runner too. Two
+   * coverage clients on one isolate split one stream of execution between them —
+   * each take resets the counters the other was about to read — so the in-process
+   * source stands this module down. What must be true of that is that the module
+   * leaves nothing behind: no socket for another collector to attach to, and no
+   * snapshot for a harvester to attribute to a window nobody took.
+   */
+  test('stands down on request, taking its socket and snapshot with it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-standdown-'))
+    // `-e` rather than a fixture file: the question is what the *entry point* can
+    // see after `--import` has finished evaluating, and a module with a top-level
+    // await guarantees the handle exists before the first line here runs.
+    const script = `
+      (async () => {
+        const fs = require('node:fs')
+        const socket = process.env.CBD_SOCKET_DIR + '/pid-' + process.pid + '.sock'
+        for (let i = 0; i < 400 && !fs.existsSync(socket); i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        const before = fs.existsSync(socket)
+        const handle = typeof globalThis.__cbdInstrument?.stop
+        globalThis.__cbdInstrument?.stop()
+        console.log(JSON.stringify({ before, handle, after: fs.existsSync(socket) }))
+      })()
+    `
+    try {
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd: PACKAGE_ROOT,
+        env: {
+          ...process.env,
+          CBD_SOCKET_DIR: dir,
+          NODE_OPTIONS: `--import ${INSTRUMENT_SPECIFIER}`,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+      })
+      assert.equal(result.status, 0, result.stderr)
+      const reported = JSON.parse(result.stdout.trim()) as {
+        before: boolean
+        handle: string
+        after: boolean
+      }
+      assert.deepEqual(reported, { before: true, handle: 'function', after: false })
+      assert.equal(
+        existsSync(join(dir, `pid-${String(result.pid)}.coverage.json`)),
+        false,
+        'a stopped module must not leave a snapshot behind',
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

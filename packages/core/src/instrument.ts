@@ -52,6 +52,7 @@ import {
   type HelloResult,
   type InstrumentRequest,
   type InstrumentResponse,
+  type InstrumentScope,
   type ScriptRow,
   type SnapshotFile,
   type SnapshotWindow,
@@ -64,13 +65,10 @@ interface SessionReply {
 
 /**
  * Guards against a second import — `--import` naming the module twice, or a
- * loader and a `--import` both pulling it in. The property is namespaced so it
+ * loader and a `--import` both pulling it in — and carries the off switch a
+ * collector in this same process uses. The properties are namespaced so they
  * cannot collide with the host's own state.
  */
-interface InstrumentScope {
-  __cbdInstrumented?: true
-}
-
 const scope = globalThis as InstrumentScope
 
 /**
@@ -226,6 +224,36 @@ async function start(dir: string): Promise<void> {
   }
 
   /**
+   * One take, synchronously — for the one place an await cannot go.
+   *
+   * `session.post` runs its callback before returning for a session connected to
+   * this same process, which is the property `inProcessSource.takeSync` is built
+   * on. So the final snapshot can be exact even though `process.on('exit')` is
+   * synchronous by contract: measured, three calls made before exit are reported
+   * as `count: 3` from inside the handler.
+   *
+   * ADR-0007 originally recorded this as impossible and left the interval as the
+   * only way to have anything to write. The interval is still the bound for a
+   * process that is killed outright — no handler runs at all — but it is not the
+   * bound for a service that exits normally, and the children this mechanism
+   * exists for are exactly the ones too short-lived for a tick: on grizzly, three
+   * of the five `standalone-boot` children lived 305–404 ms and left snapshots
+   * with no coverage in them.
+   */
+  function takeSync(): V8ScriptCoverage[] | null {
+    const holder: { done?: boolean; value?: V8ScriptCoverage[] } = {}
+    try {
+      session.post('Profiler.takePreciseCoverage', {}, (error, reply) => {
+        holder.done = true
+        if (error === null || error === undefined) holder.value = (reply as SessionReply).result
+      })
+    } catch {
+      return null
+    }
+    return holder.done === true && holder.value !== undefined ? holder.value : null
+  }
+
+  /**
    * Writes the evidence, atomically, synchronously.
    *
    * The rename is what makes a snapshot usable at all: a SIGKILL in the middle of
@@ -362,11 +390,24 @@ async function start(dir: string): Promise<void> {
       scripts: pending.splice(0, pending.length),
       atUs,
     }
+    // The reply goes first and the snapshot immediately after, in the same turn.
+    // This window is the one a client is most likely to lose — it is in flight at
+    // this very moment — and a process killed before the timer fires must still
+    // leave it on disk.
+    //
+    // The snapshot is written after the reply because it is synchronous and large
+    // (12 MB for a lane server): writing it first adds that write to the client's
+    // wait for every take. Writing it after can instead stall the reply's own flush
+    // in the socket buffer — measured in the own-service fixture, a 400 KB reply
+    // reached the collector as 172 KB and then stopped — but that is no longer a
+    // lost window: the take has a number, and a reply that never arrives is
+    // recovered from this snapshot by that number.
+    //
+    // Either order blocks this process's loop for the write, and that is what the
+    // run's drift reports: mean 1.16 ms on grizzly against 114 µs before this
+    // mechanism existed, with a tightest boundary gap of 15.6 ms. The cost is the
+    // evidence, and it is named rather than hidden.
     reply(connection, { id, op: 'take', ok: true, result })
-    // Written now rather than at the next interval. This window is the one a client
-    // is most likely to lose — it is in flight at this very moment — and a process
-    // killed before the timer fires must still leave it on disk. The write is small
-    // once acks are flowing.
     writeSnapshot()
   }
 
@@ -473,6 +514,43 @@ async function start(dir: string): Promise<void> {
     }
   }
 
+  /**
+   * Stand down for a collector that shares this process.
+   *
+   * The timer is the taker that matters, not the socket: `takePreciseCoverage`
+   * returns and resets the counters for the whole isolate, so this module's 500 ms
+   * self-snapshot would consume execution the collector's next window is drawn
+   * from. Measured before this existed, in the exact shape cbd-apq creates: a
+   * window that ran a function twice reported `count: 1` when another client took
+   * between the two calls. The loss is silent and always in the same direction.
+   *
+   * The socket goes with it, because a collector looking at this directory would
+   * otherwise attach to a process that is already being recorded in-process — the
+   * doubling the pid filter exists to prevent, arriving from the other side. The
+   * snapshot goes because nobody will harvest it.
+   *
+   * **The inspector session is left connected.** `stopPreciseCoverage` is the
+   * isolate's switch, not this session's — measured: after another session stops,
+   * the remaining one's next take reports only what ran since, so stopping here
+   * would turn off the coverage the collector just started. An idle session is a
+   * handle; this module is already a guest in a process that is about to end.
+   */
+  function stop(): void {
+    if (closed) return
+    closed = true
+    if (snapshotTimer !== null) {
+      clearInterval(snapshotTimer)
+      snapshotTimer = null
+    }
+    removeSocket()
+    removeSnapshot()
+    try {
+      server.close()
+    } catch {
+      // Already closed.
+    }
+  }
+
   try {
     fs.mkdirSync(dir, { recursive: true })
     // A socket left by a previous process that held this pid. Removing it is the
@@ -522,11 +600,20 @@ async function start(dir: string): Promise<void> {
     return
   }
 
-  // The final, exact write. `'exit'` is synchronous by contract, so it can only
-  // write a snapshot that already exists in memory — which is why the interval
-  // above exists rather than a take performed here.
+  // The final, exact write. `'exit'` is synchronous by contract, and the take is
+  // synchronous for the same reason — see `takeSync`. A process that exits
+  // normally therefore leaves *everything* it ran, not just what the last tick
+  // caught; a process killed outright still runs no handler, and the interval
+  // above remains the honest bound for that case.
   process.on('exit', () => {
+    const final = takeSync()
+    if (final !== null) mergeInto(untaken, final)
     writeSnapshot(nowUs())
     shutdown()
   })
+
+  // Advertised only once there is something to stand down, and read by the
+  // in-process source at install. The module stays loaded — its job in a collector's
+  // process is to be in the environment its children inherit, not to be read here.
+  scope.__cbdInstrument = { stop }
 }

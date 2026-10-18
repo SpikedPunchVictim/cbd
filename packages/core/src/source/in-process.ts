@@ -13,6 +13,7 @@
  *     (spike S1b, load-bearing because of A0 F1).
  */
 import inspector from 'node:inspector'
+import type { InstrumentScope } from '../instrument-protocol.js'
 import type { ScriptInfo, Source, V8ScriptCoverage } from '../types.js'
 
 interface SessionResult {
@@ -43,6 +44,20 @@ export async function inProcessSource(): Promise<Source> {
   await call('Profiler.enable')
   await call('Debugger.enable')
   await call('Profiler.startPreciseCoverage', { callCount: true, detailed: false })
+
+  // The counters belong to the isolate, not to a session, so two collectors in one
+  // process split one stream of execution between them. A suite that starts a
+  // service of its own has to carry `NODE_OPTIONS` for the child to be instrumented
+  // at all (ADR-0005), which means the injected module is running here too — and
+  // its periodic self-snapshot would consume execution this source's next window is
+  // drawn from. Measured in that exact shape: a window that ran a function twice
+  // reported one call when the other client took between them.
+  //
+  // So the module stands down when the in-process source is what is collecting:
+  // one process, one collector. It remains loaded, and its purpose here — being in
+  // the environment a suite's children inherit — is unaffected.
+  const instrument = (globalThis as InstrumentScope).__cbdInstrument
+  instrument?.stop()
 
   const takeSync = (): V8ScriptCoverage[] => {
     // A holder rather than a plain `let`, so TypeScript does not narrow the

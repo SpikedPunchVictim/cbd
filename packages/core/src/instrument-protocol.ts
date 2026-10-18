@@ -36,6 +36,35 @@ import type { V8ScriptCoverage } from './types.js'
 
 export const INSTRUMENT_PROTOCOL = 1
 
+/**
+ * The in-process handshake, for the one case the wire cannot describe: a collector
+ * running *inside* a process the module was injected into.
+ *
+ * `NODE_OPTIONS` is inherited by every Node process a suite starts (ADR-0005), and
+ * that includes the test runner itself — there is no way to instrument a suite's
+ * children without instrumenting the process that spawns them. But
+ * `Profiler.takePreciseCoverage` returns and resets counters for the whole isolate,
+ * so two coverage clients in one process split one stream of execution between
+ * them: measured, a window that ran a function twice reports one call when the
+ * other client took in between. In the collector's process the other client is the
+ * module's 500 ms self-snapshot, and the loss is silent — every window a little
+ * short, in the direction this project must never be wrong in.
+ *
+ * So the module publishes an off switch on the global it already uses for its
+ * duplicate-import guard, and the in-process source calls it once it is collecting
+ * for itself. The module stays loaded, which is what matters: its job in this
+ * process is to be in the environment its children inherit, not to be read here.
+ */
+export interface InstrumentScope {
+  /** Set once, by whichever instance started, so a second import cannot start another. */
+  __cbdInstrumented?: true
+  /**
+   * The running module's off switch. Stops taking, removes the socket and any
+   * snapshot, and leaves the process alone. Absent when the module is inert.
+   */
+  __cbdInstrument?: { stop: () => void }
+}
+
 /** One parsed script, as `Debugger.scriptParsed` reported it. */
 export interface ScriptRow {
   id: string
@@ -47,9 +76,10 @@ export interface HelloResult {
   protocol: number
   pid: number
   /**
-   * What this process believes it is. Defaults to `'service'`; the collector
-   * ignores anything else, which is how the test process's own socket is kept out
-   * of the map — see `InstrumentRole`.
+   * What this process believes it is. Descriptive: defaults to `'service'` and
+   * nothing filters on it, because the role is inherited exactly as `NODE_OPTIONS`
+   * is and would hide the very services it was meant to describe. The collector's
+   * own socket is kept out of the map by pid — see `InstrumentRole`.
    */
   role: string
   startedAt: string
