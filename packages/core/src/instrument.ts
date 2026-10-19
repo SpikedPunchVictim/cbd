@@ -37,11 +37,15 @@
  * its sources.
  */
 import fs from 'node:fs'
+import http from 'node:http'
 import net from 'node:net'
 import inspector from 'node:inspector'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { sourceMapUrlOf } from './source-maps.js'
 import type { V8Function, V8Range, V8ScriptCoverage } from './types.js'
 import {
+  CORRELATION_HEADER_ENV,
   INSTRUMENT_PROTOCOL,
   LineSplitter,
   SOCKET_DIR_ENV,
@@ -53,6 +57,7 @@ import {
   type InstrumentRequest,
   type InstrumentResponse,
   type InstrumentScope,
+  type RequestWindow,
   type ScriptRow,
   type SnapshotFile,
   type SnapshotWindow,
@@ -76,8 +81,22 @@ const scope = globalThis as InstrumentScope
  *
  * Named rather than chosen by feel (ADR-0007): it is simultaneously the cost every
  * instrumented process pays and the amount of coverage a SIGKILL can take with it.
+ *
+ * `CBD_SNAPSHOT_MS` overrides it. `0` turns the *periodic* write off and keeps the
+ * exit write: a crash then loses the run (its shard has no footer and is refused),
+ * which is a measured trade, not a silent one. The knob exists because the write is
+ * a full serialization of the un-drained state — on a service handling thousands of
+ * requests between two test boundaries that state reached hundreds of MB, and
+ * rewriting it every 500 ms put the instrument at ~97% CPU and the suite at 100×
+ * its unrecorded time (`cbd-n9t.2`).
  */
-const SNAPSHOT_INTERVAL_MS = 500
+const SNAPSHOT_INTERVAL_MS = snapshotInterval(process.env.CBD_SNAPSHOT_MS)
+
+function snapshotInterval(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return 500
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 500
+}
 
 const socketDir = process.env[SOCKET_DIR_ENV]
 
@@ -137,6 +156,33 @@ async function start(dir: string): Promise<void> {
   /** Serializes inspector takes: two `takePreciseCoverage` calls interleaved would split a delta. */
   let taking: Promise<unknown> = Promise.resolve()
   let snapshotTimer: NodeJS.Timeout | null = null
+
+  // -------------------------------------------------------------------------
+  // Request-id correlation
+  // -------------------------------------------------------------------------
+  //
+  // The collector names a header with the `correlate` op. From then on every
+  // HTTP request that carries it opens a *tagged* window: a take when the request
+  // arrives, and another when its response finishes or its socket closes. The two
+  // deltas carry the ids that were in flight for their interval, which is what
+  // lets the collector credit a request's work to the test that sent it rather
+  // than to whichever test's boundary happened to be open when it ran.
+  //
+  // A request without the header is invisible here. It contributes its execution
+  // to whichever window is next taken, exactly as before — usually a test's own
+  // boundary, sometimes `@between`. Correlation adds precision; it does not make
+  // an uncorrelated request less safe.
+  let requestCorrelation: string | null = null
+  /**
+   * How many open requests carry each id. A counter rather than a set because one
+   * test may have two requests in flight, and the id must survive the first one
+   * finishing.
+   */
+  const inflight = new Map<string, number>()
+  /** Boundary windows not yet delivered to the collector, in take order. */
+  const requestWindows: RequestWindow[] = []
+  /** Undoes the `http.Server` hook, or null when correlation is off. */
+  let restoreEmit: (() => void) | null = null
 
   function exclusive<T>(work: () => Promise<T>): Promise<T> {
     const run = taking.then(work, work)
@@ -254,15 +300,142 @@ async function start(dir: string): Promise<void> {
   }
 
   /**
+   * Takes one delta and files it under the ids in flight for its interval.
+   *
+   * Unlike a serve take this does not drain `untaken`: the delta `takePreciseCoverage`
+   * returns is already exactly the interval since the previous take of any kind,
+   * and merging it with older accumulated coverage would credit this request with
+   * work that ran before it arrived. It also does not wait for the take before
+   * returning — the boundary is the call, the delta is whatever the inspector
+   * reports for it — and it never throws into the host.
+   */
+  function requestBoundary(ids: string[]): void {
+    if (closed || ids.length === 0) return
+    const tagged = [...ids]
+    void exclusive(async () => {
+      const reply = await call('Profiler.takePreciseCoverage')
+      const coverage = reply.result
+      if (coverage.length === 0) return
+      requestWindows.push({ ids: tagged, coverage })
+    }).then(
+      () => {
+        // Deliberately no snapshot here. The write is synchronous and was measured
+        // pushing collector boundaries milliseconds late on the very fixture that
+        // measures drift; the periodic snapshot and the exit handler are the same
+        // bound every unacknowledged window already lives under.
+      },
+      () => {
+        // The session is gone. There is no boundary left to record.
+      },
+    )
+  }
+
+  /**
+   * The HTTP hook: one correlated request, from `request` to `finish`.
+   *
+   * Patched onto `http.Server.prototype.emit` rather than onto a framework's
+   * middleware chain, because every framework built on Node's HTTP server arrives
+   * through that event. That is what makes correlation framework-neutral; the cost
+   * is that HTTP/2 servers are not covered, which is named in `correlate.ts`.
+   */
+  function observeRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const header = requestCorrelation
+    if (header === null) return
+    const raw = req.headers[header]
+    const id = Array.isArray(raw) ? raw[0] : raw
+    if (id === undefined || id === '') return
+
+    // Close the previous interval before this request joins the set, so it is not
+    // credited with work that ran before it arrived. With nothing else in flight
+    // there is nothing to close: the next take carries the untagged interval too,
+    // and crediting it here over-selects rather than losing it.
+    if (inflight.size > 0) requestBoundary([...inflight.keys()])
+    inflight.set(id, (inflight.get(id) ?? 0) + 1)
+
+    let done = false
+    const finish = (): void => {
+      if (done) return
+      done = true
+      // Include this request in the ids: the interval it just ended is its work.
+      requestBoundary([...inflight.keys()])
+      const count = inflight.get(id) ?? 0
+      if (count <= 1) inflight.delete(id)
+      else inflight.set(id, count - 1)
+    }
+    res.once('finish', finish)
+    res.once('close', finish)
+  }
+
+  /** Turns correlation on for `header`, idempotently and without touching the host on failure. */
+  function installCorrelation(header: string): void {
+    // Node presents `IncomingMessage.headers` lower-cased, so the name has to be
+    // normalized whether it arrived through the op or through the environment.
+    requestCorrelation = header.trim().toLowerCase()
+    if (restoreEmit !== null) return
+    const original = http.Server.prototype.emit
+    const patched = function (
+      this: http.Server,
+      event: string | symbol,
+      ...args: unknown[]
+    ): boolean {
+      if (event === 'request') {
+        try {
+          observeRequest(args[0] as http.IncomingMessage, args[1] as http.ServerResponse)
+        } catch {
+          // A guest must never turn a request into an exception.
+        }
+      }
+      return original.call(this, event, ...args) as boolean
+    }
+    try {
+      http.Server.prototype.emit = patched as typeof http.Server.prototype.emit
+      restoreEmit = () => {
+        if (http.Server.prototype.emit === patched) http.Server.prototype.emit = original
+        restoreEmit = null
+        requestCorrelation = null
+      }
+    } catch {
+      // A frozen prototype, or a host that replaced `http`. Correlation is
+      // optional; the time-based attribution is still there.
+      requestCorrelation = null
+    }
+  }
+
+  /**
    * Writes the evidence, atomically, synchronously.
    *
    * The rename is what makes a snapshot usable at all: a SIGKILL in the middle of
    * a write must leave the previous file intact rather than half a JSON document
    * that the harvester would have to distrust.
    */
-  function writeSnapshot(endedAtUs?: number): void {
+  function writeSnapshot(endedAtUs?: number, complete = false): void {
     if (closed) return
-    if (unacked.size === 0 && untaken.size === 0 && scripts.size === 0) return
+
+    // A bounded write carries only what can be recovered by take id. If there is
+    // no unacknowledged take and nothing undelivered, it has nothing to say and
+    // must not replace the previous file with an empty one.
+    if (!complete && unacked.size === 0 && pending.length === 0) return
+    if (
+      complete &&
+      unacked.size === 0 &&
+      untaken.size === 0 &&
+      scripts.size === 0 &&
+      requestWindows.length === 0
+    ) {
+      return
+    }
+
+    // Only the rows the harvester may not have. A row delivered by an
+    // acknowledged take is in that take's reply, which the collector absorbed, so
+    // repeating it here would rewrite the whole script table after every
+    // boundary — 12 MB on a lane server, measured at ~1 ms per boundary
+    // (`cbd-3z1`). What is kept is the unacknowledged part, which is the whole
+    // table only until the first take is acked.
+    const kept = new Map<string, ScriptRow>()
+    for (const row of pending) kept.set(row.id, row)
+    for (const window of unacked.values()) {
+      for (const row of window.scripts ?? []) kept.set(row.id, row)
+    }
 
     // `windows` and `untaken` are disjoint by construction: a take moves the
     // accumulated coverage into a window and resets the accumulator. Keeping them
@@ -274,9 +447,16 @@ async function start(dir: string): Promise<void> {
       startedAtUs,
       atUs: nowUs(),
       ...(endedAtUs === undefined ? {} : { endedAtUs }),
-      scripts: [...scripts.values()],
+      scripts: [...kept.values()],
       windows: [...unacked.values()],
-      untaken: [...untaken.values()],
+      // The accumulator and the request queue are unbounded between boundaries —
+      // thousands of entries and hundreds of MB on a real service — and rewriting
+      // them every 500 ms put the instrument at ~97% CPU (`cbd-n9t.2`). Only the
+      // exit write needs them, where they are the last chance to leave what no
+      // reply carried.
+      ...(complete
+        ? { untaken: [...untaken.values()], pendingRequests: [...requestWindows] }
+        : {}),
     }
     const target = snapshotPath(dir, process.pid)
     const temporary = `${target}.tmp`
@@ -296,13 +476,47 @@ async function start(dir: string): Promise<void> {
     }
   }
 
+  /**
+   * Whether the script's own file declares the map the inspector reported.
+   *
+   * The map is not sent when the file carries it. The build reads the same bytes,
+   * and on real tsc output those inline maps were **35 MB of a 56 MB table** — the
+   * bulk of the first reply whose JSON parse stalled the collector for up to
+   * 170 ms (`cbd-llm`). A loader-injected map (ts-node on a `.ts` with no comment)
+   * is not in the file and still travels; a file that cannot be read keeps it too,
+   * because dropping a map the build cannot recover would change resolution.
+   */
+  const declaresMap = (url: string, reported: string): boolean => {
+    if (!url.startsWith('file:')) return false
+    let file: string
+    try {
+      file = fileURLToPath(url)
+    } catch {
+      return false
+    }
+    try {
+      return sourceMapUrlOf(fs.readFileSync(file, 'utf8')) === reported
+    } catch {
+      return false
+    }
+  }
+
   session.on('Debugger.scriptParsed', (event) => {
     const params = event.params
     const row: ScriptRow = { id: params.scriptId, url: params.url }
-    if (params.sourceMapURL !== undefined) row.sourceMapURL = params.sourceMapURL
+    if (params.sourceMapURL !== undefined && !declaresMap(params.url, params.sourceMapURL)) {
+      row.sourceMapURL = params.sourceMapURL
+    }
     scripts.set(params.scriptId, row)
     pending.push(row)
   })
+
+  // A service spawned by a recording test process inherits the header name, so it
+  // is correlating from birth rather than from the collector's attach. A service
+  // that was already running when the collector arrived has no such inheritance
+  // and is configured by the `correlate` op instead.
+  const inheritedHeader = process.env[CORRELATION_HEADER_ENV]
+  if (inheritedHeader !== undefined && inheritedHeader !== '') installCorrelation(inheritedHeader)
 
   try {
     await call('Profiler.enable')
@@ -365,14 +579,33 @@ async function start(dir: string): Promise<void> {
     // inside the call below; measuring after would fold the inspector round-trip
     // into the drift and overstate it.
     const atUs = nowUs()
+    // The ids in flight when the boundary was crossed describe the ordinary
+    // coverage below: whatever ran while those requests were open belongs to
+    // their tests too, even when another test's boundary took it first.
+    const ids = [...inflight.keys()]
     // Coverage is accumulated rather than taken and sent, because the periodic
     // self-snapshot also consumes the inspector's counters. Without this a window
     // would silently lose whatever the last snapshot had already read — the same
     // under-selection, arriving one layer down.
+    let delivered: ScriptRow[] = []
+    // Request-boundary windows are drained with this reply. They are kept with the
+    // unacknowledged window until the client says it absorbed them, because a lost
+    // reply must not lose the ids that make them attributable.
+    //
+    // Drained inside the take queue, not before it: a request boundary enqueued
+    // just before this take must land in this reply rather than the next one, and
+    // that is decided by queue order, not by which event the loop happened to
+    // schedule first.
+    let deliveredRequests: RequestWindow[] = []
     const coverage = await exclusive(async () => {
       await accumulate()
       const payload = [...untaken.values()]
       untaken = new Map()
+      deliveredRequests = requestWindows.splice(0, requestWindows.length)
+      // Drained, not copied. `scriptParsed` fires once per script, so a row sent
+      // twice would be the same row twice. Drained inside the take queue so two
+      // takes cannot split the rows between them.
+      delivered = pending.splice(0, pending.length)
       // Kept until the client acknowledges it. The reply below can sit in a socket
       // buffer forever, or die with the process; neither is visible from here, so
       // "we wrote it" is not evidence that it arrived.
@@ -380,33 +613,39 @@ async function start(dir: string): Promise<void> {
         takeId: id,
         ...(sentAtUs === undefined ? {} : { sentAtUs }),
         coverage: payload,
+        scripts: delivered,
+        ids,
+        requests: deliveredRequests,
       })
       return payload
     })
-    // Drained, not copied. `scriptParsed` fires once per script, so a row sent
-    // twice would be the same row twice.
     const result: TakeResult = {
       coverage,
-      scripts: pending.splice(0, pending.length),
+      scripts: delivered,
       atUs,
+      ids,
+      requests: deliveredRequests,
     }
     // The reply goes first and the snapshot immediately after, in the same turn.
     // This window is the one a client is most likely to lose — it is in flight at
     // this very moment — and a process killed before the timer fires must still
     // leave it on disk.
     //
-    // The snapshot is written after the reply because it is synchronous and large
-    // (12 MB for a lane server): writing it first adds that write to the client's
-    // wait for every take. Writing it after can instead stall the reply's own flush
-    // in the socket buffer — measured in the own-service fixture, a 400 KB reply
-    // reached the collector as 172 KB and then stopped — but that is no longer a
-    // lost window: the take has a number, and a reply that never arrives is
-    // recovered from this snapshot by that number.
+    // The snapshot is written after the reply because it is synchronous: writing it
+    // first adds that write to the client's wait for every take. Writing it after
+    // can instead stall the reply's own flush in the socket buffer — measured in
+    // the own-service fixture, a 400 KB reply reached the collector as 172 KB and
+    // then stopped — but that is no longer a lost window: the take has a number,
+    // and a reply that never arrives is recovered from this snapshot by that
+    // number.
     //
-    // Either order blocks this process's loop for the write, and that is what the
-    // run's drift reports: mean 1.16 ms on grizzly against 114 µs before this
-    // mechanism existed, with a tightest boundary gap of 15.6 ms. The cost is the
-    // evidence, and it is named rather than hidden.
+    // Either order blocks this process's loop for the write. What it writes is only
+    // what no reply has delivered (see `writeSnapshot`), so after the first
+    // acknowledgement it is a window, not a table. Before `cbd-3z1` it was the
+    // whole table every time: measured on grizzly, mean drift 1.16 ms against
+    // 114 µs without the per-take mechanism, with a tightest boundary gap of
+    // 15.6 ms — the one boundary after the first take still pays for the table,
+    // and every later one does not.
     reply(connection, { id, op: 'take', ok: true, result })
     writeSnapshot()
   }
@@ -432,8 +671,16 @@ async function start(dir: string): Promise<void> {
             role,
             startedAt,
             scriptCount: scripts.size,
+            correlating: requestCorrelation !== null,
           }
           reply(connection, { id, op: 'hello', ok: true, result })
+          return
+        }
+        case 'correlate': {
+          const header = request.header.trim().toLowerCase()
+          if (header === '') throw new Error('correlate needs a non-empty header name')
+          installCorrelation(header)
+          reply(connection, { id, op: 'correlate', ok: true, result: { header } })
           return
         }
         case 'take': {
@@ -495,6 +742,7 @@ async function start(dir: string): Promise<void> {
       clearInterval(snapshotTimer)
       snapshotTimer = null
     }
+    restoreEmit?.()
     // The close op has already unlinked, before it replied; this is here for the
     // process-exit path, and is a swallowed ENOENT in the common case.
     removeSocket()
@@ -535,13 +783,14 @@ async function start(dir: string): Promise<void> {
    * would turn off the coverage the collector just started. An idle session is a
    * handle; this module is already a guest in a process that is about to end.
    */
-  function stop(): void {
-    if (closed) return
+  async function stop(): Promise<V8ScriptCoverage[]> {
+    if (closed) return []
     closed = true
     if (snapshotTimer !== null) {
       clearInterval(snapshotTimer)
       snapshotTimer = null
     }
+    restoreEmit?.()
     removeSocket()
     removeSnapshot()
     try {
@@ -549,6 +798,29 @@ async function start(dir: string): Promise<void> {
     } catch {
       // Already closed.
     }
+
+    // **The handoff.** Everything this module has consumed from the isolate so
+    // far — whatever its self-snapshots took since the process started — belongs
+    // to the collector that is about to start its own session. Without it the
+    // coverage is gone: the counters were reset when it was taken, no client
+    // read the snapshot in this process, and the new session only sees what runs
+    // from here. On a test run that is the import phase, which is exactly where
+    // the code a suite merely loads executes (`cbd-1ci`).
+    //
+    // The final take goes through the same queue as the snapshots, so a tick
+    // that is already in flight lands first and cannot be lost behind this one.
+    // A session that has gone away still leaves the accumulated coverage to hand
+    // over, so the failure is a smaller delta rather than none.
+    try {
+      await exclusive(async () => {
+        await accumulate()
+      })
+    } catch {
+      // The inspector is gone; hand over what the snapshots already had.
+    }
+    const carried = [...untaken.values()]
+    untaken = new Map()
+    return carried
   }
 
   try {
@@ -584,17 +856,21 @@ async function start(dir: string): Promise<void> {
     // The periodic write is what survives a SIGKILL, which runs no handler at all.
     // Unref'd for the same reason the server is: a guest must not be the reason
     // its host stays alive.
-    snapshotTimer = setInterval(() => {
-      void exclusive(accumulate).then(
-        () => {
-          writeSnapshot()
-        },
-        () => {
-          // The session is gone; the exit handler has written the last word.
-        },
-      )
-    }, SNAPSHOT_INTERVAL_MS)
-    snapshotTimer.unref()
+    if (SNAPSHOT_INTERVAL_MS > 0) {
+      snapshotTimer = setInterval(() => {
+        // **No `accumulate()` here.** The periodic file no longer carries the
+        // accumulator (`cbd-n9t.2`), so taking coverage for it would reset the
+        // isolate counters between boundaries for a field that is not written —
+        // and every take is an inspector round trip competing with the boundary
+        // ones. Measured on the stores suite: keeping the take while omitting the
+        // field still cost ~2× the whole run (57 min against 29 min with the timer
+        // off). The file written here is what a SIGKILL can recover by take id; the
+        // take handler already writes the same state immediately after each reply,
+        // and the exit handler performs its own final take.
+        writeSnapshot()
+      }, SNAPSHOT_INTERVAL_MS)
+      snapshotTimer.unref()
+    }
   } catch {
     disconnect()
     return
@@ -608,7 +884,7 @@ async function start(dir: string): Promise<void> {
   process.on('exit', () => {
     const final = takeSync()
     if (final !== null) mergeInto(untaken, final)
-    writeSnapshot(nowUs())
+    writeSnapshot(nowUs(), true)
     shutdown()
   })
 

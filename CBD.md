@@ -30,7 +30,8 @@ functions, and the map names the tests that ran them.
 2. **Framework-neutral core.** The core never imports a test framework's types. Adapters translate
    framework lifecycle events into four calls: `runStart`, `testStart`, `testEnd`, `runEnd`.
 3. **In-process and out-of-process code.** Code running in the test process itself, *and* code
-   running in a separate Node process the tests talk to (an HTTP server started with `--inspect`).
+   running in a separate Node process the tests talk to — reached by injecting CBD's instrument
+   module through `NODE_OPTIONS`, not by attaching a debugger (ADR-0005).
 4. **Safe by default.** When the map cannot answer, the answer is "run everything", with the reason.
    A selection is advisory and explainable, never a silent skip.
 5. **Consumable by anything**: a CLI with JSON output, a library API, framework-specific argument
@@ -71,10 +72,12 @@ functions, and the map names the tests that ran them.
 
 - **No instrumentation step.** V8 counts natively; no Babel transform, no rebuilt `dist/`, and the
   code under test is the code that ships.
-- **Works on a process you did not start through the test runner.** A server started with
-  `--inspect` exposes the same Profiler domain over the Chrome DevTools Protocol (CDP). Istanbul
-  would need that server's build instrumented and a way to pull its global `__coverage__` object
-  out per test.
+- **Works on a process you did not start through the test runner.** CBD's instrument module can run
+  inside any Node process whose environment you control — a server started by its own script, a
+  lane's service — and serve deltas over a unix socket. The Profiler domain is the same one the
+  test process uses. Attaching over the Chrome DevTools Protocol to an `--inspect` target is the
+  fallback for a process whose environment genuinely cannot be set. Istanbul would need the
+  server's build instrumented and a way to pull its global `__coverage__` object out per test.
 - **Counters can be reset per snapshot.** `Profiler.takePreciseCoverage` returns the counts since
   the last take *and resets them* when `callCount: true`, which is exactly a per-test delta.
   Istanbul's counters only grow; per-test deltas mean diffing large objects.
@@ -140,31 +143,85 @@ test, which is most projects.
 
 - Works inside worker threads (Vitest, Jest workers, Mocha parallel): each worker has its own
   isolate and its own source, and an adapter in each worker records its own tests.
-- The inspector's in-process `post` may complete synchronously on the main thread. If the spike
-  confirms that, a source can expose a `takeSync()` usable from hooks a framework does not await
-  (section 7.1). Do not rely on it until measured.
+- The inspector's in-process `post` completes synchronously on the main thread — measured, including
+  inside `process.on('exit')`. `inProcessSource.takeSync()` is what makes a framework that does not
+  await its hooks recordable (section 7.1).
+- **Standing the injected module down is a handoff.** When the test process carries `NODE_OPTIONS`
+  (it must, for the services it starts to be instrumented), the injected module is already running
+  here, and its 500 ms self-snapshots have taken the coverage counters since process birth. The
+  in-process source calls its off switch, and the switch returns what it had consumed; the source
+  delivers that in its first window, which is the `@load` bucket. Without the handoff the import
+  phase — where a module a suite merely loads executes — was invisible (`cbd-1ci`).
+- **The periodic self-snapshot is bounded, and knobbed.** The injected module writes a recovery file
+  on each take and every 500 ms. That file carries only what a lost take can be recovered from by
+  id — its unacknowledged window and the script rows no reply has delivered. The accumulator
+  (coverage taken since the last take) and the request queue are *not* in the periodic file: on a
+  service handling thousands of requests between two test boundaries they reached 398 MB, and
+  rewriting them every half second put the service at ~97% CPU (`cbd-n9t.2`). The **exit** write is
+  complete, including both. `CBD_SNAPSHOT_MS` overrides the interval, and `0` keeps only the exit
+  write; a SIGKILL then loses the run, whose shard has no footer and is refused rather than
+  trusted.
 
-### 4.3 `inspectorSource({ url } | { host, port })` — a separate Node process
+### 4.3 A separate Node process: injection first, attaching as the fallback
 
-CDP over WebSocket to a process started with `--inspect=127.0.0.1:<port>` (or `--inspect=0`, port
-read from its stderr line `Debugger listening on ws://…`). The target list comes from
-`http://<host>:<port>/json/list`. Node 22 has a global `WebSocket`; on older Node, use the `ws`
-package.
+**The primary mechanism is injection (ADR-0005).** The target is started with
+`NODE_OPTIONS="--import @spikedpunch/cbd/instrument"` and `CBD_SOCKET_DIR=<dir>`. The module runs
+inside the target, drives `node:inspector` for its own isolate, and serves the coverage delta plus
+`Debugger.scriptParsed` rows on `pid-<pid>.sock` in that directory. `socketSource` reads one target;
+`rescanningSocketSource` re-lists the directory at every boundary so a service the suite starts
+itself is picked up too (ADR-0007).
 
-- This is what makes black-box suites work: the tests send HTTP requests, the server's code runs,
-  and the per-test window is taken from the server.
-- **Requirement: one test runner per server during collection.** Two runners hitting one server
-  make attribution meaningless. CBD cannot detect this; the docs must say it, and `cbd collect`
-  should refuse to attach to a target another collector already holds (a lock file keyed by the
-  target URL).
-- Multi-process servers (cluster, worker pools, child processes): each process needs its own
-  `--inspect` port and its own source. v1 supports a list of targets; discovery is the user's job.
-- Security: `--inspect` gives full code execution to anyone who can reach the port. Bind to
-  `127.0.0.1` only; the source refuses a non-loopback host unless `allowRemote: true`.
+- **One variable, no port.** The developer sets it where they already set the test side, or once in
+  the environment template that starts the service. Nothing in the server's source changes, and
+  nothing has to be discovered.
+- **Multi-process by inheritance.** `NODE_OPTIONS` is inherited, so a cluster, a worker pool or a
+  spawned child instruments itself for the same reason its parent did. Each process has its own
+  socket and pid; when several targets feed one shard, script ids are namespaced by pid.
+- **No listening TCP port.** A unix socket in a directory the developer owns is not an
+  unauthenticated code-execution surface, so there is no loopback rule and no collector lock file to
+  keep.
+- **A process that dies still leaves evidence.** The instrument writes `pid-<pid>.coverage.json`
+  beside its socket — after each take, on an interval, and at exit. The collector recovers a
+  numbered window by take id, or the unnumbered lifetime exactly once (ADR-0007).
+- **What it cannot reach.** A target whose environment cannot be set, and one that cannot resolve
+  `@spikedpunch/cbd/instrument` from its own module graph. The in-process case is section 4.2.
+
+**A request can name the test that sent it (ADR-0008).** The window above is closed by the test
+runner, so service work that happens after `testEnd` — a response still in flight, a request the
+test fired without awaiting — is credited to whichever test's window is open when it runs. With
+correlation, the recorder puts `x-cbd-correlation: <test-id>` on outgoing `http`/`https`/`fetch`
+calls while a test window is open; the instrument takes a tagged delta at the request's start and
+end; and the reply carries those deltas back. The recorder writes each as an ordinary test record
+for the id's owner. Three properties matter:
+
+- **Framework-neutral.** The hook is `http.Server.prototype.emit('request')`, below Express,
+  Fastify, Koa and a bare server. HTTP/2 and clients that bypass the `http` module are not
+  covered and fall back to time-based attribution.
+- **Safe under concurrency.** One V8 counter cannot be split between concurrent requests, so a
+  delta carries the *set* of ids in flight and is credited to all of them — over-selection.
+- **Unmatched is not dropped.** An id the run does not own becomes `@between`, which §8.3
+  escalates. `CBD_CORRELATION=off` records with time-based attribution only.
+
+**The fallback is `inspectorSource({ url } | { host, port })`.** CDP over WebSocket to a process
+started with `--inspect=127.0.0.1:<port>` (or `--inspect=0`, with the port read from its stderr line
+`Debugger listening on ws://…`); targets come from `http://<host>:<port>/json/list`. It is built when
+a real target needs it (`cbd-a3v.4`), not as the default path.
+
+- This reaches a black-box suite whose service genuinely cannot be restarted with an environment
+  change: the tests send HTTP requests, the server's code runs, and the per-test window is taken
+  from the server.
+- **One test runner per server during collection.** Two runners hitting one server make attribution
+  meaningless. CBD cannot detect this; the docs must say it, and the collector must refuse a target
+  another collector already holds (a lock file keyed by the target URL).
+- **Multi-process servers need one port per process**, and each needs its own source. That is the
+  cost injection does not have.
+- **Security: no remote attach.** `--inspect` gives full code execution to anyone who can reach the
+  port. Bind to `127.0.0.1` only; the source refuses a non-loopback host unless
+  `allowRemote: true`.
 
 ### 4.4 Later sources (designed for, not in v1)
 
-- `nodeV8CoverageSource` — for child processes you cannot attach to: launched with
+- `nodeV8CoverageSource` — for child processes you can neither inject into nor attach to: launched with
   `NODE_V8_COVERAGE=<dir>`, and the child calls `v8.takeCoverage()` on a signal. Only process-level
   windows unless the child cooperates.
 - `browserSource(page)` — Playwright/Puppeteer `page.coverage.startJSCoverage({ resetOnNavigation:
@@ -186,6 +243,14 @@ Input: one `RawSnapshot` per source. Output: `Touches` — a set of `(file, func
    a `dist/` file) and map the function's start offset to an original file, line and column, using
    `@jridgewell/trace-mapping` (small, fast, no native code). No map → the generated file is the
    source.
+
+   A start offset with no mapping of its own falls forward to the next mapping that has one. The
+   same-line lookup is not enough: `tsc` opens every file with unmapped boilerplate (`"use strict"`,
+   the `__createBinding` helpers), so byte offset 0 — the module body — had no mapping on its line
+   and resolved to nothing. For a file whose only executed function is its module body (a module of
+   classes or constants re-exported by a barrel) that dropped the file from the map entirely even
+   though the run had loaded it, and a change to it escalated as `unknown-file` instead of the
+   truthful `@load` (`cbd-1ci`).
 
    A resolved path is then rewritten by any **relocation rule** that covers it: `from` names the
    staging root, `to` names the checkout (`CBD_RELOCATE_FROM` / `CBD_RELOCATE_TO`, ADR-0006). This
@@ -269,19 +334,53 @@ export function testKey(id: TestId): string   // "japa:key-server:tests/x.spec.t
 
 ### 6.3 Shard format
 
-`.cbd/shards/<UTC timestamp>-<random>.jsonl`, one JSON object per line:
+`.cbd/shards/<UTC timestamp>-<random>.jsonl`, one JSON object per line. **Version 2**
+(ADR-0002): a window records the executed functions' byte ranges, and the paths, lines
+and ordinals are resolved once, by `cbd build`.
 
 ```jsonc
-{"t":"run","v":1,"framework":"japa","commit":"3c5a43e6…","dirty":false,"sources":["in-process","server@127.0.0.1:9229"],"startedAt":"2026-10-15T20:41:02Z"}
-{"t":"file","f":"src/keys/KeyService.ts","h":"sha256:…","fns":[["encrypt@0",40,88],["rotate@0",90,131],["@module",1,400]]}
-{"t":"test","id":"japa:key-server:tests/key-store.spec.ts::rotation > rotates on 64GB","status":"passed","ms":412,"touch":{"src/keys/KeyService.ts":[0,1],"src/db/Pool.ts":[3]}}
-{"t":"bucket","id":"@load","touch":{"src/keys/KeyService.ts":[2]}}
-{"t":"bucket","id":"@between","touch":{"src/outbox/Poller.ts":[0]}}
-{"t":"end","tests":214,"seconds":151.2,"overheadSeconds":19.7}
+{"type":"shard","version":2,"commit":"3c5a43e6…","pid":8123,"startedAt":"2026-10-15T20:41:02Z"}
+{"type":"script","scriptId":"42","url":"file:///repo/dist/src/KeyService.js","sourceMapURL":"KeyService.js.map","size":8123,"mtimeMs":1729024862000}
+{"type":"function","scriptId":"42","start":1200,"end":1688,"name":"encrypt"}
+{"type":"function","scriptId":"42","start":0,"end":2100,"name":""}
+{"type":"test","title":"rotation > rotates on 64GB","file":"tests/key-store.spec.ts","status":"passed","durationMs":412,"touches":{"42":[[1200,1688],[0,2100]]}}
+{"type":"load","touches":{"42":[[0,2100]]}}
+{"type":"between","touches":{"42":[[3300,3412]]}}
+{"type":"end","tests":214,"finishedAt":"2026-10-15T20:43:33Z"}
 ```
 
-- `file` records are emitted the first time a file is seen; `fns` is `[key, startLine, endLine]`,
-  and touches reference functions by index into it. That keeps a 1,000-test shard small.
+- A **script** row is written once per script, with the file's `size` and `mtimeMs` at
+  recording time. The URL is the *relocated* one when a relocation rule applies, so a
+  deployed lane's shard names bytes the checkout still has.
+- `sourceMapURL` is recorded **only when the file does not declare one**. A tsc inline map is
+  tens of KB per script and the build reads the same stat-checked file, so repeating it is pure
+  duplication; a loader-injected map (ts-node on a `.ts` file with no comment) exists only in
+  `Debugger.scriptParsed` and must be recorded. When the file's declaration differs from what the
+  inspector reported, the inspector's wins — it describes the bytes V8 executed. Measured on the
+  grizzly stores run: 2,437 service script rows carried 35.2 MB of file-declared maps, 62.4% of
+  that shard (`cbd-n9t.1`).
+- A **function** row is written once per `(script, start offset, end offset)`, the first
+  time any window executes it. The **range** is the identity, not the start: Jest's
+  CommonJS VM wrapper and the first function it contains can both begin at offset 0,
+  and a start-only key merged `add` into `<module>`. Names are V8's raw
+  `functionName`; the build decides the module body (`<module>`) and anonymous
+  (`<anonymous>`) names.
+- **Touches** are `scriptId -> [[startOffset, endOffset], …]` for the functions that ran.
+  Nothing in a window names a file, a line or a function.
+- **Ordinals are assigned from the union over every window**, in resolved source order.
+  That is the proper fix for the A4 collision, where a function first reported late
+  used to collide with another of the same name.
+- **A shard is tied to its build.** An offset only means something against the exact
+  bytes it was measured from, so `cbd build` compares each script's size and mtime and
+  **refuses** a shard whose script changed. Refusing beats guessing: guessing would
+  attribute the range to whatever now sits there, silently, in the under-selecting
+  direction. Shards from one build still merge across CI machines.
+- **Version 1 is refused**, not migrated: its touches are resolved tuples, which carry
+  no script id, so the byte ranges they came from cannot be recovered.
+- Projection, relocation and include/exclude moved to the build. The same
+  `CBD_PROJECTION_*`, `CBD_RELOCATE_*` and `CBD_INCLUDE` variables are read by
+  `cbd build` (and by `cbd collect`, which builds in the same process). A missing rule
+  makes a path unknown, which escalates to `mode: all`; it never under-selects.
 - A shard with no `end` record was interrupted: `cbd build` refuses it unless `--partial`, and says so.
 - A shard from a dirty tree is accepted but its map is marked `dirty`; selection warns.
 
@@ -289,8 +388,9 @@ export function testKey(id: TestId): string   // "japa:key-server:tests/x.spec.t
 
 ## 7. Adapters
 
-An adapter's whole job: compute a `TestId`, call the Recorder at the right moments, and make sure
-those calls are awaited. Target size: 100–200 lines each.
+An adapter's whole job: compute a test identity, call the Recorder at the right moments, and keep
+every per-test handler synchronous — in a framework that does not await its events, a handler that
+awaits would take coverage after the next test has started. Target size: 100–200 lines each.
 
 ### 7.1 japa (`@spikedpunch/cbd-japa`)
 
@@ -308,89 +408,143 @@ Facts read from the installed `@japa/runner` 5.0.0 and `@japa/core` 10.4.0:
   `test:end` carries the outcome, which is all the adapter needs from it.
 - japa runs tests in one process, one at a time, so a single in-process source attributes cleanly.
 
-The plugin:
+The plugin, as built:
 
 ```ts
 import { cbd } from '@spikedpunch/cbd-japa'
-import { inProcessSource, inspectorSource } from '@spikedpunch/cbd'
 
+// Recording is driven by the environment: CBD_SHARD names the shard, CBD_SOCKET_DIR
+// names the directory the service's instrument wrote into, CBD_COMMIT names the
+// commit the map will be keyed by. With CBD_SHARD unset the plugin is inert.
 configure({
   suites: [...],
-  plugins: [
-    cbd({
-      enabled: process.env.CBD === '1',            // off by default: zero cost when not collecting
-      root: repoRoot,
-      sources: () => [
-        inProcessSource(),
-        ...(process.env.CBD_INSPECT ? [inspectorSource({ url: process.env.CBD_INSPECT })] : []),
-      ],
-      granularity: 'test',
-    }),
-  ],
+  plugins: [cbd()],
 })
 ```
 
-Wiring inside the plugin:
+Wiring facts the implementation rests on, all measured (`.explore/A0-japa-hooks.md`):
 
-```ts
-export function cbd(opts: CbdJapaOptions): PluginFn {
-  return async ({ runner, emitter }) => {
-    if (!opts.enabled) return
-    const rec = new Recorder({ ...opts, sources: opts.sources() })
-    const outcomes = new Map<string, Outcome>()
-    emitter.on('test:end', p => outcomes.set(keyFromPayload(p), toOutcome(p)))
-    emitter.on('runner:start', () => rec.runStart({ framework: 'japa' }))   // or awaited in the plugin body
-    runner.onSuite(suite => {
-      const wrap = (test: Test) => test.setup(async () => {
-        const id = idOf(suite, test)
-        await rec.testStart(id)
-        return async () => rec.testEnd(id, outcomes.get(testKey(id)) ?? { status: 'passed' })
-      })
-      suite.onTest(wrap)
-      suite.onGroup(group => group.tap(wrap))
-    })
-    // runEnd: on runner:end, awaited through the runner's end hook; see spike item S2
-  }
-}
-```
+- **Every per-test handler is synchronous.** japa does not await `emit`, so a handler that awaited
+  a take would attribute one test's execution to the next. The `Recorder` is driven through its
+  synchronous API; a socket source accepts a boundary with `dispatch()` and the replies are drained
+  at `runner:end`, the one event japa awaits.
+- **The file is japa's.** `payload.meta.fileName` is set by the runner as it imports each file and
+  reaches every `test:start` / `test:end` payload. No stack walk, no source parsing.
+- **The identity is the bare title.** `payload.title.original`, never `expanded`; japa's own filter
+  matches the bare string (A0 F10).
+- **There is no `auto.ts`, deliberately.** `@japa/runner` exports only functions and its plugin list
+  is module-private, so there is nothing for a `--import` module to patch. One explicit line in
+  `configure` is the integration.
+- **The adapter's own files are excluded from the scan.** So are core's. `NODE_OPTIONS` reaches the
+  test runner too (ADR-0005), and a workspace link resolves outside `node_modules`, where the
+  default prefilter cannot hide the tool (`cbd-qly`).
 
-Open points for the spike (S2): whether a setup hook's returned cleanup runs after the test's own
-teardown and before `test:end`; whether `onSuite` registration happens before test files are
-imported; and how to await `runEnd` (a runner teardown hook, or `runner.onEnd`, whichever exists).
-
-**Selection with japa.** Two ways, both supported:
-
-1. `cbd select --format japa-args` prints `--files … --groups … --tests …` for the runner's own
-   filters. Simple and visible; long selections hit argv limits, so it falls back to `--files` only
-   past a threshold, which over-selects but never under-selects.
-2. The plugin with `select: { since: 'origin/main' }` loads the map, computes the selection, and
-   applies it as the runner's filters (or skips non-selected tests itself), printing
-   `cbd: running 37 of 1,214 tests (12 changed functions in 4 files); full list: .cbd/last-selection.json`.
-   When the selection is `mode: "all"`, it prints the reason and changes nothing.
+**Selection with japa.** The plugin computes the titles and sets `config.filters.tests` inside
+`run()`; it does **not** emit `--tests` CLI args. `configure()` snapshots `processCLIArgs` at call
+time, so args are silently discarded when the consumer calls it first (A0 F11); a filter set by the
+plugin cannot be lost that way. `--groups` is never emitted: japa rejects every ungrouped test once
+`groups` is non-empty, and a group is allowed if any test in it matches, so it silently drops tests.
+Bare titles can collide across groups; a collision runs both, which over-selects. When the selection
+is `mode: "all"` the plugin prints the reason and changes nothing.
 
 ### 7.2 node:test (`@spikedpunch/cbd-node-test`)
 
-`beforeEach` / `afterEach` hooks are awaited. Ship a module to preload with
-`node --import @spikedpunch/cbd-node-test/register --test`, which installs global hooks in each test file's
-process (node:test runs files in subprocesses by default, so each has its own in-process source and
-its own shard). The test ID comes from the `TestContext` (`t.name`, `t.fullName` on Node ≥ 22.3).
+**Implemented.** One preload:
+
+```sh
+node --import @spikedpunch/cbd-node-test/register --test
+```
+
+With `CBD_SHARD` unset the preload is inert for recording, so the flag can be committed. node:test
+runs each test file in its own child process by default, and the preload runs **before the file is
+evaluated** — so each child creates one in-process source and **one shard per test file**, named
+from the file's path. The file's import phase lands in `@load`. Windows are the global
+`beforeEach`/`afterEach` hooks; the file's `after` hook writes the footer. A statically skipped test
+reaches no hook and opens no window.
+
+The identity is `t.fullName` (`outer > inner > adds`), with `t.name` only as a fallback on Node
+versions before 20.16/22.8. The outcome is `t.passed`, which is `true` only after a passing body;
+anything else is failed. A `t.skip()`/`t.todo()` **inside a body** leaves `passed` true, so the
+hook wraps those context methods and records the window as skipped. A test registered
+`{todo: true}` does reach the hooks but exposes no marker; it is recorded as passed with a
+hooks-only window, which can only over-select.
+
+**Selection is a re-execution.** `--test` does not load user preloads in the parent runner, and
+the child's harness reads its options before the preload runs; a `beforeEach` call to `t.skip()`
+does not stop the body either. The preload therefore spawns the same test file once more with
+`--test-name-pattern` (the child's stdout is inherited, so the parent still reads TAP) and exits;
+the pattern is built from the selection titles with ` > ` translated to the single spaces node:test
+matches. That costs one extra process per test file during a subset run. A pattern the caller
+already set is left alone, with a warning: running more tests than selected is the safe direction.
+`--test-isolation=none` cannot re-execute a child or record per file, so the adapter warns and
+records nothing (the old map stands; a changed file escalates).
 
 ### 7.3 Vitest (`@spikedpunch/cbd-vitest`)
 
-A `setupFiles` entry with `beforeEach` / `afterEach` (awaited), using `expect.getState()` /
-`task` for the ID. One source per worker. Vitest's own `@vitest/coverage-v8` must be off during a
-CBD collection: two Profiler sessions on one isolate interfere (assumed; verify).
+**Implemented.** One line in the config:
+
+```ts
+export default defineConfig({
+  test: { setupFiles: ['@spikedpunch/cbd-vitest/setup'] },
+})
+```
+
+With `CBD_SHARD` unset the setup is inert, so the line can be committed. The setup file runs **once
+per test file**: it creates one in-process source and **one shard per file**, named from the base
+shard plus the file's name and a hash — so several workers never append to one another's file, and
+a worker killed mid-file leaves a shard with no footer (refused) rather than corrupting the run's
+artifact. Windows are the awaited `beforeEach`/`afterEach`, which run first and last for a setup
+file; the file's import phase lands in `@load`.
+
+The identity is the suite path plus the test name, without the file, so two same-named tests
+in one file stay distinct in the map. Vitest 4+ reports it as `task.fullTestName`; Vitest 3 does
+not, and the suite chain is walked instead (a real Directus SDK run on 3.2.7 turned 82 tests into
+77 map entries before that fallback, exactly the collision the full name exists to prevent). Selection is applied by **skipping an unselected test in
+`beforeEach`, before a window opens**: Vitest's `-t` is a regex, and arbitrary titles cannot be
+pasted into one safely. A statically skipped test opens no window. Vitest's own
+`@vitest/coverage-v8` must be off during a collection: two Profiler sessions on one isolate
+interfere. A separately started service is **not collected yet** — several workers reading one
+service would split its isolate's take stream — so the adapter records the test process, warns
+once, and a server-side change escalates to `mode: all`.
 
 ### 7.4 Jest (`@spikedpunch/cbd-jest`)
 
-A custom `testEnvironment` wrapping the project's one, implementing `handleTestEvent`, which Jest
-awaits: `test_start` → `testStart`, `test_done` → `testEnd`. The ID comes from the event's test and
-its parent `describe` blocks. Jest's `--coverage` off during collection, for the same reason.
+**Implemented.** Two config lines:
+
+```js
+const { withCbd } = require('@spikedpunch/cbd-jest/config');
+
+module.exports = withCbd({
+  testEnvironment: '@spikedpunch/cbd-jest/environment',
+});
+```
+
+With `CBD_SHARD` unset the environment is inert; `CBD_SELECTION` narrows the run through `withCbd`,
+which sets Jest's `testNamePattern` from the selection — escaped titles with ` > ` turned into `\s+`
+and anchored, because Jest joins the same parts with spaces. The config is loaded before the run and
+the pattern is the only filter that sees an expanded `test.each` row; a setup-file wrapper did not,
+and `.each` rows bypassed it (on a real Strapi run, refusing them failed 12 suites). Jest creates **one environment per test file**, and `setup()` is awaited before the test file
+is evaluated — so the source is created then (the file's imports land in `@load`) and `teardown()`
+writes the footer. That gives **one shard per test file**, named from the file's path, so two files in
+one worker never append to one another and a worker killed mid-file leaves a shard with no footer
+(refused) rather than a corrupted run artifact.
+
+A test environment is loaded with `require`, so the entries Jest names are built as CommonJS with a
+dynamic import of the ESM core. Windows are the awaited `handleTestEvent` events (`test_start`,
+`test_done`). The identity is the enclosing `describe` names plus the test name, with Jest's
+synthetic `ROOT_DESCRIBE_BLOCK` omitted; the outcome is `mode` first (`skip`/`todo` are skipped, and
+a skipped test may never reach `test_done`) then the test's `errors`.
+
+Selection is the config helper above, not a setup file: the names Jest filters on are the expanded
+ones, and only its own pattern sees them. Jest's own `--coverage` must be off.
 
 ### 7.5 Mocha (`@spikedpunch/cbd-mocha`)
 
-A root hook plugin (`--require @spikedpunch/cbd-mocha/register`) with `beforeEach` / `afterEach`, using
-`this.currentTest.titlePath()`.
+`NODE_OPTIONS="--import @spikedpunch/cbd-mocha/auto"` patches `Mocha.prototype.run` — the one funnel
+every run passes through — and adds root hooks with `beforeEach` / `afterEach`, using
+`this.currentTest.fullTitle()`. The same module reads `CBD_SELECTION` and applies the subset as one
+anchored, per-title-escaped `grep`; selecting and recording are independent, as they are for japa. A
+selection therefore has to be expressible as mocha's single filter, which exact full titles are.
 
 ### 7.6 Anything else: the manual protocol
 
@@ -423,6 +577,14 @@ past what JSON parses in well under a second, `node:sqlite` is the upgrade path 
 cleanly because tests do not overlap. Two shards recording one test keep the union of its touches
 and warn.
 
+**Retention.** A shard is roughly the size of the coverage it holds — tens of megabytes for a real
+suite — so an unbounded `.cbd/shards` grows by that much per run. `cbd gc --keep <n>` keeps the
+newest `n` shards and the newest `n` maps (default 10, ordered by mtime rather than by name) and
+removes the rest. It always keeps the map `select` would read, which can be older than the newest
+`n` when another branch has recorded since; deleting it would turn a working selection into "no
+map". Only files directly in `shards/` and directories directly in `maps/` are candidates, so a
+scratch file beside them is never touched.
+
 ### 8.2 Which changes
 
 ```ts
@@ -441,7 +603,7 @@ commit that has one (`git rev-list --first-parent`), and reports how far back it
 |---|---|
 | a changed file matches `alwaysAll` globs (lockfile, `package.json`, test config, `tsconfig*`, migrations — user-configured) | `mode: all`, reason names the file |
 | a changed file is touched only by `@load` or `@teardown` (startup code, global setup) | `mode: all` |
-| a changed file is a test file | select every test in that file; a new test file → all its tests |
+| a changed file is a test file (it defines tests the map knows) | select the tests the map knows in that file and **warn that an added test cannot be named** (`testFilePolicy: 'known'`, the default); `'all'` forces the suite; a new test file the map has never seen → all |
 | a changed file is in the map, and a hunk intersects a mapped function's line range | the tests that touched that function |
 | a changed file is in the map, and a hunk is outside every function (imports, top-level constants, class field initializers) | every test that touched the file |
 | a changed file is in the map but no test touched it | nothing selected; reported as `untested` |
@@ -449,6 +611,32 @@ commit that has one (`git rev-list --first-parent`), and reports how far back it
 | a deleted file in the map | every test that touched it |
 | a file touched by `@between` only | its tests cannot be known; `mode: all` by default (`betweenPolicy`) |
 | the map is `dirty` or older than `maxAgeCommits` | the selection carries a warning; `--strict` makes it `mode: all` |
+
+A **pure insertion** has no old-side line range — git writes it as `@@ -N,0 +M,K @@` — so it cannot
+be a hunk at all. It is carried separately as an insertion point: content inserted strictly inside a
+mapped function is that function's (rule 4), and content inserted outside every function is answered
+by the whole file (rule 5). Dropping it made an added block invisible and selected nothing
+(`cbd-81h.1`, found by the replay harness).
+
+A **changed test file** can *add* a test the map cannot name, so the selection says what it cannot
+answer: it selects the tests the map knows in that file and **warns** that a newly added one will not
+run (`cbd-81h.2`; the replay found a commit adding 18 tests to two known spec files, all
+unselectable). `testFilePolicy: 'all'` is the opt-in that pays for the gap with a full run. `known`
+is the default because spec edits are the ordinary way this repository's commits land — **53 of the
+79** measured commits in one week and **140 of 253** in one month touch a stores spec, so `all`
+would make nearly every run full and give up the tool's benefit. The gap is reported, not hidden:
+`select` warns, and `verify`/the replay report an unnameable test as `newTests` rather than as a
+miss.
+
+A file under a tests directory that defines no tests — a helper, a fixture builder, a macro — is
+ordinary code, not a test definition. It is answered by the function rules from the map's per-test
+evidence; handing it to the test-file rule asked the registry for tests it does not have and escalated
+to `all` (`cbd-e9l`, where that cost 26 points of all-rate on the target suite).
+
+`alwaysAll` is checked **before** `include`, because it is a statement that a change there is beyond
+the map's ability to answer, not a filter. The example config above lists `**/migrations/**` there
+although `include` covers only `src/**`; checking `include` first silently dropped those changes,
+which is under-selection (`cbd-0lu` found it on the fixture's JSON data file).
 
 A **never seen** file is the important case: a TypeScript file containing only types, a `const enum`
 that the compiler inlines into its users, a SQL file, a JSON fixture read with `fs`, an environment
@@ -471,19 +659,38 @@ export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
   | { kind: 'file'; file: string; tests: number[] }
   | { kind: 'test-file'; file: string }
-  | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map'; file?: string }
+  | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map' | 'test-file'; file?: string }
 ```
 
 ### 8.5 Other queries
 
-- `reaches(map, test, file, line?)` → boolean: does this test execute that function? A mutation
-  testing tool uses it to check that the test named as a mutant's killer can reach the mutant at all,
-  and to choose which tests to run against each mutant.
-- `testsFor(map, file, fn?)`, `filesFor(map, test)`: the two directions of the map.
-- `explain(map, file[:line])`: which tests reach it and how often, for humans and agents.
-- `stats(map)`: tests, files, unmapped files under `include`, the share of tests per file (a file
-  every test touches selects everything and is worth knowing about), buckets' sizes, collection
-  overhead.
+`cbd`'s verbs and the exported API answer the map's two directions. The map on disk is
+`<stateDir>/maps/<commit>/map.json`; its shape (`CoverageMap`: `tests`, `files`, buckets, `seen`)
+is the supported export for another tool, and every query below is derived from it.
+
+- `reaches(title, file[:line], { file? })` — `cbd reaches` — does this one test reach the file or
+  line? Returns the resolved test, the target, whether the map has seen the file, the functions of
+  the target file the test executed, and every file the test reached. A line outside every function
+  is answered by the file-level rule (§8.3 rule 5). A bare title that names tests in more than one
+  file is **refused with the candidate files**, never guessed at; `--file` disambiguates. A mutation
+  testing tool uses the same relation to check that a mutant's killer can reach it at all.
+- `functionsForTest(map, index)`: every function one test reached — the inverse of
+  `testsForFunction`, and the data behind `cbd reaches`.
+- `testsForFunction(map, file, key)`, `functionsInFile(map, file)`: the other direction.
+- `testsForLine(map, file, line)`: the tests that reach one source line — the function's tests,
+  or every test that touched the file when the line is outside every function (§8.3 rules 4 and
+  5 at line scale). This is the blast-radius query Gate B (`cbd-2ev`) is measured with.
+- `explain(map, file[:line])`: which tests reach it and how often, for humans and agents. A zero
+  answer says which zero it is: seen but reached by no test, or not in the map at all — the first
+  runs nothing, the second runs everything.
+- `stats()` — `cbd stats` — tests; mapped functions; files reached, seen, and untested; the
+  **names** of the seen files no test reaches (the inverse map's other half, rather than only its
+  count); tests per test file; functions per reached file and tests per mapped function (median,
+  p90, max); the most-tested files (tests and functions); buckets' sizes. It deliberately does not
+  claim a coverage percentage: only *executed* functions are in the map, so there is no denominator
+  over the source. A source file no recorded process ever loaded cannot be named here — the map has
+  no evidence for it — and `select` runs everything for such a file, so the text output says so
+  rather than letting the list read as "everything else is covered".
 
 ---
 
@@ -496,7 +703,10 @@ export type Reason =
 | `@spikedpunch/cbd` | `@jridgewell/trace-mapping` only | sources, Normalizer, Recorder, shard writer, map builder and reader, `changesSince`, `select`, queries. No test-framework imports, ever. |
 | `@spikedpunch/cbd-cli` | core | the `cbd` binary |
 | `@spikedpunch/cbd-japa` | core; peer `@japa/runner` ≥ 5 | the japa plugin |
-| `@spikedpunch/cbd-node-test`, `@spikedpunch/cbd-vitest`, `@spikedpunch/cbd-jest`, `@spikedpunch/cbd-mocha` | core; the framework as a peer | later adapters |
+| `@spikedpunch/cbd-mocha` | core; peer mocha | the `NODE_OPTIONS` auto entry and root hooks |
+| `@spikedpunch/cbd-vitest` | core; peer vitest ≥ 3.2 | the setup file: one source and one shard per test file, selection by runtime skip |
+| `@spikedpunch/cbd-jest` | core; peer jest ≥ 29 | the test environment (one shard per file) and the selection config helper |
+| `@spikedpunch/cbd-node-test` | core; the framework as a peer | later adapter |
 | `@spikedpunch/cbd-mcp` | core | optional MCP server |
 
 (`@cbd` is a placeholder scope; check npm before settling on a name.)
@@ -515,7 +725,8 @@ cbd select [--since <ref>] [--worktree] [--strict] [--format json|lines|japa-arg
       print the selection; exit 0 for a subset, 3 for "all", so scripts can branch on it
 
 cbd explain <file>[:<line>]         which tests reach this, and through which functions
-cbd reaches <test-key> <file>[:<line>]
+cbd reaches <test-title> <file>[:<line>] [--file <test-file>]
+      does this one test reach the file or line? (the inverse of explain)
 cbd stats [--commit <sha>]
 cbd verify --since <ref> -- <full test command>
       run the full suite, then report every failing test the selection would have skipped (a miss)
@@ -526,6 +737,13 @@ cbd mcp                             start the MCP server (stdio)
 Output follows one rule: **quiet by default, JSON on request.** A human or an agent gets one line
 per question; `--format json` gives everything.
 
+Implemented today: `build`, `select`, `explain`, `stats`, `collect` and `gc`, in
+`@spikedpunch/cbd-cli`. `reaches`, `verify` and `mcp` are not built yet, and the argument
+formats below `json` are not implemented either — selection reaches japa through the plugin and
+mocha through `auto`, not through `--tests` (see §7.1, §7.5). `collect` resolves the selection before it spawns the suite and passes
+the subset as a file named by `CBD_SELECTION`; a runner that does not read it runs the full suite,
+which is safe over-selection rather than a miss.
+
 ### 9.3 Configuration — `cbd.config.json` at the repo root, committed
 
 ```jsonc
@@ -535,25 +753,38 @@ per question; `--format json` gives everything.
   "alwaysAll": ["pnpm-lock.yaml", "**/package.json", "**/tsconfig*.json", "**/migrations/**", "tests/**/bin/*.ts"],
   "unknownPolicy": "all",
   "betweenPolicy": "all",
+  "testFilePolicy": "known",
   "granularity": "test",
   "maxAgeCommits": 50,
   "stateDir": ".cbd"
 }
 ```
 
-`.cbd/` is gitignored; maps are build artifacts.
+`.cbd/` is gitignored; maps are build artifacts. The file is committed, and its editor
+autocomplete comes from the schema shipped with the package:
+
+```jsonc
+{ "$schema": "./node_modules/@spikedpunch/cbd/cbd.config.schema.json", ... }
+```
+
+Every key is optional and absent keys take the safe default. An unknown key, or a value the
+selector does not implement, is an error rather than a silent fallback; `granularity` accepts only
+`"test"` in v1.
 
 ### 9.4 Library use
 
 ```ts
-import { loadMap, changesSince, select } from '@spikedpunch/cbd'
+import { createCbd } from '@spikedpunch/cbd'
 
-const map = await loadMap({ root, near: 'HEAD' })              // nearest ancestor commit with a map
-const changes = await changesSince({ root, since: map.commit, worktree: true })
-const selection = select(map, changes, config)
+const cbd = createCbd({ root })              // config bound once (ADR-0003)
+const { selection } = cbd.select()           // nearest ancestor map, diffed against the worktree
 if (selection.mode === 'all') runEverything(selection.reasons)
 else runOnly(selection.tests)
 ```
+
+The lower-level `loadMap` / `changesSince` / `select` are exported too, for a consumer that
+already has a map and a diff. The adapter seam (`Recorder`, the sources, `parseShard`) is
+`@spikedpunch/cbd/adapter`, explicitly unstable.
 
 ---
 
@@ -576,14 +807,15 @@ else runOnly(selection.tests)
 
 | risk | effect | mitigation |
 |---|---|---|
-| **Background work bleeds across tests** (an outbox poller, a timer, a request still in flight) | code credited to the wrong test, or to none | `takeAtStart` moves leftovers to `@between`; `settleMs`; `betweenPolicy: all`; `stats` reports the bucket's size so you know how big the problem is |
+| **Background work bleeds across tests** (an outbox poller, a timer, a request still in flight) | code credited to the wrong test, or to none | request-id correlation (ADR-0008) credits a request to the test that sent it, even when it finishes later; `takeAtStart` moves leftovers to `@between`; `settleMs`; `betweenPolicy: all`; `stats` reports the bucket's size so you know how big the problem is |
 | **Tests that depend on order** | a test touches code only because an earlier test left state behind | coverage still records what really ran in that order; a reordered run can differ, so `verify` should run in the CI order |
 | **Under-selection** (a real failure skipped) | the expensive failure | safe defaults (unknown → all, `@load` → all), `alwaysAll`, maps checked for age, `cbd verify` measures misses, and full runs still gate merges |
 | **Overhead of precise coverage and the inspector** | slower collection runs | collection is occasional; measure in the spike; `granularity: 'group'` halves the takes |
 | **`take()` cost grows with loaded functions** | slow per-test snapshots in a large server | `detailed: false`; filter early by URL; cache by script hash; measure per take in the spike |
 | **Two coverage tools on one isolate** | wrong or empty counts | adapters refuse to start when the framework's own V8 coverage is on |
 | **Source maps missing or wrong** | touches attributed to `dist/` files, or the wrong lines | fall back to the generated file and report it in `stats`; never guess |
-| **`--inspect` exposed** | remote code execution on the server | loopback only unless `allowRemote`; collection only, never in production |
+| **A debugger port exposed (fallback path only)** | remote code execution on the server | injection is the default and opens no TCP port; the attach path binds loopback unless `allowRemote`, and is collection-only |
+| **The instrument must be resolvable from the target** | a target that cannot resolve it records nothing for its process | it is published as a subpath of the package the test side already depends on; a target whose environment genuinely cannot be set uses the attach fallback |
 | **Multi-process servers** | code in a worker process is invisible | a list of targets; `stats` cannot see what was not attached, so the docs say it |
 
 ---
@@ -596,8 +828,9 @@ before reviews.
 ### Stage 0: Spike (about 1 day)
 **Goal**: prove the four assumptions the design rests on, on a real suite.
 **Success Criteria**:
-- S1: `takePreciseCoverage` with `callCount: true` returns per-window deltas, in-process and over
-  CDP to an `--inspect` server; record the per-take time on the largest available suite.
+- S1: `takePreciseCoverage` with `callCount: true` returns per-window deltas, in-process; record the
+  per-take time on the largest available suite. (The out-of-process half is the injection spike and
+  the attach fallback; see ADR-0005 and `cbd-a3v.4`.)
 - S2: a japa plugin's `test.setup` hook (and its returned cleanup) brackets each test, awaited, for
   top-level and grouped tests; `runEnd` can be awaited.
 - S3: source maps from a TypeScript loader (inline) and from `tsc` output (`.map` files) map function
@@ -608,10 +841,13 @@ before reviews.
 **Status**: Not Started
 
 ### Stage 1: Core sources and Normalizer (2 days)
-**Goal**: `inProcessSource`, `inspectorSource`, `normalize()` with source maps and stable function keys.
+**Goal**: `inProcessSource`, `socketSource` with the injected instrument module, `normalize()` with
+source maps and stable function keys. (`inspectorSource` is the attach fallback, built only when a
+target needs it — `cbd-a3v.4`.)
 **Success Criteria**: a fixture project with a TS loader and a `dist/` build yields the expected
 `(file, fn)` touches for known calls; a function not called in a window is absent.
-**Tests**: fixture-driven unit tests; one test spawns a fixture server with `--inspect=0`.
+**Tests**: fixture-driven unit tests; one test starts a fixture server the way a developer does, with
+`NODE_OPTIONS`, and reads it over the socket.
 **Status**: Not Started
 
 ### Stage 2: Recorder, shards, build, map reader (1.5 days)
@@ -626,7 +862,7 @@ per-test touches and a non-empty `@between`; an interrupted shard is refused.
 stats / verify`.
 **Success Criteria**: one table-driven test per row of section 8.3; `verify` reports a planted miss.
 **Tests**: a fixture git repository built in a temp directory per test.
-**Status**: Not Started
+**Status**: `build` / `select` / `explain` / `stats` / `collect` implemented (`cbd-63j`, `cbd-pfu`).
 
 ### Stage 4: The japa adapter (1 day)
 **Goal**: `@spikedpunch/cbd-japa` collecting and selecting.
@@ -664,20 +900,19 @@ originating project:
   `suite.onGroup`, `suite.onTest`, `group.tap`;
 - the emitter's `test:start` / `test:end` events.
 
-The originating project starts its test server with `spawn(process.execPath, ['dist/Server'])`, so
-an `--inspect` flag can be added at that point.
+The originating project's dev-cli builds its server's environment from a template, so injection is
+one line there and nothing in the server's source changes. It has since been exercised end to end on
+that suite (`cbd-a3v`: 391/391, 112 server functions reached by exactly one test).
 
-**From V8 / Node documentation, not yet exercised here**:
+**Exercised since this was written**:
 - `takePreciseCoverage` resetting counts when `callCount: true`;
 - `Debugger.scriptParsed` carrying `sourceMapURL`;
-- `/json/list` target discovery;
-- Node 22's global `WebSocket`.
+- the in-process inspector's `post` completing synchronously, including inside `process.on('exit')`;
+- the instrument module, its unix socket, and the snapshot a dying process leaves (ADR-0007).
 
-**Assumptions for the spike to confirm or kill**:
-- the in-process inspector's `post` completing synchronously;
-- the japa setup-cleanup ordering relative to `test:end`;
-- two Profiler sessions interfering;
-- the size and parse time of a map;
-- the overhead figures.
+**Still unexercised, because the attach path is deferred (`cbd-a3v.4`)**: `/json/list` target
+discovery and the CDP WebSocket client.
 
-**Not looked for yet**: prior art (S5).
+**Assumptions the design rests on**: two Profiler sessions on one isolate interfere (measured:
+counters split); the map's size and parse time; the overhead of a recorded run (`cbd-7yd`); prior
+art (S5) was not surveyed before this document was written.

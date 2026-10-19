@@ -16,6 +16,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
+import { CBD_SELF_ROOTS } from '@spikedpunch/cbd/adapter'
+import { JAPA_SELF_ROOTS } from '../src/self.js'
 
 const BIN = fileURLToPath(new URL('../../bin/e2e.js', import.meta.url))
 
@@ -75,6 +77,32 @@ test.group('japa adapter e2e', () => {
       for (const title of ['beta-lone', 'beta-grouped']) {
         assert.match(String(fileOf(title)), /fixture\/tests\/b\.spec\.js$/, title)
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // `cbd-qly`. The adapter and the recorder run inside every window, and a
+  // workspace link resolves outside node_modules, so the default prefilter does
+  // not hide them here — exactly the install shape this repository uses.
+  test("a recorded run contains none of the tool's own files", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      runE2e('record', { CBD_SHARD: shard })
+
+      // A v2 shard names files once, in its script table; if the tool's own files
+      // were recorded at all, this is where they would appear.
+      const roots = [...CBD_SELF_ROOTS, ...JAPA_SELF_ROOTS]
+      const own: unknown[] = []
+      for (const record of readShard(shard)) {
+        if (record.type !== 'script') continue
+        const url = record.url
+        if (typeof url !== 'string') continue
+        const file = fileURLToPath(url)
+        if (roots.some((root) => file === root || file.startsWith(`${root}/`))) own.push(record)
+      }
+      assert.deepEqual(own, [], 'the adapter and core must not appear in the shards they write')
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

@@ -25,6 +25,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { normalize } from '../src/normalize.js'
+import { sourceMapUrlOf } from '../src/source-maps.js'
 import type { ScriptInfo, Source, V8ScriptCoverage } from '../src/types.js'
 
 const BODY = [
@@ -170,4 +171,87 @@ test('a declared but unparseable map resolves to nothing rather than projecting'
   } finally {
     tree.cleanup()
   }
+})
+
+/**
+ * The module body of a tsc-built script starts where the first mapping does.
+ *
+ * tsc emits `"use strict"` and the `__createBinding` helpers on generated lines
+ * that carry no mapping, so byte offset 0 — the module body — has no mapping of
+ * its own and `originalPositionFor` will not search past its line. The lookup
+ * returned null, the module body vanished, and a file whose only executed
+ * function is the module body (a module of classes or constants re-exported by a
+ * barrel) disappeared from the map entirely: `cbd-1ci`, observed on
+ * `libs/core/src/KeyStore.ts`, `SigningPolicy.ts`, and `libs/leases/src/Columns.ts`.
+ */
+test('the module body resolves through an unmapped generated prefix', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cbd-module-body-'))
+  try {
+    mkdirSync(join(root, 'src'), { recursive: true })
+    mkdirSync(join(root, 'out'), { recursive: true })
+    const sourceFile = join(root, 'src/mod.ts')
+    const generated = join(root, 'out/mod.js')
+    writeFileSync(sourceFile, 'class Unused {\n}\n')
+
+    // Three generated lines with no segments (`;;;`), then the class on line 4.
+    const map = {
+      version: 3,
+      file: 'mod.js',
+      sources: ['../src/mod.ts'],
+      names: [],
+      mappings: ';;;AAAA',
+    }
+    const sourceMapURL = `data:application/json;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}`
+    const code = [
+      '"use strict";',
+      'Object.defineProperty(exports, "__esModule", { value: true });',
+      '// tsc emits this line before the first mapping',
+      'class Unused {',
+      '}',
+      `//# sourceMappingURL=${sourceMapURL}`,
+      '',
+    ].join('\n')
+    writeFileSync(generated, code)
+
+    const url = pathToFileURL(generated).href
+    const payload: V8ScriptCoverage[] = [
+      {
+        scriptId: '1',
+        url,
+        functions: [
+          {
+            functionName: '',
+            isBlockCoverage: false,
+            ranges: [{ startOffset: 0, endOffset: code.length, count: 1 }],
+          },
+        ],
+      },
+    ]
+    const touched = normalize(payload, fakeSource(new Map([['1', { url, sourceMapURL }]])), {})
+    assert.equal(
+      touched.length,
+      1,
+      'the module body was dropped because offset 0 has no mapping on its generated line',
+    )
+    assert.equal(touched[0]?.name, '<module>')
+    // The map resolves `sources` against the script's own URL, so the spelling is
+    // the one in the temp directory rather than its realpath.
+    assert.equal(touched[0]?.file, sourceFile)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// `cbd-n9t.1`: a shard omits a map the file itself declares, so the build has to
+// read the same comment Node would.
+test('sourceMapUrlOf reads the last magic comment, in either form', () => {
+  assert.equal(sourceMapUrlOf('x\n//# sourceMappingURL=a.map\n'), 'a.map')
+  assert.equal(sourceMapUrlOf('x\n//@ sourceMappingURL=legacy.map'), 'legacy.map')
+  assert.equal(sourceMapUrlOf('x\n/*# sourceMappingURL=b.map */'), 'b.map')
+  assert.equal(
+    sourceMapUrlOf('//# sourceMappingURL=one.map\n//# sourceMappingURL=two.map'),
+    'two.map',
+    'the last comment wins, as it does for Node',
+  )
+  assert.equal(sourceMapUrlOf('no comment here'), undefined)
 })

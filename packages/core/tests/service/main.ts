@@ -20,6 +20,7 @@
  * `neverCalled` is never called by anything. It is the inverse map at socket
  * scale: if it appears in a take, the delta is wrong.
  */
+import { createServer, type Server } from 'node:http'
 import { createInterface } from 'node:readline'
 
 export function normalizeKey(input: string): string {
@@ -48,6 +49,20 @@ export function neverCalled(seed: number): number {
   return seed * 2
 }
 
+/**
+ * The handler work a correlated request exists to attribute.
+ *
+ * A function of its own, called from the request handler below, so a take can say
+ * *which* service function ran rather than only that the server answered. `serve`
+ * starts the server on port 0 and announces it, which is the same shape the
+ * end-to-end fixtures use.
+ */
+export function priced(quantity: number): number {
+  return quantity * 7
+}
+
+let server: Server | null = null
+
 const commands = createInterface({ input: process.stdin })
 
 commands.on('line', (line) => {
@@ -66,6 +81,20 @@ commands.on('line', (line) => {
 
   if (command === 'idle') {
     process.stdout.write('idle\n')
+    return
+  }
+
+  if (command === 'serve') {
+    if (server === null) {
+      server = createServer((_request, response) => {
+        response.end(String(priced(3)))
+      })
+      server.listen(0, '127.0.0.1', () => {
+        const address = server?.address()
+        const port = address !== null && typeof address === 'object' ? address.port : 0
+        process.stdout.write(`port ${String(port)}\n`)
+      })
+    }
     return
   }
 

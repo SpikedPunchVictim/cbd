@@ -1,0 +1,114 @@
+name: Publish to npm
+
+# Publishing is deliberate: a tag push or a manual dispatch, never a branch.
+# Every package shares the tag's version (fixed versioning); the version is
+# stamped into the manifests in CI, so the repository's `0.0.0` placeholders do
+# not need a commit per release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to publish, without the leading v (e.g. 0.1.0)
+        required: true
+        type: string
+      npm_tag:
+        description: npm dist-tag (manual publishes)
+        default: latest
+        type: string
+      dry_run:
+        description: Pack and report only; upload nothing
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  # npm provenance is signed with GitHub's OIDC identity.
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, test, publish
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          # Writes the registry auth line setup-node reads from NODE_AUTH_TOKEN.
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # A tag can point at a commit CI never saw; the publish gate is its own.
+      - name: Test
+        run: pnpm -r test
+
+      - name: Resolve version and dist-tag
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TAG: ${{ inputs.npm_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if [[ "$version" == *-* ]]; then
+              tag=next
+            else
+              tag=latest
+            fi
+          else
+            version="$INPUT_VERSION"
+            tag="$INPUT_TAG"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$version' is not a semver version"
+            exit 1
+          fi
+          if [[ ! "$tag" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::'$tag' is not a usable npm dist-tag"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      # The lockfile and git history are not rewritten: this is a release-stamp
+      # in the runner's checkout only. pnpm publish resolves `workspace:*` to the
+      # stamped versions in the packed manifests.
+      - name: Stamp workspace versions
+        run: >-
+          pnpm -r --filter "./packages/*"
+          exec npm pkg set "version=${{ steps.release.outputs.version }}"
+
+      - name: Publish
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--access public --tag "${{ steps.release.outputs.tag }}" --no-git-checks)
+          if [[ "$INPUT_DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          else
+            # Requires a public repository (this one is) and id-token: write.
+            args+=(--provenance)
+          fi
+          pnpm -r --filter "./packages/*" publish "${args[@]}"

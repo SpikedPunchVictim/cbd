@@ -245,3 +245,43 @@ test('resolves through a real source map back to the TypeScript source', () => {
   assert.equal(touch?.startLine, 3)
   assert.equal(touch?.endLine, 5)
 })
+
+// `cbd-qly`: the tool's own code is inside every window it closes. The default
+// prefilter hides it only when CBD is installed under node_modules; a workspace
+// link resolves to a realpath that is not. The exclusion is a floor, so a
+// consumer's prefilter cannot opt it back in.
+test('a file under the tool\'s own package is excluded even when the prefilter accepts everything', () => {
+  const selfUrl = pathToFileURL(join(coreRoot, 'src/self.ts')).href
+  const payload = payloadFor(selfUrl, [{ name: 'packageRoot', start: 0, end: 10, count: 1 }])
+  const touched = scan(payload, fakeSource(), { prefilter: () => true })
+  assert.deepEqual(touched, [], 'core\'s own source must never reach the map')
+})
+
+test('selfRoots from an adapter are a floor under a custom prefilter too', () => {
+  const tree = makeTree()
+  try {
+    const start = span('function alpha')
+    const beta = span('function beta')
+    // Two functions, so the module-body heuristic has a longer range to compare
+    // against; a lone function starting at offset 0 looks like the module body.
+    const payload = payloadFor(pathToFileURL(tree.file).href, [
+      { name: 'alpha', start, end: closeBrace(start), count: 1 },
+      { name: 'beta', start: beta, end: closeBrace(beta), count: 0 },
+    ])
+    // Without the root this resolves and yields alpha; the root must drop it first.
+    const accepted = scan(payload, fakeSource(), {
+      projection: [{ from: tree.outDir, to: tree.root }],
+    })
+    // `scan` keeps unexecuted definitions; the point here is that both arrive.
+    assert.deepEqual(accepted.map((t) => t.key), ['alpha@0', 'beta@0'])
+
+    const excluded = scan(payload, fakeSource(), {
+      projection: [{ from: tree.outDir, to: tree.root }],
+      prefilter: () => true,
+      selfRoots: [tree.root],
+    })
+    assert.deepEqual(excluded, [])
+  } finally {
+    tree.cleanup()
+  }
+})

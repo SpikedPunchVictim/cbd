@@ -61,6 +61,35 @@ export interface Source {
 }
 
 /**
+ * One coverage delta and the correlation ids that were in flight for it.
+ *
+ * `ids` is a set rather than one id because concurrent requests cannot be
+ * separated by a take: `takePreciseCoverage` resets one counter for the whole
+ * isolate. Attributing the delta to every request that was in flight during it
+ * over-selects, which is the safe direction; picking one would be a guess.
+ */
+export interface TaggedCoverage {
+  ids: string[]
+  coverage: V8ScriptCoverage[]
+}
+
+/**
+ * A boundary's whole answer: the ordinary window, plus what the source took on
+ * its own account.
+ *
+ * A queued source can produce more than one delta per boundary. The service
+ * instrument takes at each correlated request's start and end, and those deltas
+ * are delivered with the next boundary reply — that is `requests`. `ids` describes
+ * `coverage`: the requests in flight when the boundary itself was crossed. Both
+ * are opt-in and absent from sources that do not correlate anything.
+ */
+export interface TakeCapture {
+  coverage: V8ScriptCoverage[]
+  ids: string[]
+  requests: TaggedCoverage[]
+}
+
+/**
  * A window whose take has been sent but not yet answered.
  *
  * `seq` is its position in the source's dispatch order, which is the order
@@ -71,6 +100,15 @@ export interface Source {
 export interface PendingTake {
   readonly seq: number
   settle(): Promise<V8ScriptCoverage[]>
+  /**
+   * The same reply with its correlation tags, when the source has any.
+   *
+   * A separate method rather than a wider `settle()` return type: a plain source
+   * has no tags to report, and making every caller destructure an envelope it
+   * never fills would be a worse contract than an optional capability. The
+   * `Recorder` uses this when it is present and `settle()` otherwise.
+   */
+  settleTagged?(): Promise<TakeCapture>
 }
 
 /** What the boundary actually cost, over the windows taken so far. */
@@ -88,13 +126,25 @@ export interface DriftStats {
    * land late. Measured on this host, 200 boundaries written back to back drift 24ms and
    * put `drift` well into the milliseconds. The second is a client that is simply not
    * reading: the reply is in the socket buffer and the recorder has not got to it,
-   * because it is busy normalizing the last window. That raises the depth without moving
-   * a single boundary, and it is the ordinary case — a real run measured at depth 7 with
-   * a mean drift of 0.34ms.
+   * because it is parsing a large one (`cbd-llm`: the first take's reply, carrying the
+   * whole function report, blocked the loop for up to 170ms — the table's maps are no
+   * longer duplicated on the wire, but V8's first function list remains). That raises
+   * the depth without moving a single boundary, and it is the ordinary case — a real run
+   * measured at depth 7 with a mean drift of 0.34ms.
    *
-   * So this is a liveness signal, not a precision one. **Whether the windows slid is
-   * `maxUs` against `minGapUs`**: a boundary that landed later than the next one was sent
-   * is one the runner did not ask for.
+   * So this is a liveness signal, not a precision one, and it stays **one** number
+   * rather than being split into "queued" and "unread": telling those apart needs a
+   * client-side arrived-but-unread counter, and the distinction it would buy is the one
+   * `maxUs` against `minGapUs` already answers. **Whether the windows slid is `maxUs`
+   * against `minGapUs`**: a boundary that landed later than the next one was sent is
+   * one the runner did not ask for.
+   *
+   * **The first boundary of a process is the expensive one** (`cbd-h09`): its take
+   * carries every script the process has parsed and the inspector is cold — measured at
+   * about 7ms against a fraction of a millisecond once warm. A boundary dispatched inside
+   * that cost drifts by it, so `maxUs > minGapUs` can be true at start-up on a run whose
+   * steady state is exact. The place to see it is a test end immediately followed by the
+   * next test start, which are a bucket boundary and a test boundary about 1ms apart.
    */
   maxDepth: number
   /**

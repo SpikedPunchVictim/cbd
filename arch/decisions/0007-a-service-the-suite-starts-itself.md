@@ -235,7 +235,11 @@ cheapest to be correct — a suite whose stand-alone tests are the ones a develo
   windows on grizzly, because every later take re-read the same snapshot.
 - **Every instrumented process pays for the snapshot.** A take in the child is work the consumer
   did not ask for; the interval is therefore a bound on both the cost and the gap, and it has to
-  be named and measured rather than chosen by feel.
+  be named and measured rather than chosen by feel. The write carries only rows no reply has
+  delivered — unacknowledged windows and scripts parsed since the last take — so it is the whole
+  table until the first take is acknowledged and a window afterwards. Repeating the full table
+  after every take cost a measured 1.16 ms mean drift on grizzly against 114 µs without it
+  (`cbd-3z1`), and was removed rather than accepted as the mechanism's price.
 - **Discovery has a second clock.** The boundary re-scan is joined by a 25 ms background look, so a
   target that appears mid-window is attached before the boundary needs it. The cost is one
   `readdirSync` per tick while the source is open, and the interval is the bound on how long a new

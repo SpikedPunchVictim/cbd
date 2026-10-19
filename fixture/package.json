@@ -12,7 +12,8 @@
     "test:all": "node scripts/build.mjs && node scripts/check-builds.mjs && node bin/test-maps.js && node bin/test-nomaps.js"
   },
   "dependencies": {
-    "@japa/runner": "^5.4.0"
+    "@japa/runner": "^5.4.0",
+    "@spikedpunch/cbd-japa": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

@@ -9,7 +9,14 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { parseShard, type ShardInput, type ShardRecord } from '@spikedpunch/cbd'
+import type { ShardInput, ShardRecord } from '@spikedpunch/cbd'
+import {
+  parseShard,
+  resolveShard,
+  type ResolvedShard,
+  type ResolvedTest,
+  type ResolveOptions,
+} from '@spikedpunch/cbd/adapter'
 import { serviceShardPath } from '../../src/plugin.js'
 
 // Three levels up, not two: this file is compiled to `dist/tests/support/service.js`,
@@ -170,14 +177,34 @@ export function pidOf(shard: ShardInput): number | null {
   return first !== undefined && first.type === 'shard' ? first.pid : null
 }
 
-/** Where a file's execution was recorded: a test's window, or one of the buckets. */
-export function bucketsHolding(shard: ShardInput, file: string): string[] {
+/** A shard's windows with their byte ranges resolved into map coordinates. */
+export function resolved(shard: ShardInput, options: ResolveOptions = {}): ResolvedShard {
+  return resolveShard(shard, options)
+}
+
+/** The tests a shard recorded, with their touches resolved. */
+export function resolvedTestsIn(shard: ShardInput, options: ResolveOptions = {}): ResolvedTest[] {
+  return resolveShard(shard, options).tests
+}
+
+/**
+ * Where a file's execution was recorded: a test's window, or one of the buckets.
+ *
+ * A v2 shard holds script ids, so this resolves the shard — buckets first, then
+ * tests, which is the order the raw records are written in.
+ */
+export function bucketsHolding(
+  shard: ShardInput,
+  file: string,
+  options: ResolveOptions = {},
+): string[] {
+  const windows = resolveShard(shard, options)
   const out: string[] = []
-  for (const record of shard.records) {
-    if (record.type === 'shard' || record.type === 'end') continue
-    const hit = record.touches.some((touch) => touch[0] === file)
-    if (!hit) continue
-    out.push(record.type === 'test' ? `test: ${record.title}` : `@${record.type}`)
+  for (const kind of ['load', 'between', 'teardown'] as const) {
+    if (windows[kind].some((ref) => ref[0] === file)) out.push(`@${kind}`)
+  }
+  for (const test of windows.tests) {
+    if (test.touches.some((ref) => ref[0] === file)) out.push(`test: ${test.title}`)
   }
   return out
 }
@@ -195,12 +222,18 @@ export function changeTo(path: string) {
 }
 
 /** The files a map has evidence for, by category — the residual, in one place. */
-export function bucketFiles(shard: ShardInput, file: string): Record<string, string[]> {
+export function bucketFiles(
+  shard: ShardInput,
+  file: string,
+  options: ResolveOptions = {},
+): Record<string, string[]> {
+  const windows = resolveShard(shard, options)
   const out: Record<string, string[]> = {}
-  for (const record of shard.records) {
-    if (record.type === 'shard' || record.type === 'end') continue
-    const key = record.type === 'test' ? `test: ${record.title}` : `@${record.type}`
-    out[key] = record.touches.filter((touch) => touch[0] === file).map((touch) => touch[1])
+  for (const kind of ['load', 'between', 'teardown'] as const) {
+    out[`@${kind}`] = windows[kind].filter((ref) => ref[0] === file).map((ref) => ref[1])
+  }
+  for (const test of windows.tests) {
+    out[`test: ${test.title}`] = test.touches.filter((ref) => ref[0] === file).map((ref) => ref[1])
   }
   return out
 }

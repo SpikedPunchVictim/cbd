@@ -1,44 +1,62 @@
+/**
+ * The merge half of a build, against already-resolved shards.
+ *
+ * Resolution has its own spec (`resolve.spec.ts`) because it needs a real tree of
+ * generated files; everything here is about what the map does once the touches are
+ * in its coordinates — merging, widening, non-green exclusion, and the queries.
+ */
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
 import {
-  buildMap,
+  functionsForTest,
   functionsInFile,
   loadMap,
   mapDir,
+  mergeShards,
   saveMap,
   testsForFunction,
-  type ShardInput,
+  testsForLine,
 } from '../src/map.js'
-import type { ShardRecord, TouchRef } from '../src/shard.js'
+import type { ResolvedShard, ResolvedTest } from '../src/resolve.js'
+import type { ShardHeader, TouchRef } from '../src/shard.js'
 
 const A = '/repo/src/a.ts'
 const B = '/repo/src/b.ts'
 
-function shard(name: string, records: ShardRecord[]): ShardInput {
-  return { name, records }
-}
-
-function header(commit = 'c0ffee'): ShardRecord {
-  return { type: 'shard', version: 1, commit, pid: 1, startedAt: 'T0' }
+function header(commit = 'c0ffee', pid = 1): ShardHeader {
+  return { type: 'shard', version: 2, commit, pid, startedAt: 'T0' }
 }
 
 /** A second process's shard, so a test can say the pid is provenance and not identity. */
-function headerFrom(pid: number, commit = 'c0ffee'): ShardRecord {
-  return { type: 'shard', version: 1, commit, pid, startedAt: 'T0' }
+function headerFrom(pid: number, commit = 'c0ffee'): ShardHeader {
+  return header(commit, pid)
+}
+
+function shard(
+  name: string,
+  tests: ResolvedTest[],
+  buckets: { load?: TouchRef[]; between?: TouchRef[]; teardown?: TouchRef[] } = {},
+): ResolvedShard {
+  return {
+    name,
+    header: header(),
+    tests,
+    load: buckets.load ?? [],
+    between: buckets.between ?? [],
+    teardown: buckets.teardown ?? [],
+  }
 }
 
 function testRecord(
   title: string,
   touches: TouchRef[],
   status: 'passed' | 'failed' | 'skipped' = 'passed',
-): ShardRecord {
-  return { type: 'test', title, file: null, status, durationMs: 1, touches }
+): ResolvedTest {
+  return { title, file: null, status, durationMs: 1, touches }
 }
-
-const end: ShardRecord = { type: 'end', tests: 1, finishedAt: 'T1' }
 
 const ref = (file: string, key: string, start: number, endLine: number): TouchRef => [
   file,
@@ -48,13 +66,11 @@ const ref = (file: string, key: string, start: number, endLine: number): TouchRe
 ]
 
 test('a shard becomes a map keyed by file and function', () => {
-  const map = buildMap(
+  const map = mergeShards(
     [
       shard('s1', [
-        header(),
         testRecord('adds', [ref(A, 'add@0', 1, 3)]),
         testRecord('multiplies', [ref(A, 'multiply@0', 5, 7)]),
-        end,
       ]),
     ],
     { commit: 'c0ffee' },
@@ -66,13 +82,11 @@ test('a shard becomes a map keyed by file and function', () => {
 
 // The query the tool exists to answer.
 test('a function maps back to the tests that reach it', () => {
-  const map = buildMap(
+  const map = mergeShards(
     [
       shard('s1', [
-        header(),
         testRecord('adds', [ref(A, 'add@0', 1, 3)]),
         testRecord('multiplies', [ref(A, 'add@0', 1, 3), ref(B, 'helper@0', 1, 2)]),
-        end,
       ]),
     ],
     { commit: 'c0ffee' },
@@ -88,11 +102,46 @@ test('a function maps back to the tests that reach it', () => {
   assert.deepEqual(testsForFunction(map, A, 'neverRan@0'), [])
 })
 
-test('two shards merge, and a test appearing in both is recorded once', () => {
-  const map = buildMap(
+// `cbd-2ev`: the blast radius question is per line, not per function.
+test('a line maps to the tests that reach it, and the file is the fallback', () => {
+  const map = mergeShards(
     [
-      shard('s1', [header(), testRecord('adds', [ref(A, 'add@0', 1, 3)]), end]),
-      shard('s2', [header(), testRecord('adds', [ref(A, 'add@0', 1, 3)]), end]),
+      shard('s1', [
+        testRecord('adds', [ref(A, 'add@0', 10, 12)]),
+        testRecord('multiplies', [ref(A, 'multiply@0', 20, 22), ref(B, 'helper@0', 1, 2)]),
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+
+  // Inside a function, boundaries included.
+  assert.deepEqual(testsForLine(map, A, 10).map((t) => t.title), ['adds'])
+  assert.deepEqual(testsForLine(map, A, 22).map((t) => t.title), ['multiplies'])
+  // Between functions — an import or a top-level constant — the whole file's tests.
+  assert.deepEqual(testsForLine(map, A, 15).map((t) => t.title), ['adds', 'multiplies'])
+  // A file the map has never seen has no opinion to offer.
+  assert.deepEqual(testsForLine(map, '/repo/src/unknown.ts', 1), [])
+})
+
+test('a line inside nested functions is the union, not the innermost', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [
+        testRecord('outer only', [ref(A, 'outer@0', 1, 30)]),
+        testRecord('inner too', [ref(A, 'inner@4', 10, 12)]),
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(testsForLine(map, A, 11).map((t) => t.title), ['outer only', 'inner too'])
+  assert.deepEqual(testsForLine(map, A, 20).map((t) => t.title), ['outer only'])
+})
+
+test('two shards merge, and a test appearing in both is recorded once', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)])]),
+      shard('s2', [testRecord('adds', [ref(A, 'add@0', 1, 3)])]),
     ],
     { commit: 'c0ffee' },
   )
@@ -102,10 +151,10 @@ test('two shards merge, and a test appearing in both is recorded once', () => {
 })
 
 test('line ranges widen when shards disagree, and never narrow', () => {
-  const map = buildMap(
+  const map = mergeShards(
     [
-      shard('s1', [header(), testRecord('x', [ref(A, 'add@0', 4, 6)]), end]),
-      shard('s2', [header(), testRecord('y', [ref(A, 'add@0', 2, 8)]), end]),
+      shard('s1', [testRecord('x', [ref(A, 'add@0', 4, 6)])]),
+      shard('s2', [testRecord('y', [ref(A, 'add@0', 2, 8)])]),
     ],
     { commit: 'c0ffee' },
   )
@@ -115,34 +164,30 @@ test('line ranges widen when shards disagree, and never narrow', () => {
 // Amendment 5. A test that aborted early executed less than it should have, so
 // its touches under-select — and under-selection is the one unacceptable failure.
 test('a test that did not pass is kept out of the map by default', () => {
-  const records: ShardInput[] = [
+  const records: ResolvedShard[] = [
     shard('s1', [
-      header(),
       testRecord('green', [ref(A, 'add@0', 1, 3)], 'passed'),
       testRecord('red', [ref(A, 'multiply@0', 5, 7)], 'failed'),
       testRecord('skipped', [ref(B, 'helper@0', 1, 2)], 'skipped'),
-      end,
     ]),
   ]
-  const defaulted = buildMap(records, { commit: 'c0ffee' })
+  const defaulted = mergeShards(records, { commit: 'c0ffee' })
   assert.deepEqual(defaulted.tests.map((t) => t.title), ['green'])
   assert.equal(defaulted.files[A]?.['multiply@0'], undefined)
   assert.equal(defaulted.files[B], undefined)
 
-  const permissive = buildMap(records, { commit: 'c0ffee', includeNonGreen: true })
+  const permissive = mergeShards(records, { commit: 'c0ffee', includeNonGreen: true })
   assert.deepEqual(permissive.tests.map((t) => t.title), ['green', 'red', 'skipped'])
 })
 
 test('load and between buckets merge across shards with the widest range', () => {
-  const map = buildMap(
+  const map = mergeShards(
     [
-      shard('s1', [header(), { type: 'load', touches: [ref(A, '<module>@0', 0, 9)] }, end]),
-      shard('s2', [
-        header(),
-        { type: 'load', touches: [ref(A, '<module>@0', 0, 12)] },
-        { type: 'between', touches: [ref(B, 'timer@0', 2, 2)] },
-        end,
-      ]),
+      shard('s1', [], { load: [ref(A, '<module>@0', 0, 9)] }),
+      shard('s2', [], {
+        load: [ref(A, '<module>@0', 0, 12)],
+        between: [ref(B, 'timer@0', 2, 2)],
+      }),
     ],
     { commit: 'c0ffee' },
   )
@@ -151,7 +196,7 @@ test('load and between buckets merge across shards with the widest range', () =>
 })
 
 test('the map records which shards produced it', () => {
-  const map = buildMap([shard('one.jsonl', [header(), end])], { commit: 'c0ffee' })
+  const map = mergeShards([shard('one.jsonl', [])], { commit: 'c0ffee' })
   assert.deepEqual(map.shards, ['one.jsonl'])
   assert.equal(map.version, 1)
   assert.equal(map.commit, 'c0ffee')
@@ -160,14 +205,11 @@ test('the map records which shards produced it', () => {
 test('saving and loading round-trips, reporting bytes and parse time', () => {
   const root = mkdtempSync(join(tmpdir(), 'cbd-map-'))
   try {
-    const built = buildMap(
+    const built = mergeShards(
       [
-        shard('s1', [
-          header(),
-          testRecord('adds', [ref(A, 'add@0', 1, 3)]),
-          { type: 'between', touches: [ref(B, 'timer@0', 1, 1)] },
-          end,
-        ]),
+        shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)])], {
+          between: [ref(B, 'timer@0', 1, 1)],
+        }),
       ],
       { commit: 'c0ffee', builtAt: 'T2' },
     )
@@ -197,13 +239,35 @@ test('loading a map that is not there fails loudly rather than returning empty',
   }
 })
 
-test('functionsInFile lists what the map knows, sorted', () => {
-  const map = buildMap(
+test('functionsForTest is the inverse of the function index', () => {
+  const map = mergeShards(
     [
       shard('s1', [
-        header(),
+        testRecord('adds', [ref(A, 'add@0', 1, 3), ref(B, 'helper@0', 1, 2)]),
+        testRecord('multiplies', [ref(A, 'multiply@0', 5, 7)]),
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(
+    functionsForTest(map, 0).map((fn) => [fn.file, fn.key, fn.startLine, fn.endLine]),
+    [
+      [A, 'add@0', 1, 3],
+      [B, 'helper@0', 1, 2],
+    ],
+  )
+  assert.deepEqual(
+    functionsForTest(map, 1).map((fn) => fn.key),
+    ['multiply@0'],
+  )
+  assert.deepEqual(functionsForTest(map, 99), [])
+})
+
+test('functionsInFile lists what the map knows, sorted', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [
         testRecord('x', [ref(A, 'multiply@0', 5, 7), ref(A, 'add@0', 1, 3)]),
-        end,
       ]),
     ],
     { commit: 'c0ffee' },
@@ -219,7 +283,7 @@ test('functionsInFile lists what the map knows, sorted', () => {
  *
  * The test process records what the test itself ran; the service's shard records what
  * the service ran while that test was driving it. Both name the test the same way,
- * because both are driven by the same japa hooks. If `buildMap` keyed tests by
+ * because both are driven by the same japa hooks. If the merge keyed tests by
  * anything shard-specific, this would produce *two* tests of the same name and a
  * change reaching either would select one of them — under-selecting by exactly the
  * server half, which is the failure this work exists to prevent.
@@ -228,18 +292,16 @@ test('functionsInFile lists what the map knows, sorted', () => {
  * or merely collided, since the second entry would be a duplicate of the first.
  */
 test('two shards naming one test union its touches rather than splitting it', () => {
-  const map = buildMap(
+  const map = mergeShards(
     [
-      shard('test-process', [
-        header(),
-        testRecord('drives the key server', [ref(A, 'add@0', 1, 3)]),
-        end,
-      ]),
-      shard('service', [
-        headerFrom(9001),
-        testRecord('drives the key server', [ref(B, 'handle@0', 10, 20)]),
-        end,
-      ]),
+      {
+        ...shard('test-process', [testRecord('drives the key server', [ref(A, 'add@0', 1, 3)])]),
+        header: headerFrom(9001),
+      },
+      {
+        ...shard('service', [testRecord('drives the key server', [ref(B, 'handle@0', 10, 20)])]),
+        header: headerFrom(9002),
+      },
     ],
     { commit: 'c0ffee' },
   )
@@ -260,10 +322,13 @@ test('two shards naming one test union its touches rather than splitting it', ()
 // A shard's pid is provenance, not identity: the merge must not depend on it, or
 // two processes could never contribute to one test.
 test('the pid in a shard header does not affect the merge', () => {
-  const map = buildMap(
+  const map = mergeShards(
     [
-      shard('a', [header(), testRecord('x', [ref(A, 'add@0', 1, 3)]), end]),
-      shard('b', [headerFrom(4242), testRecord('x', [ref(B, 'helper@0', 1, 2)]), end]),
+      shard('a', [testRecord('x', [ref(A, 'add@0', 1, 3)])]),
+      {
+        ...shard('b', [testRecord('x', [ref(B, 'helper@0', 1, 2)])]),
+        header: headerFrom(4242),
+      },
     ],
     { commit: 'c0ffee' },
   )

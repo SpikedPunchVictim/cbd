@@ -51,9 +51,9 @@ import {
   pidOf,
   readServiceShard,
   readShard,
+  resolvedTestsIn,
   runSuite,
   startService,
-  testsIn,
   type RunningService,
 } from './support/service.js'
 
@@ -242,7 +242,7 @@ test.group('a service the suite starts itself, driven by japa', (group) => {
    */
   test('a test that drives nothing holds none of either service', () => {
     const { serviceShard } = fixture()
-    const record = testsIn(serviceShard).find((entry) => entry.title === INERT)
+    const record = resolvedTestsIn(serviceShard).find((entry) => entry.title === INERT)
     assert.ok(record !== undefined, 'the inert test has no record in the service shard')
 
     for (const file of [LANE, OWN]) {

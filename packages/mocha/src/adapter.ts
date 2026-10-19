@@ -24,15 +24,26 @@
  * as possible, `installMochaAdapter` can only run once a mocha instance exists,
  * and `statusOf` is pure and can be tested on its own.
  */
-import { Recorder, type ScanOptions, type ShardSink, type Source, type TestStatus } from '@spikedpunch/cbd'
+import {
+  Recorder,
+  type ScanOptions,
+  type ShardSink,
+  type Source,
+  type TestStatus,
+} from '@spikedpunch/cbd/adapter'
 import type Mocha from 'mocha'
+import { withSelfRoot } from './self.js'
 
 /** Everything the adapter needs that it cannot work out for itself. */
 export interface AdapterWiring {
   source: Source
   sink: ShardSink
   commit: string
-  /** Forwarded to `normalize` — projection rules and include/exclude. */
+  /**
+   * The record-time filters: `prefilter` and `selfRoots` decide which scripts
+   * enter the shard. Projection and include/exclude are applied by `cbd build` in
+   * a v2 shard (ADR-0002), so the build needs the same rules.
+   */
   scan?: ScanOptions
 }
 
@@ -62,7 +73,9 @@ export interface InstalledAdapter {
  * test's start, where the Recorder captures it.
  */
 export function beginShard(wiring: AdapterWiring): Recorder {
-  const recorder = new Recorder(wiring)
+  // The adapter's own files run inside the windows it takes; exclude its package
+  // from the scan at the one funnel every mocha recorder passes through (`cbd-qly`).
+  const recorder = new Recorder({ ...wiring, scan: withSelfRoot(wiring.scan) })
   recorder.runStart()
   return recorder
 }

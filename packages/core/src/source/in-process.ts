@@ -43,7 +43,6 @@ export async function inProcessSource(): Promise<Source> {
 
   await call('Profiler.enable')
   await call('Debugger.enable')
-  await call('Profiler.startPreciseCoverage', { callCount: true, detailed: false })
 
   // The counters belong to the isolate, not to a session, so two collectors in one
   // process split one stream of execution between them. A suite that starts a
@@ -56,8 +55,29 @@ export async function inProcessSource(): Promise<Source> {
   // So the module stands down when the in-process source is what is collecting:
   // one process, one collector. It remains loaded, and its purpose here — being in
   // the environment a suite's children inherit — is unaffected.
+  //
+  // **Standing down is a handoff, not a discard.** The module starts at process
+  // birth and its snapshots have already taken whatever ran before this source
+  // existed — which includes the test runner's static imports. Those counters are
+  // reset when taken, so if they are not adopted here they are lost, and a module
+  // that only ever executes during import leaves no evidence at all (`cbd-1ci`).
+  // They arrive as the first window's prefix, in the `@load` bucket where they
+  // belong.
+  //
+  // The handoff must finish before this session starts its own coverage, so the
+  // final take inside `stop()` drains the counters first and everything after it
+  // is this source's.
   const instrument = (globalThis as InstrumentScope).__cbdInstrument
-  instrument?.stop()
+  const handed = instrument === undefined ? [] : await instrument.stop()
+  let carried: V8ScriptCoverage[] = Array.isArray(handed) ? handed : []
+  const carriedOnce = (payload: V8ScriptCoverage[]): V8ScriptCoverage[] => {
+    if (carried.length === 0) return payload
+    const prefix = carried
+    carried = []
+    return [...prefix, ...payload]
+  }
+
+  await call('Profiler.startPreciseCoverage', { callCount: true, detailed: false })
 
   const takeSync = (): V8ScriptCoverage[] => {
     // A holder rather than a plain `let`, so TypeScript does not narrow the
@@ -74,14 +94,14 @@ export async function inProcessSource(): Promise<Source> {
       )
     }
     if (holder.error) throw holder.error
-    return holder.value ?? []
+    return carriedOnce(holder.value ?? [])
   }
 
   return {
     kind: 'in-process',
     supportsSync: true,
     takeSync,
-    take: async () => (await call('Profiler.takePreciseCoverage')).result,
+    take: async () => carriedOnce((await call('Profiler.takePreciseCoverage')).result),
     scripts: () => scripts,
     close: () => {
       try {

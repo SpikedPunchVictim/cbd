@@ -1,0 +1,38 @@
+{
+  "name": "@spikedpunch/cbd-node-test",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "node:test adapter: a register module for --import that records per-test coverage windows and selects with them.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./register": "./dist/src/register.js"
+  },
+  "engines": {
+    "node": ">=20.16"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@spikedpunch/cbd": "workspace:*"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist/src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/node-test"
+  }
+}

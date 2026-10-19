@@ -22,6 +22,18 @@ import { parseShard, summarizeShard } from '../src/shard.js'
 const coreRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const fixtureRoot = resolve(coreRoot, '../../fixture')
 
+/**
+ * The build-side scan for a fixture build.
+ *
+ * A v2 shard carries no paths, so the projection and the include scope are applied
+ * by `buildMap`, not the recorder. `out-maps` has source maps, so projection is a
+ * fallback there; `out-nomaps` needs it.
+ */
+const scanFor = (build: string): { projection: { from: string; to: string }[]; include: (file: string) => boolean } => ({
+  projection: [{ from: join(fixtureRoot, build), to: fixtureRoot }],
+  include: (file) => file.startsWith(fixtureRoot),
+})
+
 function record(build: string, shardPath: string): void {
   execFileSync(
     process.execPath,
@@ -50,12 +62,19 @@ test('a real run yields a complete shard, a map, and a working query', () => {
     assert.equal(byStatus['passed'], 42)
     assert.equal(byStatus['skipped'], 1, 'a skipped test was recorded as something else')
 
+    // The raw buckets hold byte ranges; the claims below are about files and
+    // function names, so they are read from the map, where resolution has happened.
+    const map = buildMap([{ name: 'shard.jsonl', records }], {
+      commit: 'fixture-head',
+      scan: scanFor('out-maps'),
+    })
+
     // 3. The load bucket holds the imports. Every fixture module is imported
     //    before the first test starts, so its module body lands here — and
     //    nowhere else, which is why no test window ever contains one.
-    assert.ok(summary.load.length > 0, 'the @load bucket is empty; the import window was lost')
+    assert.ok(map.load.length > 0, 'the @load bucket is empty; the import window was lost')
     const loadedSources = new Set(
-      summary.load
+      map.load
         .filter((ref) => ref[0].startsWith(join(fixtureRoot, 'src/')) && ref[1] === '<module>@0')
         .map((ref) => ref[0]),
     )
@@ -66,14 +85,15 @@ test('a real run yields a complete shard, a map, and a working query', () => {
     )
     // Import phase is not exclusively module bodies — a `test.group` definition
     // callback runs there too — so the claim is the one that matters: a module
-    // body never turns up inside a test window.
-    for (const touch of summary.tests.flatMap((t) => t.touches)) {
-      assert.notEqual(touch[1], '<module>@0', 'a module body appeared inside a test window')
+    // body never turns up inside a test window. A function reaches `map.files`
+    // only through a test, so a `<module>@0` row there is exactly that.
+    for (const functions of Object.values(map.files)) {
+      assert.equal(functions['<module>@0'], undefined, 'a module body appeared inside a test window')
     }
 
     // 4. Work that ran outside any window — abandoned timers, group teardown.
     assert.ok(
-      summary.between.length > 0,
+      map.between.length > 0,
       'the @between bucket is empty; out-of-window activity was attributed to a test',
     )
     // `group.each.setup` fires between one test's end and the next one's start, so
@@ -82,12 +102,11 @@ test('a real run yields a complete shard, a map, and a working query', () => {
     // code as reaching every test — and that inflates @between on suites that lean
     // on per-test setup, which is worth knowing before trusting an all-rate.
     assert.ok(
-      summary.between.some((ref) => ref[0] === join(fixtureRoot, 'tests/grouped.spec.ts')),
+      map.between.some((ref) => ref[0] === join(fixtureRoot, 'tests/grouped.spec.ts')),
       'expected the group setup hooks to be recorded as out-of-window activity',
     )
 
     // 5. Shard -> map -> disk -> memory -> query.
-    const map = buildMap([{ name: 'shard.jsonl', records }], { commit: 'fixture-head' })
     assert.equal(map.tests.length, 42, 'the skipped test should not reach the map')
 
     const saved = saveMap(dir, map)
@@ -118,7 +137,10 @@ test('select works against a map built from a real recording', () => {
     const shardPath = join(dir, 'shard.jsonl')
     record('out-maps', shardPath)
     const records = parseShard(readFileSync(shardPath, 'utf8'), shardPath)
-    const map = buildMap([{ name: 'shard.jsonl', records }], { commit: 'fixture-head' })
+    const map = buildMap([{ name: 'shard.jsonl', records }], {
+      commit: 'fixture-head',
+      scan: scanFor('out-maps'),
+    })
 
     const mathFile = join(fixtureRoot, 'src/helpers.ts')
     const slug = map.files[mathFile]?.['slug@0']

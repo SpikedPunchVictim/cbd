@@ -1,0 +1,38 @@
+{
+  "name": "@spikedpunch/cbd-cli",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The cbd binary: build, select, explain and stats over a coverage map.",
+  "bin": {
+    "cbd": "./bin/cbd.js"
+  },
+  "main": "./dist/src/cli.js",
+  "types": "./dist/src/cli.d.ts",
+  "exports": {
+    ".": "./dist/src/cli.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@spikedpunch/cbd": "workspace:*"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist/src",
+    "bin/cbd.js"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/cli"
+  }
+}

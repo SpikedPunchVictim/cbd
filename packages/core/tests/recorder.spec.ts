@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { Recorder } from '../src/recorder.js'
 import { parseShard, StringSink, summarizeShard } from '../src/shard.js'
-import type { ShardRecord } from '../src/shard.js'
+import type { ShardRecord, ShardTouch } from '../src/shard.js'
 import type {
   PendingTake,
   QueuedSource,
@@ -70,8 +70,23 @@ function payload(url: string, counts: Record<string, number>): V8ScriptCoverage[
   return [{ scriptId: '1', url, functions }]
 }
 
+/** The generated range of one function in `MODULE`. */
+function rangeOf(name: string): [number, number] {
+  const start = MODULE.indexOf(`function ${name}`)
+  return [start, MODULE.indexOf('}', start) + 1]
+}
+
+/** The function start offsets a projected window holds. */
+function startsOf(touch: ShardTouch): number[] {
+  return Object.values(touch).flatMap((ranges) => ranges.map(([start]) => start))
+}
+
+function holds(touch: ShardTouch, name: string): boolean {
+  return startsOf(touch).includes(rangeOf(name)[0])
+}
+
 /** Hands out one payload per take, then repeats the last one. */
-function scriptedSource(payloads: V8ScriptCoverage[][]): Source {
+function scriptedSource(payloads: V8ScriptCoverage[][], info?: ScriptInfo): Source {
   let index = 0
   const next = (): V8ScriptCoverage[] => {
     const value = payloads[Math.min(index, payloads.length - 1)] ?? []
@@ -83,9 +98,26 @@ function scriptedSource(payloads: V8ScriptCoverage[][]): Source {
     supportsSync: true,
     takeSync: next,
     take: async () => next(),
-    scripts: () => new Map(),
+    scripts: () => (info === undefined ? new Map() : new Map([['1', info]])),
     close: () => {},
   }
+}
+
+/** The script row a one-test run wrote; `declaration` is the file's own comment, if any. */
+function scriptRow(tree: Tree, info?: ScriptInfo, declaration?: string): ShardRecord {
+  const withMap =
+    declaration === undefined ? MODULE : `${MODULE}\n//# sourceMappingURL=${declaration}\n`
+  writeFileSync(join(tree.outDir, 'mod.js'), withMap)
+  const source = scriptedSource([payload(tree.url, { alpha: 1 })], info)
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'c0ffee' })
+  recorder.runStart()
+  recorder.testStart('a', null)
+  recorder.testEnd('a', 'passed')
+  recorder.runEnd()
+  const row = parseShard(sink.text).find((record) => record.type === 'script')
+  assert.ok(row !== undefined, 'the run wrote no script row')
+  return row
 }
 
 function run(tree: Tree, records: string): ShardRecord[] {
@@ -127,21 +159,17 @@ test('each window lands in the bucket it belongs to', () => {
     const summary = summarizeShard(run(tree, sink.text))
     assert.equal(summary.header.commit, 'c0ffee')
     assert.equal(summary.header.pid, 42)
+    // The recorder stores raw ranges now; naming them is the build's job. The
+    // offset is the identity, so that is what these assert.
     assert.deepEqual(
-      summary.tests.map((t) => [t.title, t.status, t.touches.map((x) => x[1])]),
+      summary.tests.map((t) => [t.title, t.status, startsOf(t.touches)]),
       [
-        ['alpha runs', 'passed', ['alpha@0']],
-        ['beta runs', 'passed', ['beta@0']],
+        ['alpha runs', 'passed', [rangeOf('alpha')[0]]],
+        ['beta runs', 'passed', [rangeOf('beta')[0]]],
       ],
     )
-    assert.deepEqual(
-      summary.load.map((r) => r[1]),
-      ['alpha@0'],
-    )
-    assert.deepEqual(
-      summary.between.map((r) => r[1]),
-      ['gamma@0'],
-    )
+    assert.deepEqual(summary.load.flatMap(startsOf), [rangeOf('alpha')[0]])
+    assert.deepEqual(summary.between.flatMap(startsOf), [rangeOf('gamma')[0]])
   } finally {
     tree.cleanup()
   }
@@ -216,7 +244,7 @@ test('a skipped test is recorded with an empty window', () => {
 
     const [recorded] = summarizeShard(parseShard(sink.text)).tests
     assert.equal(recorded?.status, 'skipped')
-    assert.deepEqual(recorded?.touches, [])
+    assert.deepEqual(recorded?.touches, {})
   } finally {
     tree.cleanup()
   }
@@ -293,6 +321,125 @@ test('a source that throws costs its window, not the run', () => {
     records.map((r) => r.type),
     ['shard', 'test', 'end'],
   )
+})
+
+// ---------------------------------------------------------------------------
+// Request-id correlation: a boundary can belong to more than one test
+// ---------------------------------------------------------------------------
+
+/**
+ * A queued source whose replies carry the tags a correlated service produces.
+ *
+ * This is the shape `socketSource().settleTagged()` returns: the ordinary window,
+ * the ids in flight for it, and the request-boundary windows the service took on
+ * its own account. The recorder's job is to turn those tags into ordinary `test`
+ * records, so `buildMap` needs no correlation concept at all.
+ */
+function taggedSource(
+  captures: Array<{
+    coverage: V8ScriptCoverage[]
+    ids: string[]
+    requests: Array<{ ids: string[]; coverage: V8ScriptCoverage[] }>
+  }>,
+): QueuedSource {
+  let index = 0
+  return {
+    kind: 'scripted-tagged',
+    supportsSync: false,
+    pid: 4242,
+    takeSync: () => {
+      throw new Error('this source cannot take synchronously')
+    },
+    take: async () => [],
+    dispatch(): PendingTake {
+      const seq = index
+      const capture = captures[Math.min(index, captures.length - 1)] ?? {
+        coverage: [],
+        ids: [],
+        requests: [],
+      }
+      index += 1
+      return {
+        seq,
+        settle: () => Promise.resolve(capture.coverage),
+        settleTagged: () => Promise.resolve(capture),
+      }
+    },
+    drift: () => ({ windows: 0, maxUs: 0, meanUs: 0, maxDepth: 0, minGapUs: 0 }),
+    scripts: () => new Map<string, ScriptInfo>(),
+    close: () => {},
+  }
+}
+
+test('a request window is recorded as the test that sent it, even at another test’s boundary', async () => {
+  const tree = makeTree()
+  try {
+    const source = taggedSource([
+      // testStart A -> @load
+      { coverage: [], ids: [], requests: [] },
+      // testEnd A: the service finished A's request and took its delta; A itself
+      // ran nothing else in its own window.
+      {
+        coverage: [],
+        ids: [],
+        requests: [{ ids: ['id-a'], coverage: payload(tree.url, { beta: 1 }) }],
+      },
+      // testStart B -> @between
+      { coverage: [], ids: [], requests: [] },
+      // testEnd B: B's own window, with A's request still in flight. The service's
+      // ordinary take carried that id, so A is credited with it too.
+      { coverage: payload(tree.url, { gamma: 1 }), ids: ['id-a'], requests: [] },
+      // runEnd -> @teardown, carrying a window nobody owns: @between.
+      {
+        coverage: [],
+        ids: [],
+        requests: [{ ids: ['not-a-test-in-this-run'], coverage: payload(tree.url, { alpha: 1 }) }],
+      },
+    ])
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source,
+      sink,
+      commit: 'c0ffee',
+      scan: { projection: [{ from: tree.outDir, to: tree.root }] },
+      owners: {
+        ownerOf: (id) => (id === 'id-a' ? { title: 'a', file: null } : undefined),
+      },
+    })
+
+    recorder.runStart()
+    recorder.testStart('a', null)
+    recorder.testEnd('a', 'passed')
+    recorder.testStart('b', null)
+    recorder.testEnd('b', 'passed')
+    recorder.runEnd()
+    await recorder.drained()
+
+    const summary = summarizeShard(parseShard(sink.text))
+    const a = summary.tests.filter((record) => record.title === 'a')
+    assert.equal(
+      a.length,
+      3,
+      'A has its own window, the request window the service attributed to it, and B’s take that still saw it in flight',
+    )
+    assert.ok(a.some((record) => holds(record.touches, 'beta')))
+    assert.ok(
+      a.some((record) => holds(record.touches, 'gamma')),
+      'the in-flight id on B’s take credits A with the work too',
+    )
+    assert.ok(
+      summary.tests
+        .filter((record) => record.title === 'b')
+        .every((record) => !holds(record.touches, 'beta')),
+      'B must not own the request A sent',
+    )
+    assert.ok(
+      summary.between.some((touch) => holds(touch, 'alpha')),
+      'an id no test owns is @between, which escalates rather than vanishing',
+    )
+  } finally {
+    tree.cleanup()
+  }
 })
 
 // ---------------------------------------------------------------------------
@@ -436,10 +583,20 @@ test('every boundary is crossed when the hook calls it, not when the reply lands
 
     await new Promise((resolve) => setTimeout(resolve, 60))
     const records = parseShard(sink.text)
-    assert.deepEqual(
-      records.map((r) => r.type),
-      ['shard', 'load', 'test', 'between', 'test', 'end'],
-    )
+    // Each script/function row is written once, immediately before the first
+    // window that reports it, so the table interleaves with the windows.
+    assert.deepEqual(records.map((r) => r.type), [
+      'shard',
+      'script',
+      'function',
+      'load',
+      'test',
+      'function',
+      'between',
+      'function',
+      'test',
+      'end',
+    ])
   } finally {
     tree.cleanup()
   }
@@ -539,7 +696,7 @@ test('a window that fails is recorded empty rather than dropped', async () => {
     assert.equal(records.at(-1)?.type, 'end', 'the run must still be complete')
     const tests = summarizeShard(records).tests
     assert.deepEqual(
-      tests.map((t) => [t.title, t.touches.length]),
+      tests.map((t) => [t.title, Object.values(t.touches).flat().length]),
       [
         ['alpha runs', 0],
         ['beta runs', 1],
@@ -575,4 +732,83 @@ test('a source that can be driven neither way is refused, not recorded as empty'
     () => new Recorder({ source: neither, sink: new StringSink(), commit: 'abc' }),
     /can neither take synchronously nor accept a window boundary/,
   )
+})
+
+// `cbd-xnp.2`: identity is the function's range, not its start. Jest's VM wrapper
+// and the first function it contains both start at 0; keying by start dropped the
+// function.
+test('two executed functions that share a start offset keep separate rows', () => {
+  const tree = makeTree()
+  try {
+    const source = scriptedSource([
+      [
+        {
+          scriptId: '1',
+          url: tree.url,
+          functions: [
+            { functionName: '', isBlockCoverage: false, ranges: [{ startOffset: 0, endOffset: 100, count: 1 }] },
+            { functionName: 'alpha', isBlockCoverage: false, ranges: [{ startOffset: 0, endOffset: 10, count: 1 }] },
+          ],
+        },
+      ],
+    ])
+    const sink = new StringSink()
+    const recorder = new Recorder({ source, sink, commit: 'c0ffee' })
+    recorder.runStart()
+    recorder.testStart('a', null)
+    recorder.testEnd('a', 'passed')
+    recorder.runEnd()
+    const records = parseShard(sink.text)
+    const rows = records.filter((record) => record.type === 'function')
+    assert.deepEqual(
+      rows.map((row) => (row.type === 'function' ? [row.start, row.end, row.name] : null)),
+      [
+        [0, 100, ''],
+        [0, 10, 'alpha'],
+      ],
+    )
+    const test = records.find((record) => record.type === 'test')
+    assert.equal(test?.type === 'test' ? Object.values(test.touches).flat().length : 0, 2)
+  } finally {
+    tree.cleanup()
+  }
+})
+
+// `cbd-n9t.1`: a map the file itself declares is recoverable at build time, so the
+// shard must not repeat it — tsc's inline maps are tens of KB per script. A map
+// only the loader injected has no on-disk comment and must still be recorded.
+test('a map the file declares is not repeated in the shard', () => {
+  const tree = makeTree()
+  try {
+    const row = scriptRow(tree, { url: tree.url, sourceMapURL: 'mod.js.map' }, 'mod.js.map')
+    assert.equal(row.type, 'script')
+    assert.equal(
+      row.type === 'script' ? row.sourceMapURL : 'wrong record',
+      undefined,
+      'the file declares this map; repeating it duplicates tens of KB',
+    )
+  } finally {
+    tree.cleanup()
+  }
+})
+
+test('a loader-injected map with no on-disk comment is recorded', () => {
+  const tree = makeTree()
+  try {
+    const injected = 'data:application/json;base64,AAAA'
+    const row = scriptRow(tree, { url: tree.url, sourceMapURL: injected })
+    assert.equal(row.type === 'script' ? row.sourceMapURL : undefined, injected)
+  } finally {
+    tree.cleanup()
+  }
+})
+
+test('a file-declared map that differs from the reported one keeps the reported one', () => {
+  const tree = makeTree()
+  try {
+    const row = scriptRow(tree, { url: tree.url, sourceMapURL: 'reported.map' }, 'on-disk.map')
+    assert.equal(row.type === 'script' ? row.sourceMapURL : undefined, 'reported.map')
+  } finally {
+    tree.cleanup()
+  }
 })

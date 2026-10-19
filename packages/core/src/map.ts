@@ -9,11 +9,10 @@
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import {
-  summarizeShard,
-  type ShardRecord,
-  type TouchRef,
-} from './shard.js'
+import { FileCache } from './line-index.js'
+import { resolveShard, type ResolvedShard } from './resolve.js'
+import type { ScanOptions } from './normalize.js'
+import type { ShardInput, TouchRef } from './shard.js'
 
 export const MAP_VERSION = 1
 
@@ -53,16 +52,28 @@ export interface CoverageMap {
   seen: string[]
   /** Names of the shards merged in, for provenance. */
   shards: string[]
+  /**
+   * Whether the tree the shards were recorded from had uncommitted changes.
+   *
+   * Optional because maps written before this field existed do not carry it; a
+   * missing value means "not known to be dirty", which is the pre-existing
+   * behaviour. `select` warns when it is true.
+   */
+  dirty?: boolean
 }
 
-export interface ShardInput {
-  name: string
-  records: ShardRecord[]
-}
-
-export interface BuildOptions {
+export interface MapBuildOptions {
   commit: string
   builtAt?: string
+  /** See `CoverageMap.dirty`. */
+  dirty?: boolean
+  /**
+   * How to read the shards' byte ranges: projection and relocation rules, and the
+   * include/exclude filters. A v2 shard carries no paths, so the build is where
+   * these rules apply (ADR-0002). Defaults to none, which resolves a script by its
+   * own file and keeps every file it resolves to.
+   */
+  scan?: ScanOptions
   /**
    * Whether to include tests that did not pass. Default false: a test that
    * aborted early executed *less* than it should have, so its touches
@@ -87,7 +98,13 @@ function mergeRefs(target: Map<string, TouchRef>, refs: TouchRef[]): void {
   }
 }
 
-export function buildMap(shards: ShardInput[], options: BuildOptions): CoverageMap {
+/**
+ * The merge half of a build: resolved shards -> the on-disk map.
+ *
+ * Separate from resolution so the merge can be tested without a tree of generated
+ * files, and so all file I/O stays in one place. `buildMap` is the two together.
+ */
+export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): CoverageMap {
   const tests: TestEntry[] = []
   const testIndex = new Map<string, number>()
   const files = new Map<string, Map<string, FunctionEntry>>()
@@ -106,14 +123,13 @@ export function buildMap(shards: ShardInput[], options: BuildOptions): CoverageM
     return index
   }
 
-  for (const shard of shards) {
-    const summary = summarizeShard(shard.records)
-    included.push(shard.name)
-    mergeRefs(load, summary.load)
-    mergeRefs(between, summary.between)
-    mergeRefs(teardown, summary.teardown)
+  for (const resolved of shards) {
+    included.push(resolved.name)
+    mergeRefs(load, resolved.load)
+    mergeRefs(between, resolved.between)
+    mergeRefs(teardown, resolved.teardown)
 
-    for (const test of summary.tests) {
+    for (const test of resolved.tests) {
       if (!options.includeNonGreen && test.status !== 'passed') continue
       const index = indexOfTest(test.title, test.file)
       for (const ref of test.touches) {
@@ -167,19 +183,46 @@ export function buildMap(shards: ShardInput[], options: BuildOptions): CoverageM
     teardown: teardownRefs,
     seen: [...seen].sort(),
     shards: included,
+    dirty: options.dirty === true,
   }
 }
 
-export function mapDir(root: string, commit: string): string {
-  return join(root, '.cbd', 'maps', commit)
+/**
+ * Resolve every shard, then merge.
+ *
+ * One `FileCache` for the build: a generated file is read and indexed once, no
+ * matter how many scripts or shards name it. The resolution itself is
+ * `resolveShard`, once per distinct `(script, function)` (ADR-0002).
+ */
+export function buildMap(shards: ShardInput[], options: MapBuildOptions): CoverageMap {
+  const cache = new FileCache()
+  const resolved = shards.map((shard) =>
+    resolveShard(shard, {
+      ...(options.scan === undefined ? {} : { scan: options.scan }),
+      cache,
+    }),
+  )
+  return mergeShards(resolved, options)
 }
 
-export function mapPath(root: string, commit: string): string {
-  return join(mapDir(root, commit), 'map.json')
+/**
+ * Where a commit's map lives. `stateDir` is the config's state directory, rooted
+ * at the repository; `.cbd` is the default.
+ */
+export function mapDir(root: string, commit: string, stateDir = '.cbd'): string {
+  return join(root, stateDir, 'maps', commit)
 }
 
-export function saveMap(root: string, map: CoverageMap): { path: string; bytes: number } {
-  const dir = mapDir(root, map.commit)
+export function mapPath(root: string, commit: string, stateDir = '.cbd'): string {
+  return join(mapDir(root, commit, stateDir), 'map.json')
+}
+
+export function saveMap(
+  root: string,
+  map: CoverageMap,
+  stateDir = '.cbd',
+): { path: string; bytes: number } {
+  const dir = mapDir(root, map.commit, stateDir)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'map.json')
   const json = JSON.stringify(map)
@@ -195,8 +238,8 @@ export interface LoadedMap {
   parseMs: number
 }
 
-export function loadMap(root: string, commit: string): LoadedMap {
-  const path = mapPath(root, commit)
+export function loadMap(root: string, commit: string, stateDir = '.cbd'): LoadedMap {
+  const path = mapPath(root, commit, stateDir)
   const raw = readFileSync(path, 'utf8')
   const started = performance.now()
   const map = JSON.parse(raw) as CoverageMap
@@ -205,6 +248,35 @@ export function loadMap(root: string, commit: string): LoadedMap {
     throw new Error(`map at ${path} is version ${map.version}, expected ${MAP_VERSION}`)
   }
   return { map, path, bytes: Buffer.byteLength(raw), parseMs }
+}
+
+/** One function a test reached, in the map's coordinates. */
+export interface ReachedFunction {
+  file: string
+  key: string
+  startLine: number
+  endLine: number
+}
+
+/**
+ * Every function one test reached — the inverse of `testsForFunction`.
+ *
+ * The map is stored the other way round because selection asks "which tests reach
+ * this function"; this direction exists for the human question behind `cbd reaches`
+ * ("what does this test cover?"), and it is a scan of the function index rather
+ * than a second index, because the map is read far more often than queried this way.
+ */
+export function functionsForTest(map: CoverageMap, index: number): ReachedFunction[] {
+  const out: ReachedFunction[] = []
+  for (const [file, functions] of Object.entries(map.files)) {
+    for (const [key, entry] of Object.entries(functions)) {
+      if (!entry.tests.includes(index)) continue
+      out.push({ file, key, startLine: entry.startLine, endLine: entry.endLine })
+    }
+  }
+  return out.sort((a, b) =>
+    a.file === b.file ? a.key.localeCompare(b.key) : a.file.localeCompare(b.file),
+  )
 }
 
 /** The tests that reach a given function. The question the tool exists to answer. */
@@ -217,4 +289,43 @@ export function testsForFunction(map: CoverageMap, file: string, key: string): T
 /** Every function the map knows about in a file, executed or not. */
 export function functionsInFile(map: CoverageMap, file: string): string[] {
   return Object.keys(map.files[file] ?? {}).sort()
+}
+
+/**
+ * The tests that reach one source line — `cbd-2ev`'s question, and §8.3's rules 4
+ * and 5 applied to a single line.
+ *
+ * A line inside a mapped function selects the tests that touched that function. A
+ * line outside every function an import, a top-level constant, a class field
+ * initializer — could be read by anything in the file, so every test that touched
+ * the file is the honest answer; this is the same fallback `select` takes for a
+ * hunk that lands in no function, and for the same reason: it over-selects rather
+ * than guesses.
+ *
+ * A line inside *several* nested functions is the union of all of them. V8 emits a
+ * row per function, so an outer function's range contains an inner one's; taking
+ * only the innermost would miss the tests that ran the outer and not the inner.
+ *
+ * An unknown file returns `[]`. The caller decides what that means — `select`
+ * treats an unknown file and an untested one as opposite answers, and the map
+ * alone cannot tell which question is being asked.
+ */
+export function testsForLine(map: CoverageMap, file: string, line: number): TestEntry[] {
+  const functions = map.files[file]
+  if (functions === undefined) return []
+
+  const indices = new Set<number>()
+  let inside = false
+  for (const entry of Object.values(functions)) {
+    if (line < entry.startLine || line > entry.endLine) continue
+    inside = true
+    for (const index of entry.tests) indices.add(index)
+  }
+  if (!inside) {
+    for (const entry of Object.values(functions)) for (const index of entry.tests) indices.add(index)
+  }
+  return [...indices]
+    .sort((a, b) => a - b)
+    .map((index) => map.tests[index]!)
+    .filter(Boolean)
 }

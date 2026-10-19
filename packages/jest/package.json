@@ -1,0 +1,45 @@
+{
+  "name": "@spikedpunch/cbd-jest",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Jest adapter: a test environment that records per-test coverage windows and selects with them.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./environment": "./dist/cjs/environment.cjs",
+    "./config": "./dist/cjs/config.cjs"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@spikedpunch/cbd": "workspace:*"
+  },
+  "peerDependencies": {
+    "jest": ">=29.0.0 <31",
+    "jest-environment-node": ">=29.0.0 <31"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "jest": "^30.5.2",
+    "jest-environment-node": "^30.5.2",
+    "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist/src",
+    "dist/cjs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/jest"
+  }
+}

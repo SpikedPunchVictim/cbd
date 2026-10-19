@@ -95,6 +95,7 @@ import {
   type HelloResult,
   type InstrumentRequest,
   type InstrumentResponse,
+  type RequestWindow,
   type ScriptRow,
   type SnapshotFile,
   type TakeResult,
@@ -105,6 +106,7 @@ import type {
   QueuedSource,
   ScriptInfo,
   Source,
+  TakeCapture,
   V8ScriptCoverage,
 } from '../types.js'
 
@@ -132,6 +134,14 @@ export interface SocketSourceOptions {
   pid?: number
   /** How long to wait for a connect, a hello or a take. */
   timeoutMs?: number
+  /**
+   * Turn on request-id correlation in the target, reading this header.
+   *
+   * Sent as a `correlate` op after the hello. Opt-in because it changes what the
+   * target does: every correlated request costs two takes, and a service started
+   * by a developer should not start paying that until a collector asks for it.
+   */
+  correlationHeader?: string
 }
 
 /** `pid-1234.sock`, the name the instrument module writes. */
@@ -218,9 +228,13 @@ class SocketClient {
    * request; a caller that sends two at once gets two throws rather than two
    * interleaved windows.
    */
-  request(op: 'hello' | 'close', sentAtUs?: number): Promise<InstrumentResponse> {
+  request(
+    op: 'hello' | 'close' | 'correlate',
+    sentAtUs?: number,
+    header?: string,
+  ): Promise<InstrumentResponse> {
     const id = this.#nextId++
-    return this.#send(id, op, sentAtUs)
+    return this.#send(id, op, sentAtUs, header)
   }
 
   /**
@@ -255,8 +269,9 @@ class SocketClient {
 
   #send(
     id: number,
-    op: 'hello' | 'take' | 'close',
+    op: 'hello' | 'take' | 'close' | 'correlate',
     sentAtUs?: number,
+    header?: string,
   ): Promise<InstrumentResponse> {
     if (this.#closed) return Promise.reject(new SocketSourceError('the socket is closed'))
 
@@ -267,7 +282,7 @@ class SocketClient {
       }, this.#timeoutMs)
 
       this.#pending.set(id, { resolve, reject, timer })
-      this.#socket.write(encodeMessage(buildRequest(id, op, sentAtUs)))
+      this.#socket.write(encodeMessage(buildRequest(id, op, sentAtUs, header)))
     })
   }
 
@@ -289,8 +304,9 @@ class SocketClient {
 
 function buildRequest(
   id: number,
-  op: 'hello' | 'take' | 'close',
+  op: 'hello' | 'take' | 'close' | 'correlate',
   sentAtUs?: number,
+  header?: string,
 ): InstrumentRequest {
   switch (op) {
     case 'hello':
@@ -299,6 +315,8 @@ function buildRequest(
       return { id, op: 'take', ...(sentAtUs === undefined ? {} : { sentAtUs }) }
     case 'close':
       return { id, op: 'close' }
+    case 'correlate':
+      return { id, op: 'correlate', header: header ?? '' }
   }
 }
 
@@ -355,6 +373,9 @@ async function openOne(
 interface Recovered {
   coverage: V8ScriptCoverage[]
   scripts: ScriptRow[]
+  /** The correlation tags the lost reply carried, so recovery does not drop them. */
+  ids: string[]
+  requests: RequestWindow[]
   /**
    * Whether a window numbered for this take was found, rather than the unnumbered
    * fallback. Numbered windows belong to one take and can be read as often as that
@@ -379,10 +400,14 @@ async function recoverWindow(
   if (file.protocol !== INSTRUMENT_PROTOCOL || file.pid !== pid) return null
 
   const coverage: V8ScriptCoverage[] = []
+  const ids: string[] = []
+  const requests: RequestWindow[] = []
   let matched = false
   for (const window of file.windows) {
     if (window.takeId === takeId || window.sentAtUs === sentAtUs) {
       coverage.push(...window.coverage)
+      ids.push(...(window.ids ?? []))
+      requests.push(...(window.requests ?? []))
       matched = true
     }
   }
@@ -392,9 +417,18 @@ async function recoverWindow(
   // window this dispatch asked for — so it is the right thing to return rather
   // than an empty window. It is a whole lifetime, though, not a window, and the
   // caller may offer it only once.
-  if (!matched) coverage.push(...file.untaken)
-  if (coverage.length === 0) return null
-  return { coverage, scripts: file.scripts, matched }
+  //
+  // `untaken`/`pendingRequests` are only in the exit write (`cbd-n9t.2`: the
+  // periodic file is bounded to what can be recovered by take id, because the
+  // accumulator can be hundreds of MB). If they are absent, the instrument is
+  // still alive with its accumulator intact and the next successful take carries
+  // this work; the loss reported for *this* boundary is honest rather than silent.
+  if (!matched) {
+    coverage.push(...(file.untaken ?? []))
+    requests.push(...(file.pendingRequests ?? []))
+  }
+  if (coverage.length === 0 && requests.length === 0) return null
+  return { coverage, scripts: file.scripts, ids, requests, matched }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +586,33 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
 
   const { client, hello } = await openOne(path, timeoutMs)
 
+  if (
+    options.correlationHeader !== undefined &&
+    options.correlationHeader !== '' &&
+    hello.correlating !== true
+  ) {
+    // The target has to agree to this before any request is made, or the first
+    // request's coverage is taken by time like every other window. A refusal is
+    // loud rather than a silent fallback: a run that asked for correlation and got
+    // time-based windows is a map whose attribution is weaker than the caller was
+    // told, and under-selection is the direction this project does not accept.
+    //
+    // Skipped when the hello says the process already is: a service a recording
+    // test spawned inherited the header name and installed the hook at start-up.
+    // Saving that round trip is not micro-optimisation — it is the difference
+    // between attaching inside the test that started the process and attaching
+    // during the next one.
+    const reply = await client.request('correlate', undefined, options.correlationHeader)
+    if (!reply.ok) {
+      client.close()
+      throw new SocketSourceError(
+        `the instrument in pid ${String(hello.pid)} refused request-id correlation: ` +
+          `${reply.error}. It may predate the "correlate" op; rebuild the package the ` +
+          'service imports, or start it without correlation.',
+      )
+    }
+  }
+
   /**
    * Accumulated across takes, because each row is sent exactly once — the module
    * drains its queue rather than repeating the table.
@@ -653,7 +714,7 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
     lastSentUs = sentAtUs
 
     const take = client.take(sentAtUs)
-    const delta = take.reply.then(
+    const delta: Promise<TakeCapture> = take.reply.then(
       (response) => {
         if (!response.ok) throw new SocketSourceError(`take failed: ${response.error}`)
         const result = (response as { result: TakeResult }).result
@@ -667,7 +728,11 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
         // The window is in the collector's hands. Only now may the instrument
         // forget it.
         client.ack(take.id)
-        return result.coverage
+        return {
+          coverage: result.coverage,
+          ids: result.ids ?? [],
+          requests: result.requests ?? [],
+        }
       },
       async (error: Error) => {
         // A reply that never arrived is not necessarily a window that never
@@ -681,10 +746,10 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
           // window discovered that the target is gone. Every other take keeps the
           // numbered window it was sent for, or nothing.
           if (!window.matched) {
-            if (fallbackTaken) return []
+            if (fallbackTaken) return { coverage: [], ids: [], requests: [] }
             fallbackTaken = true
           }
-          return window.coverage
+          return { coverage: window.coverage, ids: window.ids, requests: window.requests }
         }
         reportLoss(error)
         throw error
@@ -703,7 +768,18 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
       },
     )
 
-    return { seq, settle: () => previous.then(() => delta) }
+    const handle: PendingTake = {
+      seq,
+      settle: () => previous.then(() => delta).then((capture) => capture.coverage),
+    }
+    // Only a source that asked for correlation can produce tags. Leaving the
+    // method absent otherwise keeps an uncorrelated run on exactly the path it had
+    // before there was a tag to carry — which is the path the drift fixture
+    // measures, and it is sensitive to work added per boundary.
+    if (options.correlationHeader !== undefined && options.correlationHeader !== '') {
+      handle.settleTagged = () => previous.then(() => delta)
+    }
+    return handle
   }
 
   return {

@@ -1,14 +1,15 @@
 {
   "name": "@spikedpunch/cbd",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Framework-neutral core: coverage sources, normalization, and the coverage map.",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "exports": {
     ".": "./dist/src/index.js",
-    "./instrument": "./dist/src/instrument.js"
+    "./adapter": "./dist/src/adapter.js",
+    "./instrument": "./dist/src/instrument.js",
+    "./cbd.config.schema.json": "./cbd.config.schema.json"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -21,5 +22,17 @@
     "@japa/runner": "^5.4.0",
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist/src",
+    "cbd.config.schema.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/core"
   }
 }

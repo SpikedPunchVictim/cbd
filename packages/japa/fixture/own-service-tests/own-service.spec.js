@@ -87,6 +87,13 @@ test.group('a service the suite starts itself', (group) => {
   test('a test that starts a service of its own', async () => {
     own = await startOwnService()
     assert.ok(own.port > 0)
+    // Hold the window open long enough for the re-scan to find the child. The
+    // assertion this fixture makes is *which window the child's start-up belongs
+    // to*; without the wait, a discovery tick that lands after the test ends moves
+    // the whole first take to the next test and the fixture measures the scheduler
+    // instead of the rule. The interval is 25ms (ADR-0007), so this is one order of
+    // magnitude of slack, not a tuned race.
+    await new Promise((resolve) => setTimeout(resolve, 100))
   })
 
   test('a test that drives the service the previous test started', async () => {

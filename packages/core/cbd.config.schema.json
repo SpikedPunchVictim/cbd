@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "cbd.config.schema.json",
+  "title": "CBD configuration",
+  "description": "cbd.config.json at the repository root. Every key is optional; absent keys use the safe default described here.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Path or URL of this schema, for editor autocomplete. Not read by CBD."
+    },
+    "include": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repository-relative globs of files selection is responsible for. A changed file outside every pattern is ignored rather than escalated. Absent means every file in the repository."
+    },
+    "exclude": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Repository-relative globs removed from include, after include is applied."
+    },
+    "alwaysAll": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Globs whose change forces mode: all (lockfiles, manifests, tsconfig, migrations)."
+    },
+    "unknownPolicy": {
+      "enum": ["all", "ignore"],
+      "default": "all",
+      "description": "What to do with a changed file the map has never seen. 'all' is the safe default; 'ignore' selects nothing and can under-select."
+    },
+    "betweenPolicy": {
+      "enum": ["all", "ignore"],
+      "default": "all",
+      "description": "What to do with a file reached only by @between. 'all' is the safe default."
+    },
+    "testFiles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Globs of files that define tests. A test helper that defines none is answered from the map."
+    },
+    "testFilePolicy": {
+      "enum": ["known", "all"],
+      "default": "known",
+      "description": "What a changed test file means. 'known' selects the tests the map already knows in that file and warns that an added test cannot be named; 'all' forces the whole suite. Default is 'known' because spec edits are common and 'all' would make most runs full."
+    },
+    "maxAgeCommits": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Warn when the map is this many commits behind HEAD. With strict: true, a stale map forces mode: all."
+    },
+    "strict": {
+      "type": "boolean",
+      "default": false,
+      "description": "Treat a stale or dirty map as mode: all rather than a warning."
+    },
+    "stateDir": {
+      "type": "string",
+      "default": ".cbd",
+      "description": "Where shards and maps live, relative to the repository root."
+    },
+    "granularity": {
+      "enum": ["test"],
+      "default": "test",
+      "description": "Only test-level windows are implemented. 'group' is a B2 lever and is rejected rather than ignored."
+    }
+  }
+}

@@ -16,7 +16,8 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
-import { buildMap, parseShard, summarizeShard } from '@spikedpunch/cbd'
+import { buildMap } from '@spikedpunch/cbd'
+import { parseShard, resolveShard, summarizeShard, type ScanOptions } from '@spikedpunch/cbd/adapter'
 import { statusOf } from '../src/adapter.js'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
@@ -75,24 +76,40 @@ function makeProject(): { root: string; cleanup: () => void } {
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
-function runMocha(root: string, shardPath: string): void {
+/**
+ * Runs mocha the way a consumer does, with an optional shard and extra environment.
+ *
+ * `CBD_SHARD` and `CBD_SELECTION` are deleted from the inherited environment
+ * first: under `cbd collect` this test process has both, and a child that inherits
+ * them would write into its parent's shard.
+ */
+function runMocha(
+  root: string,
+  shardPath: string | null,
+  extra: NodeJS.ProcessEnv = {},
+  args: string[] = [],
+): string {
   const require = createRequire(join(packageRoot, 'package.json'))
   const mochaBin = require.resolve('mocha/bin/mocha.js')
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.CBD_SHARD
+  delete env.CBD_SELECTION
+  env.NODE_OPTIONS = `--import ${pathToFileURL(autoEntry).href}`
+  env.CBD_COMMIT = 'mini-head'
+  env.CBD_PROJECTION_FROM = join(root, 'out')
+  env.CBD_PROJECTION_TO = root
+  env.CBD_INCLUDE = join(root, 'src')
+  env.CBD_MOCHA_ROOT = packageRoot
+  if (shardPath !== null) env.CBD_SHARD = shardPath
+  Object.assign(env, extra)
+
   try {
-    execFileSync(process.execPath, [mochaBin, '--exit', join(root, 'spec/calc.spec.js')], {
+    const argv = [mochaBin, '--exit', join(root, 'spec/calc.spec.js'), ...args]
+    return execFileSync(process.execPath, argv, {
       cwd: packageRoot,
-      env: {
-        ...process.env,
-        NODE_OPTIONS: `--import ${pathToFileURL(autoEntry).href}`,
-        CBD_SHARD: shardPath,
-        CBD_COMMIT: 'mini-head',
-        CBD_PROJECTION_FROM: join(root, 'out'),
-        CBD_PROJECTION_TO: root,
-        CBD_INCLUDE: join(root, 'src'),
-        CBD_MOCHA_ROOT: packageRoot,
-      },
+      env,
       stdio: 'pipe',
-    })
+    }).toString()
   } catch (error) {
     const failed = error as { message: string; stdout?: Buffer; stderr?: Buffer }
     throw new Error(
@@ -121,8 +138,17 @@ test('a plain mocha run, with only --import added, yields per-test windows', () 
     const shardPath = join(dir, 'shard.jsonl')
     runMocha(project.root, shardPath)
 
-    const summary = summarizeShard(parseShard(readFileSync(shardPath, 'utf8'), shardPath))
+    const records = parseShard(readFileSync(shardPath, 'utf8'), shardPath)
+    const summary = summarizeShard(records)
     assert.equal(summary.header.commit, 'mini-head')
+
+    // A v2 shard holds byte ranges; the *.js -> *.ts join is the projection the
+    // recording assumed, and in v2 it is applied by the build (ADR-0002).
+    const scan: ScanOptions = {
+      projection: [{ from: join(project.root, 'out'), to: project.root }],
+      include: (file) => file.startsWith(join(project.root, 'src')),
+    }
+    const windows = resolveShard({ name: 'shard.jsonl', records }, { scan })
 
     // 1. One window per test, titled the way mocha titles it — describe + it. The
     //    skipped test DOES open a window: mocha runs root hooks for a pending test,
@@ -130,7 +156,7 @@ test('a plain mocha run, with only --import added, yields per-test windows', () 
     //    arrives here as `skipped` rather than never arriving, which is japa's
     //    situation again (A3 finding 2) and is defended the same way — the status
     //    keeps it out of the map, checked in 5 below.
-    const passed = summary.tests.filter((t) => t.status === 'passed')
+    const passed = windows.tests.filter((t) => t.status === 'passed')
     assert.deepEqual(
       passed.map((t) => t.title).sort(),
       ['calc adds two numbers', 'calc subtracts two numbers'],
@@ -152,22 +178,78 @@ test('a plain mocha run, with only --import added, yields per-test windows', () 
     //    before the first test started, so the module body is `@load` — and, per
     //    A2, a module body never turns up inside a test window.
     assert.ok(
-      summary.load.some((ref) => ref[0] === calc && ref[1] === '<module>@0'),
+      windows.load.some((ref) => ref[0] === calc && ref[1] === '<module>@0'),
       'the load window was not captured; the import phase went missing',
     )
-    for (const touch of summary.tests.flatMap((t) => t.touches)) {
+    for (const touch of windows.tests.flatMap((t) => t.touches)) {
       assert.notEqual(touch[1], '<module>@0', 'a module body appeared inside a test window')
     }
 
     // 4. Projection did the work: the source path is the *.ts* file, which is not
     //    what V8 reported and does not exist in the generated tree.
-    assert.equal(summary.tests[0]?.touches[0]?.[0], calc)
+    assert.equal(windows.tests[0]?.touches[0]?.[0], calc)
 
     // 5. And the shard is complete, so `buildMap` will accept it.
-    const map = buildMap([{ name: 'shard.jsonl', records: parseShard(readFileSync(shardPath, 'utf8'), shardPath) }], {
+    const map = buildMap([{ name: 'shard.jsonl', records }], {
       commit: 'mini-head',
+      scan,
     })
     assert.equal(map.tests.length, 2, 'the skipped test reached the map')
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CBD_SELECTION narrows a recording run to exactly the selected titles', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-selected-'))
+  try {
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['calc subtracts two numbers'] }))
+    const shardPath = join(dir, 'shard.jsonl')
+    runMocha(project.root, shardPath, { CBD_SELECTION: selection })
+
+    const summary = summarizeShard(parseShard(readFileSync(shardPath, 'utf8'), shardPath))
+    assert.deepEqual(
+      summary.tests.map((entry) => entry.title),
+      ['calc subtracts two numbers'],
+      'a test outside the selection must not run, and so must not open a window',
+    )
+    assert.equal(summary.tests[0]?.status, 'passed')
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('CBD_SELECTION narrows a run that is not being recorded', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-selected-'))
+  try {
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['calc adds two numbers'] }))
+    const output = runMocha(project.root, null, { CBD_SELECTION: selection })
+    assert.match(output, /1 passing/)
+    assert.match(output, /adds two numbers/)
+    assert.doesNotMatch(output, /subtracts two numbers/)
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a selection and --invert are refused rather than run as the complement', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-selected-'))
+  try {
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['calc adds two numbers'] }))
+    assert.throws(
+      () => runMocha(project.root, null, { CBD_SELECTION: selection }, ['--grep', 'calc', '--invert']),
+      /--invert/,
+      'the selected tests would have been skipped silently',
+    )
   } finally {
     project.cleanup()
     rmSync(dir, { recursive: true, force: true })

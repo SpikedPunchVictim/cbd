@@ -15,6 +15,7 @@ test('a modification yields a hunk on the old side', () => {
     assert.equal(change?.status, 'M')
     assert.equal(change?.from, undefined, 'a plain modification is not a rename')
     assert.deepEqual(change?.hunks, [{ start: 2, end: 2 }])
+    assert.deepEqual(change?.newHunks, [{ start: 2, end: 2 }])
   } finally {
     repo.cleanup()
   }
@@ -32,6 +33,10 @@ test('an addition reports the file as new, with no old-side range', () => {
     assert.equal(change?.status, 'A')
     // Additions have nothing on the old side, so no range is claimable for them.
     assert.deepEqual(change?.hunks, [])
+    // ...and everything on the new side, which is what an oracle needs.
+    assert.deepEqual(change?.newHunks, [{ start: 1, end: 2 }])
+    // An added file is inserted at the start of an empty old side.
+    assert.deepEqual(change?.insertions, [0])
   } finally {
     repo.cleanup()
   }
@@ -49,6 +54,25 @@ test('a deletion keeps its old-side range, which is all it has', () => {
     const change = changesSince({ root: repo.root, since: base }).find((c) => c.path === 'gone.ts')
     assert.equal(change?.status, 'D')
     assert.deepEqual(change?.hunks, [{ start: 1, end: 4 }])
+    assert.deepEqual(change?.newHunks, [], 'a deletion has no new-side range')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('a pure insertion into an existing file carries its insertion point', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\ntwo\nthree\n')
+    const base = repo.commit('base')
+    repo.write('a.ts', 'one\ntwo\nthree\nfour\nfive\n')
+
+    const [change] = changesSince({ root: repo.root, since: base })
+    // No old-side lines exist for the new block, so it is not a hunk — and that
+    // is exactly why `select` ignored it before `cbd-81h.1`.
+    assert.deepEqual(change?.hunks, [])
+    assert.deepEqual(change?.insertions, [3])
+    assert.deepEqual(change?.newHunks, [{ start: 4, end: 5 }])
   } finally {
     repo.cleanup()
   }
@@ -148,6 +172,11 @@ test('hunks use old-side line numbers, which do not drift as earlier hunks grow'
       false,
       'a hunk used the worktree line number, which has drifted by the hunks above it',
     )
+
+    // The same hunk on the new side is line 9 — the drift the selector must not
+    // see and the oracle must.
+    const newStarts = change?.newHunks?.map((h) => h.start)
+    assert.ok(newStarts?.includes(9), `the new-side hunk should start at 9, got ${newStarts}`)
   } finally {
     repo.cleanup()
   }

@@ -16,11 +16,11 @@
  *     match nothing, and a filter matching nothing is a miss.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
-import type { Recorder, TestStatus } from '@spikedpunch/cbd'
+import type { Recorder, TestStatus } from '@spikedpunch/cbd/adapter'
 import {
   applyTests,
   installJapaAdapter,
@@ -31,9 +31,40 @@ import {
   type JapaListener,
   type JapaTestEndNode,
 } from '../src/adapter.js'
-import { cbd } from '../src/plugin.js'
+import { cbd, type CbdOptions, type JapaPluginApi } from '../src/plugin.js'
 
 type Call = [string, ...unknown[]]
+
+/**
+ * Drive the plugin with a stub API.
+ *
+ * `cbd()` is typed as japa's own `PluginFn` so that a consumer's
+ * `configure({ plugins: [cbd()] })` compiles on every supported japa version
+ * (`cbd-amq`). That type wants a real `NormalizedConfig` and `Emitter`; this test
+ * deliberately supplies the two fields the adapter reads, so the cast is the test's
+ * boundary rather than the plugin's.
+ */
+function runPlugin(options: CbdOptions, api: JapaPluginApi): Promise<void> {
+  return (cbd(options) as unknown as (api: JapaPluginApi) => Promise<void>)(api)
+}
+
+/** Runs `body` with `CBD_SELECTION` pointing at a file holding `contents`. */
+async function withSelection(
+  contents: string,
+  body: () => Promise<void>,
+): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-select-'))
+  writeFileSync(join(dir, 'selection.json'), contents)
+  const previous = process.env.CBD_SELECTION
+  process.env.CBD_SELECTION = join(dir, 'selection.json')
+  try {
+    await body()
+  } finally {
+    if (previous === undefined) delete process.env.CBD_SELECTION
+    else process.env.CBD_SELECTION = previous
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
 
 /**
  * A recorder that records. `as unknown as Recorder` because only six members are
@@ -375,22 +406,55 @@ test.group('cbd plugin', () => {
   test('applies a selection when given one', async () => {
     const config = { filters: {} }
     const { emitter } = fakeEmitter()
-    await cbd({ only: ['alpha'] })({ config, emitter })
+    await runPlugin({ only: ['alpha'] }, { config, emitter })
     assert.deepEqual(config.filters, { tests: ['alpha'] })
   })
 
   test('touches no filter when no selection is given', async () => {
     const config = { filters: {} }
     const { emitter } = fakeEmitter()
-    await cbd()({ config, emitter })
+    await runPlugin({}, { config, emitter })
     assert.deepEqual(config.filters, {})
   })
 
   test('enabled: false is inert, selection included', async () => {
     const config = { filters: {} }
     const { emitter } = fakeEmitter()
-    await cbd({ enabled: false, only: ['alpha'] })({ config, emitter })
+    await runPlugin({ enabled: false, only: ['alpha'] }, { config, emitter })
     assert.deepEqual(config.filters, {})
+  })
+
+  /**
+   * `cbd collect` resolves the selection before it spawns this process and passes
+   * it as a file, so the automatic case must work without the consumer passing
+   * `only`. The explicit option still wins, and a file that cannot be understood
+   * must fail rather than mean "run everything" — that is the safe direction but
+   * it is not what the caller asked for.
+   */
+  test('applies the selection file CBD_SELECTION names when no option is given', async () => {
+    await withSelection(JSON.stringify({ titles: ['beta'] }), async () => {
+      const config = { filters: {} }
+      const { emitter } = fakeEmitter()
+      await runPlugin({}, { config, emitter })
+      assert.deepEqual(config.filters, { tests: ['beta'] })
+    })
+  })
+
+  test('an explicit only wins over the environment', async () => {
+    await withSelection(JSON.stringify({ titles: ['beta'] }), async () => {
+      const config = { filters: {} }
+      const { emitter } = fakeEmitter()
+      await runPlugin({ only: ['alpha'] }, { config, emitter })
+      assert.deepEqual(config.filters, { tests: ['alpha'] })
+    })
+  })
+
+  test('a malformed selection file is an error, not a full run', async () => {
+    await withSelection('{}', async () => {
+      const config = { filters: {} }
+      const { emitter } = fakeEmitter()
+      await assert.rejects(runPlugin({}, { config, emitter }), /must contain/)
+    })
   })
 
   test('records a window end to end when given a shard', async () => {
@@ -400,7 +464,7 @@ test.group('cbd plugin', () => {
       const config = { filters: {} }
       const { emitter, emit } = fakeEmitter()
 
-      await cbd({ shard, commit: 'deadbeef' })({ config, emitter })
+      await runPlugin({ shard, commit: 'deadbeef' }, { config, emitter })
 
       emit('test:start', {
         title: { original: 'alpha', expanded: 'alpha' },

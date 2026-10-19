@@ -25,18 +25,16 @@ missing family.
 | [0005](decisions/0005-inject-not-attach.md) | Reach a service by injecting into it, not by attaching to it | draft |
 | [0006](decisions/0006-relocate-a-deployed-copy.md) | Relocate a path that resolved into a deployed copy | draft |
 | [0007](decisions/0007-a-service-the-suite-starts-itself.md) | Attribute a service the suite starts itself | draft |
+| [0008](decisions/0008-correlate-a-request-by-id.md) | Correlate an out-of-process request by id | draft |
+| [0009](decisions/0009-canonicalize-both-sides.md) | Canonicalize both sides of a prefix match | draft |
+| [0010](decisions/0010-refuse-projection-for-a-declared-map.md) | Refuse to project a script whose declared map is unreadable | draft |
+| [0011](decisions/0011-the-root-hook-is-the-window.md) | The framework's awaited root hook is the window | draft |
+| [0012](decisions/0012-diff-from-the-map-commit.md) | Take the diff from the map's commit, not the branch base | draft |
+| [0013](decisions/0013-one-map-per-commit.md) | One map per commit, merged from its shards | draft |
+| [0014](decisions/0014-the-source-array-is-the-seam.md) | The source array is the integration seam | draft |
 
-## Planned
-
-Backfilled from `.explore/` and the commit history; tracked as `cbd` issues under the *arch/*
-epic rather than as a list that goes stale here.
-
-- canonicalize both sides of a projection prefix match
-- refuse to project a script whose declared source map is unreadable
-- the framework root hook is the window
-- take the diff from the map's commit, not the branch base
-- one map per commit
-- the source array is the integration seam
+The backfill is complete: the decisions that had only lived in docblocks, the design document and
+the log now have records. New decisions are added as records rather than as a planned list here.
 
 ## Adding a decision
 

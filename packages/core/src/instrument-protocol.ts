@@ -37,6 +37,20 @@ import type { V8ScriptCoverage } from './types.js'
 export const INSTRUMENT_PROTOCOL = 1
 
 /**
+ * The header a correlated request carries, and the environment variables that
+ * turn correlation on.
+ *
+ * Declared here rather than in `correlate.ts` because this module is the wire
+ * contract and has no runtime imports: the injected instrument reads the env name
+ * from it without pulling the test-side HTTP client patch (and `https`/`tls`) into
+ * every instrumented service. Measured, that extra module load was visible in the
+ * first take's cost on the fixture that measures boundary drift.
+ */
+export const CORRELATION_HEADER = 'x-cbd-correlation'
+export const CORRELATION_HEADER_ENV = 'CBD_CORRELATION_HEADER'
+export const CORRELATION_ENV = 'CBD_CORRELATION'
+
+/**
  * The in-process handshake, for the one case the wire cannot describe: a collector
  * running *inside* a process the module was injected into.
  *
@@ -61,8 +75,17 @@ export interface InstrumentScope {
   /**
    * The running module's off switch. Stops taking, removes the socket and any
    * snapshot, and leaves the process alone. Absent when the module is inert.
+   *
+   * It **returns what it had already consumed** — the coverage its self-snapshots
+   * took since the process started, which no client has read. The collector in
+   * this process starts its own session only after the module stands down, so
+   * without the handoff everything that ran before that moment (the test
+   * runner's static imports, most importantly) is gone from the isolate counters
+   * with nobody to receive it. That was `cbd-1ci`: a module loaded during the
+   * import phase and never executed again left no evidence, so a change to it
+   * escalated through `unknown-file` although the run had loaded it.
    */
-  __cbdInstrument?: { stop: () => void }
+  __cbdInstrument?: { stop: () => Promise<V8ScriptCoverage[]> }
 }
 
 /** One parsed script, as `Debugger.scriptParsed` reported it. */
@@ -85,6 +108,34 @@ export interface HelloResult {
   startedAt: string
   /** How many scripts have been parsed so far, for a cheap sanity check. */
   scriptCount: number
+  /**
+   * Whether this process is already taking request boundaries.
+   *
+   * True when it inherited `CBD_CORRELATION_HEADER` from a recording test process.
+   * The collector uses it to skip the `correlate` op — one round trip it does not
+   * need, on a path where the difference between attaching inside the test that
+   * started the process and attaching during the next one is a whole window of
+   * attribution.
+   *
+   * Absent from an instrument older than this field, which is indistinguishable
+   * from `false` for that caller: it sends the op, and an old instrument answers
+   * that it does not know it.
+   */
+  correlating?: boolean
+}
+
+/**
+ * A delta the instrument took on its own initiative, at a correlated request's
+ * boundary.
+ *
+ * `ids` are the request ids that were in flight for the interval, so the collector
+ * can join the delta to the tests that sent those requests. A window with no id
+ * is never sent as one of these: it is ordinary coverage, delivered with the next
+ * take and attributed by time exactly as before.
+ */
+export interface RequestWindow {
+  ids: string[]
+  coverage: V8ScriptCoverage[]
 }
 
 export interface TakeResult {
@@ -102,6 +153,17 @@ export interface TakeResult {
    * execution into `@between`, which escalates. Reported rather than assumed.
    */
   atUs: number
+  /**
+   * Correlation ids in flight when this boundary was crossed.
+   *
+   * `coverage` ran while these requests were open, so the recorder credits it to
+   * those tests as well as to the window it was taken for. That double credit is
+   * deliberate: it is what keeps a request's work from being lost when another
+   * test's boundary happens to take it first.
+   */
+  ids?: string[]
+  /** Request-boundary windows taken since the previous reply. */
+  requests?: RequestWindow[]
 }
 
 /**
@@ -117,6 +179,20 @@ export interface SnapshotWindow {
   takeId: number
   sentAtUs?: number
   coverage: V8ScriptCoverage[]
+  /**
+   * The script rows this take delivered. Kept with the window until it is
+   * acknowledged, so a lost reply can still be resolved without the snapshot
+   * carrying the whole table (see `SnapshotFile.scripts`).
+   */
+  scripts?: ScriptRow[]
+  /**
+   * The correlation tags this take's reply carried, kept for the same reason as
+   * the coverage: a reply that never arrived is recovered by take id, and a
+   * recovered window that dropped its ids would credit a request's work to
+   * whatever boundary happened to recover it.
+   */
+  ids?: string[]
+  requests?: RequestWindow[]
 }
 
 /** What an instrumented process leaves beside its socket. */
@@ -129,12 +205,46 @@ export interface SnapshotFile {
   atUs: number
   /** Set only on the write made by the exit handler. */
   endedAtUs?: number
-  /** The full script table, so the harvester can resolve source maps. */
+  /**
+   * The script rows the harvester may not have: those in unacknowledged windows,
+   * plus any parsed since the last take.
+   *
+   * **Not the full table, deliberately.** It used to be, and on a lane server the
+   * table is 4770 rows and 12 MB, rewritten after every served take on the
+   * process's own loop — measured as ~1 ms added to every boundary (`cbd-3z1`).
+   * A take's reply carries its rows, and an acknowledged take is one the
+   * collector has absorbed, so repeating those rows in the snapshot buys nothing.
+   * What must survive a death is the part no reply has delivered, which is small
+   * after the first ack and is the whole table before it.
+   */
   scripts: ScriptRow[]
   /** Takes the client has not acknowledged. Ordered by `takeId`. */
   windows: SnapshotWindow[]
-  /** Coverage taken since the last client take, and not yet in any window. */
-  untaken: V8ScriptCoverage[]
+  /**
+   * Coverage taken since the last client take, and not yet in any window.
+   *
+   * **Present only on the exit write.** The per-take and periodic files are bounded
+   * to what a lost take can be recovered from *by id* — its window and the script
+   * rows no reply has delivered. The accumulator is not one of those things: it can
+   * hold thousands of request windows, and rewriting it every 500 ms reached 398 MB
+   * and ~97% of a CPU on a real suite (`cbd-n9t.2`). A process that dies with only
+   * the bounded file loses the last partial window and the run's shard is refused;
+   * a live process whose write never reached the instrument keeps the accumulator,
+   * and the next successful take carries it.
+   */
+  untaken?: V8ScriptCoverage[]
+  /**
+   * Request-boundary windows taken since the last take was served.
+   *
+   * They have no take id yet — they are delivered with the next reply — so they
+   * cannot be recovered by number. They are kept in the **exit** write so a
+   * process that dies before that reply is read still leaves their coverage with
+   * the ids that owned it; the unnumbered fallback in `recoverWindow` reads them
+   * there. The periodic file omits them for the same reason it omits `untaken`:
+   * they are unbounded between boundaries (`cbd-n9t.2`), and the next take
+   * delivers them while the process is alive.
+   */
+  pendingRequests?: RequestWindow[]
 }
 
 /** The file the instrument writes, derived from the pid it belongs to. */
@@ -142,7 +252,7 @@ export function snapshotPath(dir: string, pid: number): string {
   return join(dir, `pid-${String(pid)}.coverage.json`)
 }
 
-export type InstrumentOp = 'hello' | 'take' | 'close' | 'ack'
+export type InstrumentOp = 'hello' | 'take' | 'close' | 'ack' | 'correlate'
 
 export type InstrumentRequest =
   | { id: number; op: 'hello' }
@@ -150,12 +260,24 @@ export type InstrumentRequest =
   | { id: number; op: 'close' }
   /** `ackId` is the last take the client has safely absorbed. */
   | { id: number; op: 'ack'; ackId: number }
+  /**
+   * Turns on request-id correlation and names the header to read.
+   *
+   * An operation rather than an environment variable because the collector is
+   * the side that knows correlation is wanted, and a separately started service's
+   * environment is not the collector's to change (ADR-0005's rule that the
+   * service is started the way a developer starts one). The op is idempotent: a
+   * rescanning source may configure the same process once when it attaches and
+   * never again, but a second collector is not an error.
+   */
+  | { id: number; op: 'correlate'; header: string }
 
 export type InstrumentResponse =
   | { id: number; op: 'hello'; ok: true; result: HelloResult }
   | { id: number; op: 'take'; ok: true; result: TakeResult }
   | { id: number; op: 'close'; ok: true; result: { closing: true } }
   | { id: number; op: 'ack'; ok: true; result: { acked: number } }
+  | { id: number; op: 'correlate'; ok: true; result: { header: string } }
   | { id: number; op: string; ok: false; error: string }
 
 export function encodeMessage(message: InstrumentRequest | InstrumentResponse): string {

@@ -90,14 +90,68 @@ test('stands the injected instrument down when one is running in this process', 
   const scope = globalThis as InstrumentScope
   let stopped = 0
   scope.__cbdInstrument = {
-    stop: () => {
+    stop: async () => {
       stopped += 1
+      return []
     },
   }
   try {
     const source = await inProcessSource()
     try {
       assert.equal(stopped, 1, 'the module in this process was left collecting')
+    } finally {
+      source.close()
+    }
+  } finally {
+    delete scope.__cbdInstrument
+  }
+})
+
+/**
+ * Standing down is a handoff.
+ *
+ * The injected module starts at process birth and its self-snapshots have already
+ * taken whatever ran before this source existed. Those counters are reset when
+ * taken, so the module gives them back and the source must deliver them in its
+ * first window — that window is `@load`, and on a real runner it is the import
+ * phase (`cbd-1ci`: a module loaded there and never executed again left no
+ * evidence, and a change to it escalated as `unknown-file`).
+ *
+ * Delivered once, not repeated: a carried script in every window would credit
+ * import-time work to whichever test happened to run, which is the opposite error.
+ */
+test('carries the instrument it stood down into the first window, once', async () => {
+  const scope = globalThis as InstrumentScope
+  const carried = [
+    {
+      scriptId: 'carried-1',
+      url: 'file:///carried/before.js',
+      functions: [
+        {
+          functionName: '',
+          isBlockCoverage: false,
+          ranges: [{ startOffset: 0, endOffset: 10, count: 1 }],
+        },
+      ],
+    },
+  ]
+  scope.__cbdInstrument = {
+    stop: async () => carried,
+  }
+  try {
+    const source = await inProcessSource()
+    try {
+      const first = source.takeSync()
+      assert.ok(
+        first.some((script) => script.url === 'file:///carried/before.js'),
+        'the import-phase coverage the instrument had already taken was discarded',
+      )
+      const second = source.takeSync()
+      assert.equal(
+        second.some((script) => script.url === 'file:///carried/before.js'),
+        false,
+        'carried coverage was delivered a second time',
+      )
     } finally {
       source.close()
     }

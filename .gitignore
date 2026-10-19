@@ -15,3 +15,6 @@ out/
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# e2e scenario repos (created and removed by tests)
+packages/cli/.scenario-tmp/

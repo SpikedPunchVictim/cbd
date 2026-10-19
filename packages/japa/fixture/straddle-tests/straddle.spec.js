@@ -23,7 +23,18 @@ import { test } from '@japa/runner'
 const base = process.env.CBD_FIXTURE_URL
 
 test.group('a test that leaves work behind', () => {
-  test('a test that drives nothing first', () => {
+  /**
+   * Inert, and long enough that the run's first take is behind it.
+   *
+   * The first take of the service is the expensive one — every script it parsed
+   * comes back, and `takePreciseCoverage` is cold — measured at about 7ms on this
+   * fixture. The boundary after it is dispatched as soon as this test ends, so an
+   * instant first test puts two boundaries inside that cost and the drift test
+   * measures start-up, not the steady state it is about. The wait is the fixture
+   * choosing its regime, the same way the 400ms test chooses where the sweep lands.
+   */
+  test('a test that drives nothing first', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 50))
     assert.ok(true)
   })
 

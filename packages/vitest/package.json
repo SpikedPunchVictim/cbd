@@ -1,0 +1,39 @@
+{
+  "name": "@spikedpunch/cbd-vitest",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Vitest adapter: turns a plain Vitest run into per-test coverage windows, and selects with them.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./setup": "./dist/src/setup.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@spikedpunch/cbd": "workspace:*"
+  },
+  "peerDependencies": {
+    "vitest": ">=3.2.0 <6"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  },
+  "files": [
+    "dist/src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/vitest"
+  }
+}

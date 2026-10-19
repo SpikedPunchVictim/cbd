@@ -1,7 +1,6 @@
 {
   "name": "@spikedpunch/cbd-japa",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "japa adapter: turns a plain japa run into per-test coverage windows, and selects with them.",
   "main": "./dist/src/index.js",
@@ -16,9 +15,23 @@
   "dependencies": {
     "@spikedpunch/cbd": "workspace:*"
   },
+  "peerDependencies": {
+    "@japa/runner": ">=5.0.0 <6"
+  },
   "devDependencies": {
     "@japa/runner": "^5.4.0",
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist/src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/japa"
   }
 }

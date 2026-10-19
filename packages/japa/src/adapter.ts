@@ -37,23 +37,29 @@
  * filter matches the bare one (A0 F10). Recording anything else would have made
  * every emitted filter match zero tests, which is a miss.
  */
+import type { CoverageMap, Selection } from '@spikedpunch/cbd'
 import {
   Recorder,
   classifyStatus,
-  type CoverageMap,
+  type Correlator,
+  type OwnerIndex,
   type ScanOptions,
-  type Selection,
   type ShardSink,
   type Source,
   type TestStatus,
-} from '@spikedpunch/cbd'
+} from '@spikedpunch/cbd/adapter'
+import { withSelfRoot } from './self.js'
 
 /** Everything the adapter needs that it cannot work out for itself. */
 export interface AdapterWiring {
   source: Source
   sink: ShardSink
   commit: string
-  /** Forwarded to `normalize` — projection and relocation rules, and include/exclude. */
+  /**
+   * The record-time filters: `prefilter` and `selfRoots` decide which scripts
+   * enter the shard. Projection, relocation and include/exclude are applied by
+   * `cbd build` in a v2 shard (ADR-0002), so the build needs the same rules.
+   */
   scan?: ScanOptions
   /**
    * Whose coverage this is. Defaults to this process, which is right for an
@@ -61,6 +67,8 @@ export interface AdapterWiring {
    * execution belongs in a shard naming the service.
    */
   pid?: number
+  /** Resolves a correlation id to the test that sent it. Absent without correlation. */
+  owners?: OwnerIndex
 }
 
 export interface InstalledAdapter {
@@ -90,7 +98,10 @@ export interface InstalledAdapter {
  * than this would miss the load phase entirely and misfile it as `@between`.
  */
 export function beginShard(wiring: AdapterWiring): Recorder {
-  const recorder = new Recorder(wiring)
+  // The adapter's own files are inside every window it closes — it is what takes
+  // and normalizes them — so its package root is excluded from the scan here, the
+  // one funnel every japa recorder is opened through (`cbd-qly`).
+  const recorder = new Recorder({ ...wiring, scan: withSelfRoot(wiring.scan) })
   recorder.runStart()
   return recorder
 }
@@ -192,8 +203,26 @@ export function japaWindowHooks(recorder: Recorder): {
 export function installJapaAdapter(
   emitter: JapaEmitter,
   recorders: readonly Recorder[],
+  options: { correlation?: Correlator } = {},
 ): InstalledAdapter {
   const hooks = recorders.map((recorder) => japaWindowHooks(recorder))
+
+  /**
+   * One window per test for every recorder, and one correlation id for the
+   * requests it makes.
+   *
+   * The id is opened before the recorders dispatch their boundaries, so a request
+   * made by the first line of the test already carries it, and closed after the
+   * last boundary, so a request started in the test's final tick still does.
+   */
+  const onTestStart = (node: JapaTestStartNode): void => {
+    options.correlation?.begin(node.title.original, node.meta.fileName ?? null)
+    for (const hook of hooks) hook.onTestStart(node)
+  }
+  const onTestEnd = (node: JapaTestEndNode): void => {
+    for (const hook of hooks) hook.onTestEnd(node)
+    options.correlation?.end()
+  }
 
   let finished: Promise<void> | null = null
   const finish = (): Promise<void> => {
@@ -209,16 +238,21 @@ export function installJapaAdapter(
     // have to happen, because a socket source holds an open `net.Socket` and an open
     // socket keeps Node alive — without this the run prints its summary, reports
     // every test green, and then hangs until something kills it.
-    finished = Promise.all(recorders.map((recorder) => recorder.drained())).then(() => {
-      for (const recorder of recorders) recorder.close()
-    })
+    finished = Promise.all(recorders.map((recorder) => recorder.drained()))
+      .then(() => {
+        for (const recorder of recorders) recorder.close()
+      })
+      .finally(() => {
+        // The HTTP patch is a process-wide side effect; leaving it in place after
+        // the run would put an id on requests nobody is recording.
+        options.correlation?.end()
+        options.correlation?.release()
+      })
     return finished
   }
 
-  for (const hook of hooks) {
-    emitter.on('test:start', hook.onTestStart as JapaListener)
-    emitter.on('test:end', hook.onTestEnd as JapaListener)
-  }
+  emitter.on('test:start', onTestStart as JapaListener)
+  emitter.on('test:end', onTestEnd as JapaListener)
   emitter.on('runner:end', finish as JapaListener)
 
   return { recorders, finish }

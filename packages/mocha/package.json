@@ -1,7 +1,6 @@
 {
   "name": "@spikedpunch/cbd-mocha",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "Mocha adapter: turns a plain mocha run into per-test coverage windows.",
   "main": "./dist/src/index.js",
@@ -23,5 +22,16 @@
     "@types/node": "^26.6.5",
     "mocha": "^10.8.2",
     "typescript": "^7.0.2"
+  },
+  "files": [
+    "dist/src"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SpikedPunchVictim/cbd.git",
+    "directory": "packages/mocha"
   }
 }

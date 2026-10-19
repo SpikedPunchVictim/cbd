@@ -21,7 +21,7 @@
  */
 import { intersects, type Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
-import type { CoverageMap } from './map.js'
+import type { CoverageMap, FunctionEntry } from './map.js'
 import type { TouchRef } from './shard.js'
 
 export type AllWhy =
@@ -31,6 +31,7 @@ export type AllWhy =
   | 'between'
   | 'stale-map'
   | 'no-map'
+  | 'test-file'
 
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
@@ -71,6 +72,20 @@ export interface SelectConfig {
   unknownPolicy?: 'all' | 'ignore'
   betweenPolicy?: 'all' | 'ignore'
   testFiles?: string[]
+  /**
+   * What a changed test file means. `known` (the default) selects the tests the map
+   * already knows that file defines and warns that an added test cannot be named;
+   * `all` forces the whole suite.
+   *
+   * The default is `known` because a changed spec is the ordinary way this
+   * repository's commits land: 53 of the 79 measured commits in one week and 140 of
+   * 253 in one month touch a stores spec, so forcing the suite on each would make
+   * nearly every run a full one and give up the tool's whole benefit. The gap is
+   * real and is not silent: the selection warns, and the replay/`verify` report an
+   * unnameable test as `newTests` rather than counting it as a miss. `all` is the
+   * opt-in for a team that would rather pay the run than reason about the gap.
+   */
+  testFilePolicy?: 'known' | 'all'
   /** Make a stale or dirty map force `mode: all` rather than merely warn. */
   strict?: boolean
   maxAgeCommits?: number
@@ -87,6 +102,87 @@ function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((a, b) => a - b)
 }
 
+/**
+ * Rules 4 and 5 for one known file: which mapped functions the change reaches,
+ * and whether it reaches code the map cannot place at all.
+ *
+ * A pure insertion has no old-side lines, so it cannot be a hunk (`cbd-81h.1`).
+ * Where it lands decides the answer: inside a mapped function, the inserted code
+ * is that function's; anywhere else — between functions, at either end — it
+ * could be read by anything in the file. An insertion after a function's closing
+ * brace is top-level code, not the function's, hence `< endLine` rather than
+ * `<=`.
+ */
+function functionsHit(
+  change: Change,
+  functions: Record<string, FunctionEntry>,
+): { hit: Set<string>; outsideEveryFunction: boolean } {
+  const hit = new Set<string>()
+  let outsideEveryFunction = false
+
+  for (const hunk of change.hunks) {
+    let matched = false
+    for (const [key, entry] of Object.entries(functions)) {
+      if (intersects(hunk, { start: entry.startLine, end: entry.endLine })) {
+        matched = true
+        hit.add(key)
+      }
+    }
+    if (!matched) outsideEveryFunction = true
+  }
+
+  for (const point of change.insertions ?? []) {
+    let matched = false
+    for (const [key, entry] of Object.entries(functions)) {
+      if (point >= entry.startLine && point < entry.endLine) {
+        matched = true
+        hit.add(key)
+      }
+    }
+    if (!matched) outsideEveryFunction = true
+  }
+
+  return { hit, outsideEveryFunction }
+}
+
+/**
+ * Rule 3 — what a changed test file means. Returns true when it answered.
+ *
+ * A file that matches a test glob but defines no tests is not a test file: it is a
+ * helper, and the map's function rules answer it (`cbd-e9l`). That is why the
+ * registry, not the glob, decides whether this rule applies.
+ */
+function testFileChange(
+  path: string,
+  testFiles: string[],
+  policy: 'known' | 'all',
+  testsDefinedIn: (file: string) => number[],
+  forceAll: (why: AllWhy, file: string) => void,
+  selected: Set<number>,
+  reasons: Reason[],
+  warnings: string[],
+): boolean {
+  if (matchesAnyGlob(path, testFiles) === null) return false
+  const tests = testsDefinedIn(path)
+  if (tests.length === 0) return false
+
+  if (policy === 'all') {
+    // Not `unmapped`: the map can answer for the tests it knows. The policy
+    // escalates because it cannot answer for the ones the edit may add.
+    forceAll('test-file', path)
+  } else {
+    for (const index of tests) selected.add(index)
+    reasons.push({ kind: 'test-file', file: path, tests })
+    // The one gap `known` accepts, said out loud. It cannot know whether this edit
+    // added a test; a developer who did is the one person who needs to hear it.
+    warnings.push(
+      `${path} is a changed test file; a test it adds is not in the map and will not ` +
+        "be selected (testFilePolicy: 'all' runs everything)",
+    )
+  }
+  return true
+}
+
 export function select(
   map: CoverageMap,
   changes: Change[],
@@ -96,6 +192,7 @@ export function select(
   const include = config.include ?? ((): boolean => true)
   const alwaysAll = config.alwaysAll ?? []
   const testFiles = config.testFiles ?? DEFAULT_TEST_FILES
+  const testFilePolicy = config.testFilePolicy ?? 'known'
   const unknownPolicy = config.unknownPolicy ?? 'all'
   const betweenPolicy = config.betweenPolicy ?? 'all'
 
@@ -165,26 +262,44 @@ export function select(
 
   for (const change of changes) {
     const path = change.path
-    if (!include(path)) continue
 
-    // Rule 1 — a file the map cannot answer for by policy.
+    // Rule 1 — a file the map cannot answer for by policy, and the first rule in
+    // §8.3's table for a reason: `alwaysAll` is independent of `include`. The
+    // documented config lists `**/migrations/**` there although `include` covers
+    // only `src/**`; checking `include` first silently dropped every such change,
+    // which is under-selection (cbd-0lu found it on the fixture's JSON data file).
     if (matchesAnyGlob(path, alwaysAll) !== null) {
       unmapped.push(path)
       forceAll('always-all', path)
       continue
     }
 
-    // Rule 3 — a test file. Its own tests are the answer.
-    if (matchesAnyGlob(path, testFiles) !== null) {
-      const tests = testsDefinedIn(path)
-      if (tests.length > 0) {
-        for (const index of tests) selected.add(index)
-        reasons.push({ kind: 'test-file', file: path, tests })
-      } else if (unknownPolicy === 'all') {
-        // A brand-new test file has no tests in the map, so none can be named.
-        unmapped.push(path)
-        forceAll('unknown-file', path)
-      }
+    if (!include(path)) continue
+
+    // Rule 3 — a test file whose tests the registry can name. Under the default
+    // `testFilePolicy: 'all'` the whole suite runs, because the map cannot name a
+    // test the change *added* to this file; `'known'` is the opt-in fast path.
+    //
+    // A file that *matches* a test glob but defines no tests — a helper, a
+    // fixture builder, a macro — is ordinary code. Treating it as a test file
+    // asked the registry for its tests, got none, and escalated to `all` even
+    // when the map had per-test evidence for it (`cbd-e9l`: measured as a
+    // 26-point inflation of the all-rate on the target suite). Such a file falls
+    // through to rules 4-6, which answer it from the map. A brand-new test file
+    // is not in `seen` and still reaches `unknown-file` below, where `all` is the
+    // right answer.
+    if (
+      testFileChange(
+        path,
+        testFiles,
+        testFilePolicy,
+        testsDefinedIn,
+        forceAll,
+        selected,
+        reasons,
+        warnings,
+      )
+    ) {
       continue
     }
 
@@ -208,19 +323,7 @@ export function select(
     if (inMap) {
       // Rules 4 and 5.
       const functions = map.files[path]!
-      const hit = new Set<string>()
-      let outsideEveryFunction = false
-
-      for (const hunk of change.hunks) {
-        let matched = false
-        for (const [key, entry] of Object.entries(functions)) {
-          if (intersects(hunk, { start: entry.startLine, end: entry.endLine })) {
-            matched = true
-            hit.add(key)
-          }
-        }
-        if (!matched) outsideEveryFunction = true
-      }
+      const { hit, outsideEveryFunction } = functionsHit(change, functions)
 
       for (const key of hit) {
         const entry = functions[key]!
@@ -230,9 +333,13 @@ export function select(
 
       // A hunk outside every function — imports, top-level constants, a class
       // field initializer — could be read by anything in the file, so the whole
-      // file's tests are the honest answer. Also the fallback for a change with
-      // no hunks at all, such as a pure mode change.
-      if (outsideEveryFunction || change.hunks.length === 0) {
+      // file's tests are the honest answer. The second clause is the fallback
+      // for a change with no lines at all, such as a pure mode change — not for
+      // an insertion, which has its own answer and may have matched a function.
+      if (
+        outsideEveryFunction ||
+        (change.hunks.length === 0 && (change.insertions ?? []).length === 0)
+      ) {
         const tests = testsTouchingFile(path)
         if (tests.length > 0) {
           for (const index of tests) selected.add(index)

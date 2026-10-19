@@ -35,10 +35,14 @@
  *   the way through means the inverse map ("what does no test reach?") costs
  *   nothing extra to build later.
  */
+import { realpathSync } from 'node:fs'
+import { sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { FileCache } from './line-index.js'
 import { createScriptResolver } from './source-maps.js'
 import { canonicalProjectionRules, type ProjectionRule } from './projection.js'
 import { createRelocator, type RelocationRule } from './relocate.js'
+import { CBD_SELF_ROOTS } from './self.js'
 import type { Source, V8Function, V8Range, V8ScriptCoverage } from './types.js'
 
 export interface Definition {
@@ -82,8 +86,15 @@ export interface ScanOptions {
   include?: (file: string) => boolean
   exclude?: (file: string) => boolean
   /**
+   * Package roots of the tool itself — core's is always excluded, and an adapter
+   * adds its own (`cbd-qly`). Scripts under them are dropped no matter what, even
+   * when a caller replaces `prefilter`: the exclusion is a floor, not a default.
+   */
+  selfRoots?: readonly string[]
+  /**
    * Cheap filter on the generated script URL, applied before any file is read.
    * Resolving a script costs a stat and a read, so rejecting early is worth it.
+   * A custom prefilter narrows further; it cannot opt the tool's own code back in.
    */
   prefilter?: (url: string) => boolean
   /** Shared across the windows of a run; see `OrdinalRegistry`. */
@@ -101,7 +112,55 @@ function defaultPrefilter(url: string): boolean {
   return !url.includes('/node_modules/')
 }
 
-function displayName(fn: V8Function, range: V8Range, maxEndOffset: number): string {
+/**
+ * Both spellings of a root, because a script URL can carry either one.
+ *
+ * Node resolves a loaded module's URL through symlinks, so the realpath is the
+ * production case; a caller that synthesizes a payload (or runs on macOS, where
+ * `/tmp` is `/private/tmp`) can hand over the unresolved one. A root that cannot
+ * be resolved is inert rather than fatal: the caller named it, not this code.
+ */
+function rootVariants(root: string): string[] {
+  try {
+    const real = realpathSync(root)
+    return real === root ? [root] : [root, real]
+  } catch {
+    return [root]
+  }
+}
+
+/**
+ * The scan's own filter, with the tool's roots as a floor.
+ *
+ * A consumer's `prefilter` can narrow the scan but cannot opt the tool back in
+ * (`cbd-qly`). Core's roots are always present; an adapter adds its own package's
+ * because core cannot know where that package was installed.
+ */
+export function scriptPrefilter(options: ScanOptions): (url: string) => boolean {
+  const accept = options.prefilter ?? defaultPrefilter
+  const roots = [...CBD_SELF_ROOTS, ...(options.selfRoots ?? [])].flatMap(rootVariants)
+  return (url) => accept(url) && !withinRoots(url, roots)
+}
+
+/**
+ * Whether a script URL is one of the tool's own files.
+ *
+ * The `file:` test matters: a `node:` or `data:` URL has no path to compare, and
+ * `fileURLToPath` would throw for it. The separator check is what keeps
+ * `/repo/packages/core-extra` from being treated as inside `/repo/packages/core`.
+ */
+function withinRoots(url: string, roots: readonly string[]): boolean {
+  if (!url.startsWith('file:')) return false
+  let file: string
+  try {
+    file = fileURLToPath(url)
+  } catch {
+    return false
+  }
+  return roots.some((root) => file === root || file.startsWith(`${root.replace(/\/+$/, '')}${sep}`))
+}
+
+export function displayName(fn: V8Function, range: V8Range, maxEndOffset: number): string {
   // The module body starts at zero AND contains every other function in the
   // script. Two weaker tests both fail: `startOffset === 0` alone misnames a file
   // that opens with a bare `function` declaration, and `endOffset >= the file's
@@ -121,7 +180,7 @@ export function scan(
     options.projection === undefined || options.projection.length === 0
       ? []
       : canonicalProjectionRules(options.projection)
-  const prefilter = options.prefilter ?? defaultPrefilter
+  const prefilter = scriptPrefilter(options)
   // Rules are canonicalized once here, not per resolved file: `scan` runs once per
   // test window, and every window resolves the same few hundred paths.
   const relocate = createRelocator(options.relocate)

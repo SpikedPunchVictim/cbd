@@ -20,6 +20,7 @@ import { fileURLToPath } from 'node:url'
 import {
   LEAST_UPPER_BOUND,
   TraceMap,
+  decodedMappings,
   originalPositionFor,
   type Bias,
 } from '@jridgewell/trace-mapping'
@@ -49,6 +50,30 @@ export interface ScriptResolver {
    * tail of the module.
    */
   original(offset: number, allowForward?: boolean): OriginalPosition | null
+}
+
+/**
+ * The `sourceMappingURL` a script's own text declares, if any.
+ *
+ * Node's rule, reduced to what this project needs: the last magic comment wins,
+ * in either the line (`//#`, `//@`) or block (`/*#`) form, and its value runs to
+ * the next whitespace. Scanned over the whole text rather than only the tail; a
+ * source map comment belongs at the end, and a string literal that happens to
+ * contain the marker before it is a false positive that the resolver will simply
+ * fail to load (and therefore drop the script, the safe direction).
+ *
+ * This exists so a shard need not repeat a map the file already carries: tsc's
+ * inline map is tens of KB per script, and the build reads the same stat-verified
+ * file anyway (`cbd-n9t.1`). A loader-injected map has no file comment and is
+ * still recorded.
+ */
+export function sourceMapUrlOf(text: string): string | undefined {
+  const marker = /(?:\/\/[#@]\s*sourceMappingURL=([^\s]+))|(?:\/\*[#@]\s*sourceMappingURL=([^\s*]+)\s*\*\/)/g
+  let found: string | undefined
+  for (let match = marker.exec(text); match !== null; match = marker.exec(text)) {
+    found = match[1] ?? match[2]
+  }
+  return found
 }
 
 function decodeDataUri(url: string): string | null {
@@ -129,13 +154,47 @@ function createMapResolver(
     return { file, line: found.line }
   }
 
+  /**
+   * The first mapping at or after a generated line (1-based).
+   *
+   * `originalPositionFor` searches one generated line and never crosses into the
+   * next. tsc's emit opens with unmapped boilerplate — `"use strict"`, the
+   * `__createBinding` helpers — so byte offset 0, which is where the module body
+   * starts, has no mapping of its own and no mapping on its line. The lookup
+   * returned null and the module body was dropped from every tsc-built script.
+   * For most files another function executes later and the file is still seen;
+   * for a file whose ONLY executed function is its module body — a module of
+   * classes or constants re-exported by a barrel — the file disappeared from the
+   * map although the process had loaded it (cbd-1ci). That is the difference
+   * between the safe `unknown-file` answer and an honest `@load` touch.
+   *
+   * The fallback extends the same forward rule `original` already applies within
+   * a line: a position with no mapping of its own belongs to the next one that
+   * has a mapping. For offset 0 the first mapping is the module body's start.
+   */
+  const firstMapped = (fromLine: number): OriginalPosition | null => {
+    const decoded = decodedMappings(map)
+    for (let line = fromLine - 1; line < decoded.length; line += 1) {
+      for (const segment of decoded[line] ?? []) {
+        const [, sourceIndex, sourceLine] = segment
+        if (sourceIndex === undefined || sourceLine === undefined) continue
+        const absolute = map.resolvedSources[sourceIndex]
+        const file = absolute === undefined ? undefined : paths.get(absolute)
+        if (file === undefined) continue
+        return { file, line: sourceLine + 1 }
+      }
+    }
+    return null
+  }
+
   return {
     via: 'source-map',
     length: index.length,
     original(offset, allowForward = true) {
       const exact = lookup(offset)
       if (exact !== null) return exact
-      return allowForward ? lookup(offset, LEAST_UPPER_BOUND) : null
+      if (!allowForward) return null
+      return lookup(offset, LEAST_UPPER_BOUND) ?? firstMapped(lineAt(index, offset))
     },
   }
 }

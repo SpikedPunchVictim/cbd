@@ -490,8 +490,10 @@ reports in one line; `cbd select` exits 3 for `all` so a script can branch on it
 internals move behind `@spikedpunch/cbd/adapter`.
 **Tests**: each verb against the fixture; `verify` as a pure function over recorded outcomes; the
 CLI's exit codes; a config with an unknown key is tolerated.
-**Status**: Not Started. Tracked as the beads epic *B3 — @spikedpunch/cbd-cli and the createCbd factory*.
-See `arch/decisions/0003-factory-and-two-tiers.md`.
+**Status**: Complete. Tracked as the beads epic *B3 — @spikedpunch/cbd-cli and the createCbd
+factory*. The five verbs, the CLI and its exit codes are built; `cbd-mm3` renders the inverse map's
+untested half in `stats` and distinguishes the two zero answers in `explain`; `cbd-vax` adds
+`cbd gc` and the retention policy. See `arch/decisions/0003-factory-and-two-tiers.md`.
 
 B2 is what makes this necessary rather than nice. Before it, `buildMap` was a cheap merge that
 could be a function call from `auto.ts`. After it, the build has a cost, output on disk and
@@ -516,10 +518,10 @@ already an array. So integration adds source implementations and a correlation s
 
 | scenario | source | correlation | status |
 |---|---|---|---|
-| I1 server in-process | `inProcessSource` | none needed | works today |
-| I2 out-of-process, request/response | `inspectorSource({ url })` | request-id header | designed, not built |
-| I3 workers / child processes | several targets | parent window | designed, escalates |
-| I4 queue/async, no boundary | `inspectorSource` | **none possible** | escalates to `all` |
+| I1 server in-process | `inProcessSource` | none needed | tested (`scenarios-e2e`) |
+| I2 out-of-process, request/response | `socketSource` / re-scan | request-id header | built (ADR-0008); tested |
+| I3 workers / child processes | several targets | parent window | tested; multiple targets |
+| I4 queue/async, no boundary | `socketSource` | **none possible** | tested; escalates to `all` |
 | I5 browser | `browserSource` | — | out of scope |
 
 **The honest limit is I4.** With no request boundary there is no way to attribute server-side
@@ -528,7 +530,10 @@ genuine risk is the one coverage alone cannot close: asynchronous work that outl
 is attributed to whichever test is running when it lands. That is why `settleMs` exists and why
 `verify`'s miss count is the arbiter.
 
-**Status**: Not Started. Tracked as the beads epic *C1 — integration seam*.
+**Status**: I1-I4 are exercised end to end by `packages/cli/tests/scenarios-e2e.spec.ts`,
+which drives `cbd collect` and `cbd select` against four real repositories. I2 is built as
+request-id correlation (ADR-0008); I4 remains the honest limit. The epic is *C1 — integration
+seam*.
 
 ---
 

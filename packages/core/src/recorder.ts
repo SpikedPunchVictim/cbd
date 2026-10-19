@@ -31,16 +31,39 @@
  * bookkeeping below is written once and the *difference* is a `Windows` strategy:
  * four small functions that decide when a line reaches the sink.
  *
- * ## The ordinal registry is per run, and shared by both strategies
+ * ## A v2 shard holds byte ranges, and the table is built once per run
  *
- * V8 stops reporting a script's full function list after the take that follows its
- * compilation, so ordinals derived from a later window would be drawn from a subset
- * and two different functions could collide on one key. One registry per run, and
- * the queued strategy normalizes each window *inside* its chain rather than when the
- * reply arrives, so windows are keyed in boundary order.
+ * The recorder used to resolve every function of every window — read the file,
+ * parse the source map, look up the position — and that cost 36× the coverage take
+ * (ADR-0002). It now projects the V8 payload: script ids and byte ranges per
+ * window, plus a script and function row the first time each is seen. Resolution
+ * is the build's job, once per distinct function.
+ *
+ * The table is still run-scoped, and for the same reason the ordinal registry used
+ * to be: V8 stops reporting a script's full function list after the take that
+ * follows its compilation, so a function that first appears late is only knowable
+ * from the union over every window. Recording each `(script, function)` once is
+ * what lets the build assign source-order ordinals from a complete set. The queued
+ * strategy projects each window *inside* its chain rather than when the reply
+ * arrives, so the table is written in boundary order.
  */
-import { normalize, type OrdinalRegistry, type ScanOptions, type Touch } from './normalize.js'
-import { SHARD_VERSION, type ShardRecord, type ShardSink, type TouchRef } from './shard.js'
+import { statSync } from 'node:fs'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import type { CorrelatedTest, OwnerIndex } from './correlate.js'
+import { FileCache } from './line-index.js'
+import { scriptPrefilter, type ScanOptions } from './normalize.js'
+import { createRelocator } from './relocate.js'
+import { sourceMapUrlOf } from './source-maps.js'
+import {
+  SHARD_VERSION,
+  type RawRange,
+  type ShardFunction,
+  type ShardRecord,
+  type ShardScript,
+  type ShardSink,
+  type ShardTest,
+  type ShardTouch,
+} from './shard.js'
 import type { DriftStats, QueuedSource, Source, V8ScriptCoverage } from './types.js'
 
 export type TestStatus = 'passed' | 'failed' | 'skipped'
@@ -68,18 +91,228 @@ export interface RecorderOptions {
   source: Source
   sink: ShardSink
   commit: string
-  /** Forwarded to `normalize` — projection and relocation rules, include/exclude, prefilter. */
+  /**
+   * The record-time half of the scan: `prefilter` (and the adapters' self roots)
+   * decide which scripts enter the shard, and `relocate` chooses the stable file a
+   * script's bytes are checked against.
+   *
+   * Projection and include/exclude are build-time in v2; the build must be given
+   * the same rules. See `MapBuildOptions.scan`.
+   */
   scan?: ScanOptions
   pid?: number
   now?: () => number
+  /**
+   * Resolves a correlation id to the test that opened it.
+   *
+   * Absent for a run without correlation, in which case tagged windows cannot
+   * arrive and every record is exactly what it was before. Present for both
+   * recorders of a correlated run: the test process's shard and the service's
+   * share one registry, so the service can name a test it never ran.
+   */
+  owners?: OwnerIndex
 }
 
-function toRefs(touches: Touch[]): TouchRef[] {
-  return touches.map((touch) => [touch.file, touch.key, touch.startLine, touch.endLine])
+/**
+ * Unions one window's ranges into another, keyed by `(script, start offset)`.
+ *
+ * The identity of an executed function is its start offset: V8 reports one row per
+ * function per script, and the same function in two windows is the same offset.
+ * The end is the function's full extent and is invariant, but taking the max costs
+ * nothing and makes the union robust to a payload that reports it differently.
+ */
+function unionTouch(target: ShardTouch, source: ShardTouch): void {
+  for (const [scriptId, ranges] of Object.entries(source)) {
+    const existing = target[scriptId]
+    if (existing === undefined) {
+      target[scriptId] = ranges.map(([start, end]): RawRange => [start, end])
+      continue
+    }
+    for (const [start, end] of ranges) {
+      const found = existing.find(([knownStart, knownEnd]) => knownStart === start && knownEnd === end)
+      if (found === undefined) existing.push([start, end])
+    }
+  }
 }
 
-/** Turns one window's payload into the touches the map stores. */
-type Normalizer = (payload: V8ScriptCoverage[]) => TouchRef[]
+const hasTouches = (touch: ShardTouch): boolean =>
+  Object.values(touch).some((ranges) => ranges.length > 0)
+
+/** One delta and the requests that were open for it, before projection. */
+export interface RawCapture {
+  coverage: V8ScriptCoverage[]
+  ids: string[]
+  requests: Array<{ ids: string[]; coverage: V8ScriptCoverage[] }>
+}
+
+/**
+ * A window projected into the shard's vocabulary: the executed byte ranges plus
+ * the script and function rows this window made newly known.
+ *
+ * The rows are incremental and deduplicated across the whole run. A function's
+ * first sighting is not always complete (A4), so a script's function set is only
+ * known once every window has been read — but each `(script, function)` is still
+ * written exactly once, not once per window.
+ */
+export interface ProjectedWindow {
+  touches: ShardTouch
+  scripts: ShardScript[]
+  functions: ShardFunction[]
+}
+
+/** The same capture in the vocabulary the shard stores, plus the tags that survive. */
+export interface ProjectedCapture {
+  window: ProjectedWindow
+  /**
+   * Requests in flight at this boundary. `window.touches` belongs to their tests
+   * as well as to the window this record was taken for; see `#attributed`.
+   */
+  ids: string[]
+  /** Deltas the source took at its own request boundaries. */
+  requests: Array<{ ids: string[]; window: ProjectedWindow }>
+}
+
+/** Turns one capture's deltas into the ranges and table rows the shard stores. */
+type Projector = (capture: RawCapture) => ProjectedCapture
+
+const EMPTY_RAW: RawCapture = { coverage: [], ids: [], requests: [] }
+
+/**
+ * The recorder's hot projection.
+ *
+ * `takeSync()` gives a V8 payload; this turns it into script ids and byte ranges.
+ * Nothing here reads a source file, parses a source map or resolves a position —
+ * that is `resolve.ts`, in `cbd build`, once per distinct function (ADR-0002).
+ *
+ * The two table rows are written at most once per `(script)` and `(function)`,
+ * which is also what makes the build's ordinal assignment possible: the union over
+ * every window is complete, including functions V8 surfaced late (A4).
+ */
+function projectorFor(source: Source, scan: ScanOptions): Projector {
+  const prefilter = scriptPrefilter(scan)
+  const relocate = createRelocator(scan.relocate ?? [])
+  // One read per distinct script, at first sighting. The same file is read again
+  // by the build; this copy exists only to decide whether the shard must carry the
+  // map as well (`cbd-n9t.1`).
+  const cache = new FileCache()
+  const knownScripts = new Set<string>()
+  const knownFunctions = new Set<string>()
+
+  /**
+   * The script's table row, or `null` when the script cannot be recorded.
+   *
+   * A script whose file cannot be stat'ed now cannot have its offsets verified
+   * later, and a build that guessed at them would attribute ranges to whatever
+   * occupies those bytes — under-selection. Leaving the script out keeps the
+   * failure in the safe direction: its file never enters the map, and a change to
+   * it escalates to `mode: all`.
+   *
+   * The URL is the relocated one. A deployed lane runs a copy that is gone by
+   * build time; the rule says the copy came from the checkout, and the checkout's
+   * file is the one whose bytes the offsets describe (ADR-0006).
+   */
+  const tableRow = (script: V8ScriptCoverage): ShardScript | null => {
+    if (!script.url.startsWith('file:')) return null
+    const info = source.scripts().get(script.scriptId)
+    const url = info?.url ?? script.url
+    let path: string
+    try {
+      path = relocate(fileURLToPath(url))
+    } catch {
+      return null
+    }
+    let stat
+    try {
+      stat = statSync(path)
+    } catch {
+      return null
+    }
+    // A map the file itself declares does not need repeating in the shard: the
+    // build reads the same stat-verified file and can recover it. Only a map that
+    // exists *solely* in `Debugger.scriptParsed` — a loader's injected map, with no
+    // comment on disk — is recorded. When the file declares one that differs from
+    // what the inspector reported, the inspector's wins: it describes the bytes V8
+    // actually executed.
+    const text = cache.text(path)
+    const declared = text === null ? undefined : sourceMapUrlOf(text)
+    const reported = info?.sourceMapURL
+    const keep = reported !== undefined && declared !== reported
+
+    return {
+      type: 'script',
+      scriptId: script.scriptId,
+      url: pathToFileURL(path).href,
+      ...(keep ? { sourceMapURL: reported } : {}),
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    }
+  }
+
+  const project = (coverage: V8ScriptCoverage[]): ProjectedWindow => {
+    const touches: ShardTouch = {}
+    const scripts: ShardScript[] = []
+    const functions: ShardFunction[] = []
+
+    for (const script of coverage) {
+      if (!prefilter(script.url)) continue
+
+      const executed = script.functions.filter((fn) => {
+        const range = fn.ranges[0]
+        return range !== undefined && range.count > 0
+      })
+      if (executed.length === 0) continue
+
+      if (!knownScripts.has(script.scriptId)) {
+        const row = tableRow(script)
+        if (row === null) continue
+        knownScripts.add(script.scriptId)
+        scripts.push(row)
+      }
+
+      const ranges: RawRange[] = []
+      for (const fn of executed) {
+        const range = fn.ranges[0]!
+        // The function's identity is its *range*, not its start: Jest's VM wrapper
+        // and the first function it contains can both begin at offset 0 (`add` at
+        // 0-38 inside the wrapper at 0-777), and a start-only key merged them into
+        // one `<module>` row.
+        const id = `${script.scriptId}\u0000${String(range.startOffset)}\u0000${String(range.endOffset)}`
+        if (!knownFunctions.has(id)) {
+          knownFunctions.add(id)
+          functions.push({
+            type: 'function',
+            scriptId: script.scriptId,
+            start: range.startOffset,
+            end: range.endOffset,
+            // Raw V8 data, not resolution. The build decides the module body and
+            // the anonymous name, because only it knows the script's full extent.
+            name: fn.functionName,
+          })
+        }
+        ranges.push([range.startOffset, range.endOffset])
+      }
+      touches[script.scriptId] = ranges
+    }
+
+    return { touches, scripts, functions }
+  }
+
+  return (capture) => ({
+    window: project(capture.coverage),
+    ids: capture.ids,
+    requests: capture.requests.map((request) => ({
+      ids: request.ids,
+      window: project(request.coverage),
+    })),
+  })
+}
+
+/** One record per line, whether the boundary produced one or a correlated run produced several. */
+function appendRecords(sink: ShardSink, records: ShardRecord | ShardRecord[]): void {
+  for (const record of Array.isArray(records) ? records : [records]) {
+    sink.append(JSON.stringify(record))
+  }
+}
 
 /**
  * When a record reaches the sink, and what a window boundary does.
@@ -102,7 +335,7 @@ interface Windows {
    * the reply lands for a queued one — so anything it reads from the surrounding
    * scope is read at two different points in the run. Capture first, build second.
    */
-  commitWindow(build: (touches: TouchRef[]) => ShardRecord | null): void
+  commitWindow(build: (capture: ProjectedCapture) => ShardRecord | ShardRecord[] | null): void
   /**
    * A record whose content is not settled until every window ahead of it has been
    * read. The footer, and so far only the footer, is one: it reports the drift of the
@@ -132,24 +365,42 @@ function driftOf(source: Source): DriftStats | null {
   return typeof maybe.drift === 'function' ? maybe.drift.call(source) : null
 }
 
+/**
+ * Writes the script and function rows a capture made newly known, before the
+ * window record that references them.
+ *
+ * Order is not required by the build — it reads the whole shard — but a shard cut
+ * short by a crash should never reference a table row it had not written yet.
+ */
+function appendTable(sink: ShardSink, projected: ProjectedCapture): void {
+  for (const row of projected.window.scripts) sink.append(JSON.stringify(row))
+  for (const row of projected.window.functions) sink.append(JSON.stringify(row))
+  for (const request of projected.requests) {
+    for (const row of request.window.scripts) sink.append(JSON.stringify(row))
+    for (const row of request.window.functions) sink.append(JSON.stringify(row))
+  }
+}
+
 /** A source that answers in the same tick: write the record in that same tick. */
-function syncWindows(source: Source, sink: ShardSink, normalizeWindow: Normalizer): Windows {
+function syncWindows(source: Source, sink: ShardSink, project: Projector): Windows {
   return {
     commit(record) {
       sink.append(JSON.stringify(record))
     },
     commitWindow(build) {
-      let payload: V8ScriptCoverage[]
+      let capture: RawCapture
       try {
-        payload = source.takeSync()
+        capture = { coverage: source.takeSync(), ids: [], requests: [] }
       } catch {
         // A dead inspector session must not take the test run down with it. An
         // empty window under-selects for that test, which is why the run should
         // also be reported as unhealthy rather than silently trusted.
-        payload = []
+        capture = EMPTY_RAW
       }
-      const record = build(normalizeWindow(payload))
-      if (record !== null) sink.append(JSON.stringify(record))
+      const projected = project(capture)
+      appendTable(sink, projected)
+      const records = build(projected)
+      if (records !== null) appendRecords(sink, records)
     },
     commitFinal(build) {
       // Nothing to wait for: a synchronous source has already answered every window
@@ -161,7 +412,7 @@ function syncWindows(source: Source, sink: ShardSink, normalizeWindow: Normalize
 }
 
 /** A source that answers later: queue the records so they stay in boundary order. */
-function queuedWindows(source: QueuedSource, sink: ShardSink, normalizeWindow: Normalizer): Windows {
+function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector): Windows {
   let chain: Promise<void> = Promise.resolve()
 
   /**
@@ -181,29 +432,35 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, normalizeWindow: N
       })
     },
     commitWindow(build) {
-      let reply: Promise<V8ScriptCoverage[]>
+      let reply: Promise<RawCapture>
       try {
         // Here, in this tick, with nothing awaited before it: this call is the
         // boundary. Everything below is bookkeeping.
-        reply = source.dispatch().settle()
+        const pending = source.dispatch()
+        reply =
+          pending.settleTagged === undefined
+            ? pending.settle().then((coverage) => ({ coverage, ids: [], requests: [] }))
+            : pending.settleTagged()
       } catch {
-        reply = Promise.resolve([])
+        reply = Promise.resolve(EMPTY_RAW)
       }
 
       queue(async () => {
-        let payload: V8ScriptCoverage[]
+        let capture: RawCapture
         try {
-          payload = await reply
+          capture = await reply
         } catch {
           // The socket died mid-run, or the target went away. Same answer as the
           // synchronous path gives for a dead session: an empty window, which
           // under-selects and should be visible as an unhealthy run.
-          payload = []
+          capture = EMPTY_RAW
         }
-        // Normalized inside the chain, not when the reply landed, so the shared
-        // ordinals registry sees windows in boundary order.
-        const record = build(normalizeWindow(payload))
-        if (record !== null) sink.append(JSON.stringify(record))
+        // Projected inside the chain, not when the reply landed, so the table's
+        // first-sighting bookkeeping sees windows in boundary order.
+        const projected = project(capture)
+        appendTable(sink, projected)
+        const records = build(projected)
+        if (records !== null) appendRecords(sink, records)
       })
     },
     commitFinal(build) {
@@ -225,10 +482,10 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, normalizeWindow: N
  * test reaches any code. That reads as a confident answer rather than as a fault,
  * so it is refused here, where the source is still in hand and can be named.
  */
-function windowsFor(source: Source, sink: ShardSink, normalizeWindow: Normalizer): Windows {
-  if (source.supportsSync) return syncWindows(source, sink, normalizeWindow)
+function windowsFor(source: Source, sink: ShardSink, project: Projector): Windows {
+  if (source.supportsSync) return syncWindows(source, sink, project)
   if (typeof (source as QueuedSource).dispatch === 'function') {
-    return queuedWindows(source as QueuedSource, sink, normalizeWindow)
+    return queuedWindows(source as QueuedSource, sink, project)
   }
   throw new Error(
     `the source "${source.kind}" can neither take synchronously nor accept a window boundary, ` +
@@ -246,30 +503,96 @@ export class Recorder {
   #now: () => number
   #testCount = 0
   #loadCaptured = false
-  /**
-   * Keys must not be recomputed window by window: V8 stops reporting a script's
-   * full function list after the take that follows its compilation, so ordinals
-   * derived from a later window would be drawn from a subset and two different
-   * functions could collide on one key. One registry per run.
-   */
-  #ordinals: OrdinalRegistry = new Map()
   #open: { title: string; file: string | null; startedAt: number } | null = null
+  #owners: OwnerIndex | undefined
 
   constructor(options: RecorderOptions) {
     this.#commit = options.commit
     this.#pid = options.pid ?? process.pid
     this.#now = options.now ?? Date.now
+    this.#owners = options.owners
 
     const scan = options.scan ?? {}
     const source = options.source
     this.#source = source
-    this.#windows = windowsFor(source, options.sink, (payload) =>
-      toRefs(normalize(payload, source, { ...scan, ordinals: this.#ordinals })),
-    )
+    // Projection only: no file is read and no position is resolved here. The
+    // build does that once per distinct function (ADR-0002).
+    this.#windows = windowsFor(source, options.sink, projectorFor(source, scan))
+  }
+
+  /**
+   * A boundary's records: the ordinary one, plus whatever the correlation tags
+   * make attributable.
+   *
+   * `build` receives the whole capture so it can say which ordinary record the
+   * boundary produced. It must stay a pure function of that capture, for the same
+   * reason the old builder did: a queued source runs it whenever the reply lands.
+   */
+  #emit(build: (capture: ProjectedCapture) => ShardRecord | null): void {
+    this.#windows.commitWindow((capture) => {
+      const records: ShardRecord[] = []
+      const ordinary = build(capture)
+      if (ordinary !== null) records.push(ordinary)
+
+      const groups = [...capture.requests]
+      // The ordinary window's coverage ran while these requests were open, so it
+      // belongs to their tests too. Crediting it twice is what keeps one test's
+      // boundary from stealing another test's request work; `buildMap` unions the
+      // duplicate test records by title and file.
+      if (capture.ids.length > 0 && hasTouches(capture.window.touches)) {
+        groups.push({ ids: capture.ids, window: capture.window })
+      }
+      records.push(...this.#attributed(groups))
+      return records.length === 0 ? null : records
+    })
+  }
+
+  /**
+   * Turns tagged coverage into `test` records, one per owning test.
+   *
+   * An id no test owns becomes `@between` rather than being dropped: the coverage
+   * ran somewhere, and the only honest answer is the bucket that escalates. When
+   * some ids resolve and others do not, the whole delta goes to the owners — a
+   * take cannot be split, and crediting a known test with extra work costs a
+   * selection; dropping it would cost a miss.
+   */
+  #attributed(groups: ProjectedCapture['requests']): ShardRecord[] {
+    const records: ShardRecord[] = []
+    for (const group of groups) {
+      if (!hasTouches(group.window.touches)) continue
+      const byOwner = new Map<string, ShardTest>()
+      for (const id of group.ids) {
+        const owner: CorrelatedTest | undefined = this.#owners?.ownerOf(id)
+        if (owner === undefined) continue
+        const key = `${owner.title}\u0000${owner.file ?? ''}`
+        const existing = byOwner.get(key)
+        if (existing === undefined) {
+          byOwner.set(key, {
+            type: 'test',
+            title: owner.title,
+            file: owner.file,
+            // A request whose window closed did complete its work. The owner's own
+            // record still carries its real outcome; this one exists so the
+            // touches are not lost when that outcome was not green.
+            status: 'passed',
+            durationMs: 0,
+            touches: {},
+          })
+        }
+        unionTouch(byOwner.get(key)!.touches, group.window.touches)
+      }
+      if (byOwner.size === 0) records.push({ type: 'between', touches: group.window.touches })
+      else records.push(...byOwner.values())
+    }
+    return records
   }
 
   #bucket(kind: 'load' | 'between' | 'teardown'): void {
-    this.#windows.commitWindow((touches) => (touches.length === 0 ? null : { type: kind, touches }))
+    this.#emit((capture) =>
+      hasTouches(capture.window.touches)
+        ? { type: kind, touches: capture.window.touches }
+        : null,
+    )
   }
 
   /**
@@ -315,13 +638,13 @@ export class Recorder {
     const file = open?.title === title ? open.file : (open?.file ?? null)
     const elapsed = durationMs ?? (open === null ? 0 : this.#now() - open.startedAt)
 
-    this.#windows.commitWindow((touches) => ({
+    this.#emit((capture) => ({
       type: 'test',
       title,
       file,
       status,
       durationMs: elapsed,
-      touches,
+      touches: capture.window.touches,
     }))
     this.#testCount += 1
     this.#open = null

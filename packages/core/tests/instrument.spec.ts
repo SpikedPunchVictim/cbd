@@ -26,6 +26,7 @@ import {
   type InstrumentResponse,
   type TakeResult,
 } from '../src/instrument-protocol.js'
+import { CORRELATION_HEADER } from '../src/correlate.js'
 import {
   INSTRUMENT_SPECIFIER,
   launchService,
@@ -37,6 +38,8 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 interface Client {
   request(op: InstrumentOp): Promise<InstrumentResponse>
+  /** Acknowledge a take by the id the reply carried, so its snapshot rows can be dropped. */
+  ack(ackId: number): Promise<InstrumentResponse>
   close(): void
 }
 
@@ -73,6 +76,13 @@ async function connect(socketPath: string): Promise<Client> {
         socket.write(encodeMessage(buildRequest(id, op)))
       })
     },
+    ack(ackId) {
+      const id = nextId++
+      return new Promise<InstrumentResponse>((resolve) => {
+        waiting.set(id, resolve)
+        socket.write(encodeMessage({ id, op: 'ack', ackId }))
+      })
+    },
     close: () => socket.destroy(),
   }
 }
@@ -92,15 +102,64 @@ function buildRequest(id: number, op: InstrumentOp): InstrumentRequest {
       return { id, op: 'close' }
     case 'ack':
       return { id, op: 'ack', ackId: 0 }
+    case 'correlate':
+      return { id, op: 'correlate', header: 'x-cbd-correlation' }
   }
 }
 
-function functionNames(result: TakeResult): Set<string> {
+function namesIn(coverage: TakeResult['coverage']): Set<string> {
   const names = new Set<string>()
-  for (const script of result.coverage) {
+  for (const script of coverage) {
     for (const fn of script.functions) if (fn.functionName !== '') names.add(fn.functionName)
   }
   return names
+}
+
+function functionNames(result: TakeResult): Set<string> {
+  return namesIn(result.coverage)
+}
+
+/** The port a service announced for `serve`, from its own stdout. */
+async function portOf(service: { output: () => string }): Promise<number> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    const match = /port (\d+)/.exec(service.output())
+    if (match !== null) return Number(match[1])
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`the service never announced a port. It wrote:\n${service.output()}`)
+}
+
+interface OnDiskSnapshot {
+  scripts: Array<{ id: string }>
+  windows: Array<{ takeId: number; scripts?: Array<{ id: string }> }>
+  /** Exit-only; absent on the bounded per-take and periodic writes (`cbd-n9t.2`). */
+  untaken?: unknown[]
+  pendingRequests?: unknown[]
+  endedAtUs?: number
+}
+
+/**
+ * The snapshot as written for a given take, read after it is on disk.
+ *
+ * Polled rather than read once because the write happens after the reply is sent
+ * — that ordering is deliberate (the client's wait does not include the write) —
+ * so a client that has just been answered has not necessarily been outrun by it.
+ */
+async function snapshotFor(dir: string, pid: number, takeId: number): Promise<OnDiskSnapshot> {
+  const path = join(dir, `pid-${String(pid)}.coverage.json`)
+  const deadline = Date.now() + 2_000
+  let lastError: unknown = null
+  while (Date.now() < deadline) {
+    try {
+      const file = JSON.parse(readFileSync(path, 'utf8')) as OnDiskSnapshot
+      if (file.windows.some((window) => window.takeId === takeId)) return file
+    } catch (error) {
+      lastError = error
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error(`the snapshot never carried take ${String(takeId)}: ${String(lastError)}`)
 }
 
 test.group('instrument module', () => {
@@ -182,7 +241,15 @@ test.group('instrument module', () => {
 
         const own = scripts.find((row) => row.url.endsWith('/tests/service/main.js'))
         assert.ok(own !== undefined, `no row for the service's own file in ${String(scripts.length)} rows`)
-        assert.equal(own.sourceMapURL, 'main.js.map')
+        // The map is declared by the generated file, so the table does not repeat
+        // it (`cbd-llm`): the build reads the same bytes and recovers it. What the
+        // row must provide is the URL that leads there.
+        assert.equal(own.sourceMapURL, undefined, 'a file-declared map must not travel twice')
+        assert.match(
+          readFileSync(fileURLToPath(own.url), 'utf8'),
+          /sourceMappingURL=main\.js\.map/,
+          'the file the row names must declare the map the build needs',
+        )
 
         // Sent once, not once per take — the table is drained.
         const second = await client.request('take')
@@ -212,6 +279,65 @@ test.group('instrument module', () => {
       service.run('idle')
       await new Promise((resolve) => setTimeout(resolve, 200))
       assert.ok(service.output().includes('idle'), 'the service should still be serving')
+    })
+  })
+
+  /**
+   * A snapshot carries only the rows no reply has delivered (`cbd-3z1`).
+   *
+   * The file exists to survive a death before a take's reply is read, so it must
+   * carry the script rows that reply would have carried. It does **not** have to
+   * carry rows an earlier take already delivered and the collector acknowledged:
+   * those are in an absorbed reply, and repeating them rewrites the whole table on
+   * every boundary — 4770 rows and 12 MB on a lane server, measured as ~1 ms added
+   * to every boundary.
+   *
+   * So the property is stated in both directions: before the first ack the file
+   * holds the table (nothing else has delivered it), and after the ack the next
+   * take's file holds only what that take delivered.
+   */
+  test('an acknowledged take is not repeated in the next snapshot', async () => {
+    await withService({}, async (service) => {
+      await waitForSocket(service.socketPath)
+      const client = await connect(service.socketPath)
+      try {
+        const firstReply = (await client.request('take')) as { result: TakeResult }
+        const first = await snapshotFor(service.dir, service.proc.pid as number, 1)
+        assert.equal(
+          first.scripts.length,
+          firstReply.result.scripts.length,
+          'before any acknowledgement the snapshot must carry the whole table',
+        )
+        // The accumulator and the request queue are unbounded between boundaries;
+        // the periodic write must not rewrite them (`cbd-n9t.2`). Only the exit
+        // write carries them.
+        assert.equal(
+          first.untaken,
+          undefined,
+          'a per-take snapshot must not carry the untaken accumulator',
+        )
+        assert.equal(
+          first.pendingRequests,
+          undefined,
+          'a per-take snapshot must not carry the request queue',
+        )
+
+        await client.ack(1)
+        const secondReply = (await client.request('take')) as { result: TakeResult }
+        const second = await snapshotFor(service.dir, service.proc.pid as number, 3)
+
+        assert.deepEqual(
+          second.scripts.map((row) => row.id),
+          secondReply.result.scripts.map((row) => row.id),
+          'the snapshot should carry exactly what the unacknowledged take delivered',
+        )
+        const repeated = second.scripts.filter((row) =>
+          firstReply.result.scripts.some((delivered) => delivered.id === row.id),
+        )
+        assert.deepEqual(repeated, [], 'an acknowledged take must not be written again')
+      } finally {
+        client.close()
+      }
     })
   })
 
@@ -273,6 +399,50 @@ test.group('instrument module', () => {
   })
 
   /**
+   * I2, at the wire: a request that names itself is its own window.
+   *
+   * Without correlation this work belongs to whichever take happens to run next,
+   * which is the attribution-by-time that goes wrong when the test does not await.
+   * The `correlate` op makes the instrument take at the request's boundaries, and
+   * the reply carries those windows with the id that owns them.
+   */
+  test('correlate turns a request into a tagged window', async () => {
+    await withService({}, async (service) => {
+      await waitForSocket(service.socketPath)
+      const client = await connect(service.socketPath)
+      try {
+        // Discard the startup window, so the request window below is the only
+        // thing the handler can appear in.
+        await client.request('take')
+        const configured = await client.request('correlate')
+        assert.equal(configured.ok, true, 'the instrument should accept the correlate op')
+
+        service.run('serve')
+        const port = await portOf(service)
+        const id = 'test-window-7'
+        const response = await fetch(`http://127.0.0.1:${String(port)}/`, {
+          headers: { [CORRELATION_HEADER]: id },
+        })
+        assert.equal(await response.text(), '21')
+
+        // The finish boundary is taken when the response is flushed; give the
+        // queued take a turn to reach the inspector before asking for the reply.
+        await new Promise((resolve) => setTimeout(resolve, 200))
+        const take = (await client.request('take')) as { result: TakeResult }
+        const requests = take.result.requests ?? []
+        const window = requests.find((candidate) => candidate.ids.includes(id))
+        assert.ok(window !== undefined, `no request window for ${id}: ${JSON.stringify(requests)}`)
+        assert.ok(
+          namesIn(window.coverage).has('priced'),
+          `the request window did not carry the handler's work: ${[...namesIn(window.coverage)].join(', ')}`,
+        )
+      } finally {
+        client.close()
+      }
+    })
+  })
+
+  /**
    * The off switch a collector in the same process uses.
    *
    * A suite must carry `NODE_OPTIONS` for the services it starts to be instrumented
@@ -297,8 +467,8 @@ test.group('instrument module', () => {
         }
         const before = fs.existsSync(socket)
         const handle = typeof globalThis.__cbdInstrument?.stop
-        globalThis.__cbdInstrument?.stop()
-        console.log(JSON.stringify({ before, handle, after: fs.existsSync(socket) }))
+        const carried = await globalThis.__cbdInstrument?.stop()
+        console.log(JSON.stringify({ before, handle, after: fs.existsSync(socket), carried: Array.isArray(carried) ? carried.length : -1 }))
       })()
     `
     try {
@@ -317,8 +487,15 @@ test.group('instrument module', () => {
         before: boolean
         handle: string
         after: boolean
+        carried: number
       }
-      assert.deepEqual(reported, { before: true, handle: 'function', after: false })
+      // `carried` is what the collector in this process would otherwise lose: the
+      // final take hands over everything the self-snapshots had consumed since
+      // birth. This entry point has definitely run a function by now.
+      assert.deepEqual(
+        { ...reported, carried: reported.carried > 0 ? 'some' : 'none' },
+        { before: true, handle: 'function', after: false, carried: 'some' },
+      )
       assert.equal(
         existsSync(join(dir, `pid-${String(result.pid)}.coverage.json`)),
         false,

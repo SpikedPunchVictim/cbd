@@ -135,7 +135,11 @@ async function recordLane(relocate: boolean): Promise<Lane> {
       stage,
       testShard,
       serviceShard,
-      map: buildMap([testShard, serviceShard], { commit: 'e2e' }),
+      // Resolution is the build's job in v2, so the rule under test goes here.
+      map: buildMap([testShard, serviceShard], {
+        commit: 'e2e',
+        ...(relocate ? { scan: { relocate: [{ from: stage, to: DEPLOYED }] } } : {}),
+      }),
       stop: () => {
         running.stop()
         rmSync(base, { recursive: true, force: true })

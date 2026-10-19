@@ -1,0 +1,6 @@
+{
+  "$schema": "../packages/core/cbd.config.schema.json",
+  "include": ["src/**", "tests/**"],
+  "alwaysAll": ["data/**"],
+  "maxAgeCommits": 50
+}

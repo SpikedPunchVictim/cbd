@@ -47,9 +47,9 @@ import {
   pidOf,
   readServiceShard,
   readShard,
+  resolvedTestsIn,
   runSuite,
   startService,
-  testsIn,
   type RunningService,
 } from './support/service.js'
 
@@ -260,7 +260,7 @@ test.group('a service started on its own, driven by japa', (group) => {
    * this task: none of the *service's* work fell into a window that did none.
    */
   test('a test that drives nothing is recorded with a window holding none of the service', () => {
-    const record = testsIn(fixture().serviceShard).find((entry) => entry.title === INERT)
+    const record = resolvedTestsIn(fixture().serviceShard).find((entry) => entry.title === INERT)
     assert.ok(record !== undefined, 'the inert test has no record in the service shard')
     assert.deepEqual(
       record.touches.filter((touch) => touch[0] === SERVICE),

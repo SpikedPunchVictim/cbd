@@ -106,6 +106,8 @@ import type {
   PendingTake,
   QueuedSource,
   ScriptInfo,
+  TaggedCoverage,
+  TakeCapture,
   V8ScriptCoverage,
 } from '../types.js'
 
@@ -114,6 +116,15 @@ export interface RescanningSocketSourceOptions {
   dir?: string
   /** How long to wait for a connect, a hello or a take. */
   timeoutMs?: number
+  /**
+   * Turn on request-id correlation in every target this source attaches to,
+   * including the ones that appear mid-run.
+   *
+   * Passed through to `socketSource`, so the op is sent on attach rather than at
+   * the boundary: a target discovered while a window is open must be correlating
+   * before the next request, not after the next test.
+   */
+  correlationHeader?: string
 }
 
 /** One instrumented process, and the socket it is reached by. */
@@ -205,21 +216,37 @@ export async function rescanningSocketSource(
   }
 
   /** One target's window, with its ids moved into that target's namespace. */
-  function takeFrom(target: Target): Promise<V8ScriptCoverage[]> {
-    let settle: Promise<V8ScriptCoverage[]>
+  function takeFrom(target: Target): Promise<TakeCapture> {
+    const pid = String(target.pid)
+    const prefix = (coverage: V8ScriptCoverage[]): V8ScriptCoverage[] =>
+      coverage.map((script) => ({ ...script, scriptId: `${pid}:${script.scriptId}` }))
+
+    let settled: Promise<TakeCapture>
     try {
-      settle = target.source.dispatch().settle()
+      const pending = target.source.dispatch()
+      settled =
+        pending.settleTagged === undefined
+          ? pending.settle().then((coverage) => ({ coverage, ids: [], requests: [] }))
+          : pending.settleTagged()
     } catch {
-      settle = Promise.resolve([])
+      settled = Promise.resolve({ coverage: [], ids: [], requests: [] })
     }
-    return settle.then(
-      (payload) =>
-        payload.map((script) => ({ ...script, scriptId: `${String(target.pid)}:${script.scriptId}` })),
+    return settled.then(
+      (capture) => ({
+        coverage: prefix(capture.coverage),
+        // An id belongs to the test process that generated it, not to the target
+        // that echoed it, so it is passed through unchanged.
+        ids: capture.ids,
+        requests: capture.requests.map((window: TaggedCoverage) => ({
+          ids: window.ids,
+          coverage: prefix(window.coverage),
+        })),
+      }),
       // Swallowed per target rather than left to the Recorder. The Recorder catches a
       // failed window for the whole source, which would blank every *other* target's
       // coverage in the same window: one service dying mid-run would erase the lane's
       // map for that test as well as its own.
-      () => [],
+      () => ({ coverage: [], ids: [], requests: [] }),
     )
   }
 
@@ -233,7 +260,13 @@ export async function rescanningSocketSource(
    */
   async function attach(path: string): Promise<Target | null> {
     try {
-      const source = await socketSource({ socket: path, timeoutMs })
+      const source = await socketSource({
+        socket: path,
+        timeoutMs,
+        ...(options.correlationHeader === undefined
+          ? {}
+          : { correlationHeader: options.correlationHeader }),
+      })
       // The run can end while an attach is in flight, and an unclosed `net.Socket`
       // keeps Node alive: a run that prints its summary and then hangs.
       if (closed) {
@@ -278,10 +311,7 @@ export async function rescanningSocketSource(
    * would make the next boundary the first boundary after it was held, and the
    * whole history would move with it.
    */
-  function attachCandidates(
-    boundary: boolean,
-    parts: Array<Promise<V8ScriptCoverage[]>>,
-  ): void {
+  function attachCandidates(boundary: boolean, parts: Array<Promise<TakeCapture>>): void {
     let candidates: string[] = []
     try {
       candidates = socketPaths(dir)
@@ -303,7 +333,13 @@ export async function rescanningSocketSource(
         attaching.set(path, opening)
         void opening.then(() => attaching.delete(path))
       }
-      if (boundary) parts.push(opening.then((target) => (target === null ? [] : takeFrom(target))))
+      if (boundary) {
+        parts.push(
+          opening.then((target) =>
+            target === null ? { coverage: [], ids: [], requests: [] } : takeFrom(target),
+          ),
+        )
+      }
     }
   }
 
@@ -312,7 +348,7 @@ export async function rescanningSocketSource(
     const seq = nextSeq++
     outstanding += 1
 
-    const parts: Array<Promise<V8ScriptCoverage[]>> = []
+    const parts: Array<Promise<TakeCapture>> = []
     // First, in this tick and nothing awaited before it: the boundary every held
     // target is asked for. That ordering is the contract in `source/inspector.ts` —
     // dispatch time is the boundary, not completion time — and an `await` above it
@@ -324,7 +360,13 @@ export async function rescanningSocketSource(
     // target that appeared between two ticks.
     attachCandidates(true, parts)
 
-    const settled = Promise.all(parts).then((windows) => windows.flat())
+    const settled: Promise<TakeCapture> = Promise.all(parts).then((captures) => ({
+      coverage: captures.flatMap((capture) => capture.coverage),
+      // One id may have requests open in several targets; the recorder resolves it
+      // through one owner registry, so duplicates are harmless.
+      ids: captures.flatMap((capture) => capture.ids),
+      requests: captures.flatMap((capture) => capture.requests),
+    }))
     void settled.then(
       () => {
         outstanding -= 1
@@ -333,7 +375,14 @@ export async function rescanningSocketSource(
         outstanding -= 1
       },
     )
-    return { seq, settle: () => settled }
+    const handle: PendingTake = {
+      seq,
+      settle: () => settled.then((capture) => capture.coverage),
+    }
+    if (options.correlationHeader !== undefined && options.correlationHeader !== '') {
+      handle.settleTagged = () => settled
+    }
+    return handle
   }
 
   return {

@@ -34,7 +34,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
-import { rescanningSocketSource, socketSource } from '../src/index.js'
+import { rescanningSocketSource, socketSource } from '../src/adapter.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { launchService, waitForSocket, type RunningService } from './support/service.js'
 

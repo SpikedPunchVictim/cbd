@@ -19,13 +19,23 @@
  * would risk opening that window late, and a window that opens late is missing
  * coverage, which under-selects.
  *
- * Inert unless `CBD_SHARD` is set, so importing it by accident costs nothing.
+ * **Selecting and recording are independent**, as they are in the japa plugin. A
+ * run can be narrowed without being recorded (`CBD_SELECTION` alone) or recorded
+ * without being narrowed (`CBD_SHARD` alone). `cbd collect` sets both; a consumer
+ * that never runs it sets neither, and the module is inert.
  */
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { FileSink, inProcessSource, scanFromEnv } from '@spikedpunch/cbd'
+import {
+  FileSink,
+  inProcessSource,
+  readSelection,
+  scanFromEnv,
+  type Recorder,
+} from '@spikedpunch/cbd/adapter'
 import { beginShard, installMochaAdapter, type InstalledAdapter } from './adapter.js'
+import { selectionPattern } from './selection.js'
 import type Mocha from 'mocha'
 
 /**
@@ -61,26 +71,51 @@ function resolveMocha(): typeof import('mocha') {
 }
 
 const shardPath = process.env.CBD_SHARD
+// Read before the suite is imported: a malformed or empty selection must fail
+// here, while the message can still say which file is wrong, rather than after
+// mocha has already loaded every test file.
+const only = readSelection(process.env)
 
+let recorder: Recorder | null = null
 if (shardPath !== undefined) {
   const source = await inProcessSource()
   const scan = scanFromEnv()
-  const recorder = beginShard({
+  recorder = beginShard({
     source,
     sink: new FileSink(shardPath),
     commit: process.env.CBD_COMMIT ?? 'unknown',
     ...(scan === undefined ? {} : { scan }),
   })
+}
 
+if (recorder !== null || only !== undefined) {
   const MochaClass = resolveMocha()
   const originalRun = MochaClass.prototype.run
+  const pattern = only === undefined ? undefined : selectionPattern(only)
   let adapter: InstalledAdapter | null = null
 
   MochaClass.prototype.run = function (
     this: Mocha,
     callback?: (failures: number) => void,
   ): Mocha.Runner {
-    if (adapter !== null) {
+    // The selection wins over a grep the consumer's own command line named.
+    // `collect` computed the subset from the map; a second filter can only make
+    // the run narrower than the set that was selected, which is the direction this
+    // project refuses. Replacing it can only run more, which is safe.
+    if (pattern !== undefined) {
+      // `--invert` is the exception: it would run the complement of the selection,
+      // skipping every test collect chose, with no sign that it happened. Mocha has
+      // no way to unset it, so the run stops instead of measuring the wrong set.
+      if (this.options.invert === true) {
+        throw new Error(
+          'cbd: a selection was supplied, but mocha was started with --invert; ' +
+            'running the complement would skip every selected test',
+        )
+      }
+      this.grep(pattern)
+    }
+
+    if (recorder === null || adapter !== null) {
       // A second Mocha instance in the same process. VS Code's node runner builds
       // exactly one — the extra instance the mocha CLI constructs when it is
       // invoked *that* way is the reason to prefer `node test/unit/node/index.js`.

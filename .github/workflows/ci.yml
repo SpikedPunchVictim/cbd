@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The core engines field is >=20, but the toolchain (TypeScript 7,
+        # Vitest 5) and the adapters' real-app tests are exercised on the
+        # supported LTS/current pair. Node 20 would need its own pin.
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.17.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # `pnpm -r test` builds every package and adapter first, in dependency
+      # order, then runs the core, adapter, CLI, probe and fixture suites.
+      - name: Test
+        run: pnpm -r test

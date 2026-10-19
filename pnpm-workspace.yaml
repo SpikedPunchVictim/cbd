@@ -11,3 +11,7 @@ packages:
   # Stage A1 onward: the fixture project CBD is developed and tested against.
   # Not published — a stand-in for a real consumer repo.
   - 'fixture'
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
+  unrs-resolver: true

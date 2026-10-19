@@ -14,6 +14,10 @@ import { select, verify } from '../src/select.js'
 const SRC = '/repo/src/a.ts'
 const HELPER = '/repo/src/helper.ts'
 const SPEC = '/repo/tests/a.spec.ts'
+/** Matches the default tests-directory glob, but defines no tests: ordinary code (`cbd-e9l`). */
+const TEST_HELPER = '/repo/tests/helpers/auth.ts'
+/** Also under `tests/`, seen, and with no function evidence of its own. */
+const TEST_HELPER_UNTOUCHED = '/repo/tests/helpers/unused.ts'
 /** Loaded, never exercised by a test: rule 2. */
 const LOADED_ONLY = '/repo/src/loaded-only.ts'
 /** Reached only from outside a window: rule 9. */
@@ -39,11 +43,14 @@ function makeMap(overrides: Partial<CoverageMap> = {}): CoverageMap {
       [HELPER]: {
         'helper@0': { startLine: 1, endLine: 2, tests: [2] },
       },
+      [TEST_HELPER]: {
+        'buildAuth@0': { startLine: 1, endLine: 4, tests: [2] },
+      },
     },
     load: [[LOADED_ONLY, '<module>@0', 0, 9]],
     between: [],
     teardown: [],
-    seen: [SRC, HELPER, SPEC, LOADED_ONLY, BETWEEN_ONLY, UNTESTED],
+    seen: [SRC, HELPER, SPEC, TEST_HELPER, TEST_HELPER_UNTOUCHED, LOADED_ONLY, BETWEEN_ONLY, UNTESTED],
     shards: ['s1'],
     ...overrides,
   }
@@ -69,6 +76,18 @@ test('rule 1: a file matching alwaysAll forces mode: all', () => {
   assert.deepEqual(result.unmapped, ['/repo/package.json'])
 })
 
+test('rule 1: alwaysAll applies outside include', () => {
+  // The documented config lists `**/migrations/**` in alwaysAll while include
+  // covers only src/**, so a migration change must still run everything. Checking
+  // include first silently dropped it (cbd-0lu).
+  const result = select(makeMap(), [change('/repo/migrations/001.sql')], {
+    include: (path) => path.startsWith('/repo/src/'),
+    alwaysAll: ['**/migrations/**'],
+  })
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:always-all'])
+})
+
 // --- rule 2 -----------------------------------------------------------------
 test('rule 2: a file reached only by @load forces mode: all', () => {
   const result = select(makeMap(), [change(LOADED_ONLY, [{ start: 1, end: 1 }])])
@@ -84,17 +103,54 @@ test('rule 2: a file reached only by @teardown is treated the same way', () => {
 })
 
 // --- rule 3 -----------------------------------------------------------------
-test('rule 3: a changed test file selects the tests it contains', () => {
+test('rule 3: a changed test file selects its known tests and warns about the gap', () => {
+  // The map can name this file's existing tests, but not a test the edit added.
+  // `known` is the default because spec edits are ordinary (53 of 79 commits in
+  // one measured week), so the gap is surfaced rather than paid for every time.
   const result = select(makeMap(), [change(SPEC, [{ start: 3, end: 3 }])])
   assert.equal(result.mode, 'subset')
   assert.deepEqual(reasonKinds(result), ['test-file'])
   assert.deepEqual(result.tests, [0, 1, 2])
+  assert.ok(
+    result.warnings.some((warning) => /a test it adds is not in the map/.test(warning)),
+    `expected the new-test gap to be named, got: ${result.warnings.join(' | ')}`,
+  )
+})
+
+test('rule 3: testFilePolicy "all" forces the suite for a changed test file', () => {
+  const result = select(makeMap(), [change(SPEC, [{ start: 3, end: 3 }])], {
+    testFilePolicy: 'all',
+  })
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:test-file'])
 })
 
 test('rule 3: a brand-new test file cannot be named, so falls to unknown', () => {
   const result = select(makeMap(), [change('/repo/tests/brand-new.spec.ts', [{ start: 1, end: 1 }])])
   assert.equal(result.mode, 'all')
   assert.deepEqual(reasonKinds(result), ['all:unknown-file'])
+})
+
+// `cbd-e9l`: a helper under a tests directory is code, not a test definition,
+// and the default `**/tests/**` glob must not hand it to rule 3.
+test('rule 3 does not claim a test helper: the function index answers it', () => {
+  const inside = select(makeMap(), [change(TEST_HELPER, [{ start: 2, end: 2 }])])
+  assert.equal(inside.mode, 'subset')
+  assert.deepEqual(reasonKinds(inside), ['function'])
+  assert.deepEqual(inside.tests, [2])
+
+  const outside = select(makeMap(), [change(TEST_HELPER, [{ start: 20, end: 20 }])])
+  assert.equal(outside.mode, 'subset')
+  assert.deepEqual(reasonKinds(outside), ['file'])
+  assert.deepEqual(outside.tests, [2])
+})
+
+test('a seen helper with no evidence is untested, not unknown', () => {
+  const result = select(makeMap(), [change(TEST_HELPER_UNTOUCHED, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [])
+  assert.deepEqual(result.untested, [TEST_HELPER_UNTOUCHED])
+  assert.deepEqual(reasonKinds(result), [])
 })
 
 // --- rule 4 -----------------------------------------------------------------
@@ -130,6 +186,40 @@ test('rule 5: a hunk partly outside still widens to the whole file', () => {
 test('rule 5: a change carrying no hunks at all still widens to the whole file', () => {
   const result = select(makeMap(), [change(SRC, [])])
   assert.deepEqual(result.tests, [0, 1])
+})
+
+// --- rule 4/5, pure insertions (`cbd-81h.1`) --------------------------------
+const inserted = (path: string, ...points: number[]): Change => ({
+  path,
+  status: 'M',
+  hunks: [],
+  insertions: points,
+})
+
+test('an insertion inside a mapped function selects that function, not the file', () => {
+  // `add@0` spans lines 1-3; inserting after line 2 is inside it.
+  const result = select(makeMap(), [inserted(SRC, 2)])
+  assert.deepEqual(result.tests, [0])
+  assert.deepEqual(result.reasons, [{ kind: 'function', file: SRC, fn: 'add@0', tests: [0] }])
+})
+
+test('an insertion between functions selects every test that touched the file', () => {
+  // Line 4 sits between `add` (1-3) and `multiply` (5-7).
+  const result = select(makeMap(), [inserted(SRC, 4)])
+  assert.deepEqual(result.tests, [0, 1])
+  assert.deepEqual(reasonKinds(result), ['file'])
+})
+
+test('an insertion at the start of the file selects every test that touched it', () => {
+  const result = select(makeMap(), [inserted(SRC, 0)])
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('an insertion after a function’s closing line is top-level code, not the function’s', () => {
+  // `multiply@0` ends at line 7; content appended after it is outside every function.
+  const result = select(makeMap(), [inserted(SRC, 7)])
+  assert.deepEqual(result.tests, [0, 1])
+  assert.deepEqual(reasonKinds(result), ['file'])
 })
 
 // --- rule 6 -----------------------------------------------------------------

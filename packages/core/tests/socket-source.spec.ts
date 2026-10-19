@@ -15,11 +15,12 @@
  * which presents as a silent hang, with the report buffered and unreadable.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
-import { SocketSourceError, discoverSockets, socketSource } from '../src/index.js'
+import { SocketSourceError, discoverSockets, socketSource } from '../src/adapter.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { sourceContract } from './support/source-contract.js'
 import {
@@ -265,13 +266,19 @@ test.group('socketSource windows', () => {
 })
 
 test.group('socketSource scripts', () => {
-  test('carries sourceMapURL, which is what makes a compiled service resolvable', async () => {
+  test('carries the script table that makes a compiled service resolvable', async () => {
     await withSource({}, async (source) => {
       await source.take()
       const rows = [...source.scripts().values()]
       const own = rows.find((row) => row.url.endsWith('/tests/service/main.js'))
       assert.ok(own !== undefined, "the service's own file should be in the script table")
-      assert.equal(own.sourceMapURL, 'main.js.map')
+      // A map the file itself declares travels once, not twice (`cbd-llm`): the
+      // row's URL is enough for the build to recover it from the same bytes.
+      assert.equal(own.sourceMapURL, undefined)
+      assert.match(
+        readFileSync(fileURLToPath(own.url), 'utf8'),
+        /sourceMappingURL=main\.js\.map/,
+      )
     })
   })
 
@@ -467,8 +474,13 @@ test.group('socketSource dispatch', (group) => {
         `back-to-back boundaries must sit closer together than awaited ones: tight ` +
           `${String(tight.minGapUs)}µs, spaced ${String(spaced.minGapUs)}µs`,
       )
+      // A ratio, not a fixed microsecond margin. The mechanism is that depth
+      // multiplies the service time, so the two means move together on a loaded
+      // host: a 1 ms absolute gap failed at 641 µs on a busy machine while the
+      // signature (tight several times spaced) was intact. An absolute floor here
+      // tests the host's load, not the queue.
       assert.ok(
-        tight.meanUs - spaced.meanUs > 1_000,
+        tight.meanUs > spaced.meanUs && tight.meanUs >= spaced.meanUs * 2,
         'a hundred-deep queue must drift far more than a drained one, or the depth is not the ' +
           `mechanism: spaced mean ${spaced.meanUs.toFixed(1)}µs, tight mean ${tight.meanUs.toFixed(1)}µs`,
       )

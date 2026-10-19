@@ -12,7 +12,7 @@ import { configure, processCLIArgs, run } from '@japa/runner'
 import { globSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { inProcessSource, normalize } from '../dist/src/index.js'
+import { inProcessSource, normalize } from '../dist/src/adapter.js'
 
 const coreRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const fixtureRoot = resolve(coreRoot, '../../fixture')

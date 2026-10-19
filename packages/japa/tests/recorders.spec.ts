@@ -12,7 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
-import { SOCKET_DIR_ENV, type Recorder } from '@spikedpunch/cbd'
+import { SOCKET_DIR_ENV, type Recorder } from '@spikedpunch/cbd/adapter'
 import { recordersFor, serviceShardPath } from '../src/plugin.js'
 
 function readShard(path: string): { type: string; [key: string]: unknown }[] {

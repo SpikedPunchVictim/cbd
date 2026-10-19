@@ -42,15 +42,22 @@
  * *install*, before the test files are imported, which is what lets the window
  * boundaries stay synchronous — the requirement japa imposes (A0 F1).
  */
+import type { PluginFn } from '@japa/runner/types'
 import {
+  CORRELATION_ENV,
+  CORRELATION_HEADER,
+  CORRELATION_HEADER_ENV,
+  Correlator,
   FileSink,
   SOCKET_DIR_ENV,
   inProcessSource,
+  readSelection,
   rescanningSocketSource,
   scanFromEnv,
+  type OwnerIndex,
   type Recorder,
   type ScanOptions,
-} from '@spikedpunch/cbd'
+} from '@spikedpunch/cbd/adapter'
 import {
   applyTests,
   beginShard,
@@ -66,31 +73,54 @@ export interface CbdOptions {
   shard?: string
   /** Defaults to `CBD_COMMIT`, then `'unknown'`. */
   commit?: string
-  /** Defaults to `scanFromEnv()`. */
+  /**
+   * Defaults to `scanFromEnv()`. Only `prefilter`/`selfRoots` act here: a v2 shard
+   * defers projection and relocation to `cbd build`, which reads the same
+   * environment variables itself (ADR-0002).
+   */
   scan?: ScanOptions
   /**
    * Restrict the run to these test titles — the select half.
    *
    * Titles, not indices, and *bare* titles: japa filters on the unqualified name
    * and a qualified one matches nothing (A0 F10). `titlesFor` turns a `Selection`
-   * into this list; resolving the selection itself from a map and a diff is the
-   * caller's job, and is not yet wired.
+   * into this list. When this option is absent, `CBD_SELECTION` supplies the list —
+   * the path `cbd collect` writes before spawning the run — so the common case
+   * needs no plugin change at all. An explicit option wins over the environment.
    */
   only?: string[]
 }
 
-/** What japa passes a plugin. The two fields this adapter uses. */
+/** What japa passes a plugin, as far as this adapter is concerned. */
 export interface JapaPluginApi {
   config: JapaConfigLike
   emitter: JapaEmitter
 }
 
-export type JapaPlugin = (japa: JapaPluginApi) => Promise<void>
+/**
+ * The runner's own plugin type, imported rather than restated (`cbd-amq`).
+ *
+ * The adapter used to declare `(japa: JapaPluginApi) => Promise<void>` with a
+ * structural emitter whose `on(eventName: string, …)` was the minimum it uses.
+ * That is not assignable to `PluginFn` on japa 5.0–5.3: their `on` is generic over
+ * the event names, parameter checking is contravariant, and `string` is not
+ * assignable to the union. The runtime never cared — the adapter only calls
+ * `on(name, listener)` — but the consumer's `configure({ plugins: [cbd()] })`
+ * failed to compile, on the one line they were told to write.
+ *
+ * `@japa/runner/types` is a published subpath of both 5.0 and 5.4, so importing it
+ * makes our declaration use *the consumer's* installed version rather than ours.
+ * The structural types above stay for the adapter internals and for tests that
+ * drive the hooks with stubs.
+ */
+export type JapaPlugin = PluginFn
 
 /** What both recorders of a run share. */
 interface Wiring {
   commit: string
   scan?: ScanOptions
+  /** Resolves a correlation id to the test that sent it. Absent without correlation. */
+  owners?: OwnerIndex
 }
 
 /**
@@ -142,7 +172,16 @@ export async function recordersFor(
   // window that starts them onward (ADR-0007). The install-time contract is
   // unchanged — a directory with nothing in it is still an error rather than a
   // silent empty map.
-  const service = dir === undefined || dir === '' ? null : await rescanningSocketSource({ dir })
+  const service =
+    dir === undefined || dir === ''
+      ? null
+      : await rescanningSocketSource({
+          dir,
+          // Correlation is turned on by the collector, not by the service's own
+          // environment: `recordersFor` is the collector's side of the seam, and a
+          // source it opens is a process it is about to read.
+          ...(wiring.owners === undefined ? {} : { correlationHeader: CORRELATION_HEADER }),
+        })
 
   const recorders = [
     beginShard({
@@ -169,22 +208,57 @@ export async function recordersFor(
 }
 
 export function cbd(options: CbdOptions = {}): JapaPlugin {
-  return async function cbdPlugin({ config, emitter }: JapaPluginApi): Promise<void> {
+  return async function cbdPlugin(japa): Promise<void> {
+    // The parameter is japa's own PluginFn shape; the cast is the two fields this
+    // adapter reads. It is confined to this boundary on purpose: everything below
+    // works against the structural types, and the public signature is the runner's.
+    const { config, emitter } = japa as unknown as JapaPluginApi
     if (options.enabled === false) return
 
     const shard = options.shard ?? process.env.CBD_SHARD
     if (shard !== undefined) {
       const scan = options.scan ?? scanFromEnv()
       const commit = options.commit ?? process.env.CBD_COMMIT ?? 'unknown'
+      // A service is what correlation is for. With none, an id on every request
+      // would buy nothing, and patching the process's HTTP client for nothing is
+      // exactly the kind of side effect this module exists not to have.
+      const dir = process.env[SOCKET_DIR_ENV]
+      const correlator =
+        dir === undefined || dir === '' || process.env[CORRELATION_ENV] === 'off'
+          ? undefined
+          : new Correlator()
+      if (correlator !== undefined) {
+        // Before the test files are imported, so a service a test spawns inherits
+        // this and is correlating from its first line. The collector cannot rely on
+        // winning the race between "the child started" and "the re-scan attached":
+        // measured, that gap is most of a fast test, and a request in it would be
+        // attributed by time.
+        process.env[CORRELATION_HEADER_ENV] = CORRELATION_HEADER
+      }
       const recorders = await recordersFor(process.env, shard, {
         commit,
         ...(scan === undefined ? {} : { scan }),
+        ...(correlator === undefined ? {} : { owners: correlator }),
       })
-      installJapaAdapter(emitter, recorders)
+      // Installed after the sources are open, so a service that cannot be reached
+      // leaves no patched HTTP client behind.
+      correlator?.install()
+      installJapaAdapter(
+        emitter,
+        recorders,
+        correlator === undefined ? {} : { correlation: correlator },
+      )
     }
 
     // Selecting and recording are independent: a run can be narrowed without
     // being recorded, and recorded without being narrowed.
-    if (options.only !== undefined) applyTests(config, options.only)
+    //
+    // `cbd collect` resolves the selection before it spawns the runner and passes
+    // it as a file, because it is the only process holding both the map and the
+    // diff. Reading it here is what makes the automatic case automatic; a
+    // consumer that never runs `cbd collect` never sets the variable, and one that
+    // passes `only` explicitly is not overridden.
+    const only = options.only ?? readSelection(process.env)
+    if (only !== undefined) applyTests(config, only)
   }
 }
