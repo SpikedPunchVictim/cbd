@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-node-test",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "node:test adapter: a register module for --import that records per-test coverage windows and selects with them.",
   "main": "./dist/src/index.js",

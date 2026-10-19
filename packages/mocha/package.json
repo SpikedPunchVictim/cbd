@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-mocha",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Mocha adapter: turns a plain mocha run into per-test coverage windows.",
   "main": "./dist/src/index.js",
