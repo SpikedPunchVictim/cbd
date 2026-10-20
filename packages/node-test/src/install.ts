@@ -101,8 +101,9 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     recorder.testEnd(title, statusOf(context, skipped.has(context)))
   })
 
-  hooks.after(() => {
-    recorder.runEnd()
+  hooks.after(async () => {
+    // Outside every test window: transformed-script coordinates are fetched here.
+    await recorder.runEnd()
     source.close()
   })
 

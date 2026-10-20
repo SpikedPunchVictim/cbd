@@ -1,5 +1,7 @@
 packages:
   - 'packages/*'
+  - 'packages/mutate/fixture'
+  - 'packages/mutate/fixture-nt'
   # Stage A0: hook-order and test-identity probe. KEPT, not deleted when the japa
   # adapter landed, because it is the reproduction for the japa facts the decision
   # records cite — `probe/bin/files.js` is the evidence for A0 F8/F10/F11, which

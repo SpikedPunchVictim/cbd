@@ -24,7 +24,9 @@ export default defineConfig({
 })
 ```
 
-With `CBD_SHARD` unset the setup is inert for recording, so the line can be committed.
+This is the complete config change; there are no CBD variables in it. With `CBD_SHARD` unset — a
+plain `vitest run` — the setup is inert, so the line can be committed. You normally do not set the
+variable: `cbd collect` does.
 
 ## Recording and selecting
 
@@ -35,6 +37,18 @@ pnpm exec cbd select
 
 `cbd collect` sets `CBD_SHARD` and `CBD_COMMIT` for the run (and `CBD_SELECTION` for a subset), then
 builds the map.
+
+To record without `collect`, set both variables yourself. `CBD_SHARD` is a **base path**, not a file
+the adapter appends to: it writes one shard per spec file beside it, e.g.
+`run.math.spec.ts.1a2b3c4d.ndjson`.
+
+```sh
+mkdir -p .cbd/shards
+CBD_SHARD=.cbd/shards/run.ndjson \
+CBD_COMMIT="$(git rev-parse HEAD)" \
+pnpm vitest run
+pnpm exec cbd build
+```
 
 The setup file runs **once per test file**, creating one in-process source and **one shard per file**.
 That lets several Vitest workers run in parallel without appending to one another's file, and a worker

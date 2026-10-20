@@ -2,8 +2,8 @@ name: Publish to npm
 
 # Publishing is deliberate: a tag push or a manual dispatch, never a branch.
 # Every package shares the tag's version (fixed versioning); the version is
-# stamped into the manifests in CI, so the repository's `0.0.0` placeholders do
-# not need a commit per release.
+# stamped into the manifests in CI, so the committed version does not need a
+# commit per release.
 on:
   push:
     tags: ['v*']
@@ -46,8 +46,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          # Writes the registry auth line setup-node reads from NODE_AUTH_TOKEN.
-          registry-url: https://registry.npmjs.org
+          # No `registry-url`: that option writes an `_authToken=${NODE_AUTH_TOKEN}`
+          # line, and trusted publishing has no token to put there. pnpm talks to
+          # the default npm registry and exchanges GitHub's OIDC token itself.
           cache: pnpm
 
       - name: Install
@@ -97,18 +98,22 @@ jobs:
           pnpm -r --filter "./packages/*"
           exec npm pkg set "version=${{ steps.release.outputs.version }}"
 
+      # Trusted publishing (npm OIDC): no NPM_TOKEN secret is read, and none
+      # should be configured on this step. pnpm 11 publishes natively, exchanges
+      # GitHub's OIDC token for the npm registry, and attaches provenance
+      # automatically for a public package from a public repository.
+      #
+      # The npm side must name this repository, workflow file and environment
+      # (`npm`) as a trusted publisher for each package. A publish from any other
+      # workflow identity fails with a 401 even though the build succeeded.
       - name: Publish
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           args=(--access public --tag "${{ steps.release.outputs.tag }}" --no-git-checks)
           if [[ "$INPUT_DRY_RUN" == "true" ]]; then
             args+=(--dry-run)
-          else
-            # Requires a public repository (this one is) and id-token: write.
-            args+=(--provenance)
           fi
           pnpm -r --filter "./packages/*" publish "${args[@]}"

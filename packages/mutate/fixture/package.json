@@ -1,0 +1,9 @@
+{
+  "name": "cbd-mutate-fixture",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@spikedpunch/cbd-vitest": "workspace:*",
+    "vitest": "^5.0.5"
+  }
+}

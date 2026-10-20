@@ -105,8 +105,10 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     recorder.testEnd(title, statusOf(task.result?.state))
   })
 
-  hooks.afterAll(() => {
-    recorder.runEnd()
+  hooks.afterAll(async () => {
+    // Outside every test window: the source fetches generated script text for
+    // transformed modules before the table is finalized (`cbd-x2j`).
+    await recorder.runEnd()
     source.close()
   })
 }

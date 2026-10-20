@@ -27,6 +27,12 @@ test.group('cbd.config.json', () => {
           include: ['src/**'],
           exclude: ['**/*.d.ts'],
           alwaysAll: ['pnpm-lock.yaml', '**/package.json'],
+          alwaysSelect: [
+            {
+              tests: ['tests/drain.spec.ts', 'tests/pipeline.spec.ts > no import outside the package'],
+              when: ['edge/pipeline/src/**'],
+            },
+          ],
           unknownPolicy: 'all',
           betweenPolicy: 'ignore',
           testFiles: ['**/*.spec.ts'],
@@ -47,6 +53,15 @@ test.group('cbd.config.json', () => {
       assert.equal(select.maxAgeCommits, 50)
       assert.equal(select.strict, true)
       assert.deepEqual(select.alwaysAll, [join(root, 'pnpm-lock.yaml'), join(root, '**/package.json')])
+      assert.deepEqual(select.alwaysSelect, [
+        {
+          tests: [
+            { file: join(root, 'tests/drain.spec.ts') },
+            { file: join(root, 'tests/pipeline.spec.ts'), title: 'no import outside the package' },
+          ],
+          when: [join(root, 'edge/pipeline/src/**')],
+        },
+      ])
 
       // include and exclude are one predicate over the map's absolute keys.
       assert.equal(select.include!(join(root, 'src/a.ts')), true)
@@ -92,6 +107,38 @@ test.group('cbd.config.json', () => {
       assert.throws(() => parseConfig({ maxAgeCommits: 1.5 }, root), /non-negative integer/)
       assert.throws(() => parseConfig({ strict: 'yes' }, root), /"strict" must be a boolean/)
       assert.throws(() => parseConfig(null, root), /must contain a JSON object/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('alwaysSelect entries are validated, not dropped when malformed', () => {
+    const { root, cleanup } = tempRoot()
+    try {
+      assert.throws(
+        () => parseConfig({ alwaysSelect: 'tests/a.spec.ts' }, root),
+        /"alwaysSelect" must be an array/,
+      )
+      assert.throws(
+        () => parseConfig({ alwaysSelect: [{ when: ['src/**'] }] }, root),
+        /alwaysSelect\[0\]\.tests must be a non-empty array/,
+      )
+      assert.throws(
+        () => parseConfig({ alwaysSelect: [{ tests: [] }] }, root),
+        /alwaysSelect\[0\]\.tests must be a non-empty array/,
+      )
+      assert.throws(
+        () => parseConfig({ alwaysSelect: [{ tests: ['a.spec.ts'], when: [] }] }, root),
+        /alwaysSelect\[0\]\.when must not be empty/,
+      )
+      assert.throws(
+        () => parseConfig({ alwaysSelect: [{ tests: ['a.spec.ts'], extra: true }] }, root),
+        /alwaysSelect\[0\] has an unknown key "extra"/,
+      )
+      assert.throws(
+        () => parseConfig({ alwaysSelect: [{ tests: ['a.spec.ts > '] }] }, root),
+        /empty test title/,
+      )
     } finally {
       cleanup()
     }

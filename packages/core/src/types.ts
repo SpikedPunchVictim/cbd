@@ -27,6 +27,22 @@ export interface V8ScriptCoverage {
   functions: V8Function[]
 }
 
+/**
+ * The generated text V8 compiled, as line starts.
+ *
+ * V8 offsets are into the script's generated text, which is not the file on disk
+ * when a loader transformed the module (Vitest/Vite, Jest, ts-node). The build
+ * cannot turn an offset into a generated line/column without those bytes, and a
+ * source map is keyed by line and column (`cbd-x2j`). Line starts are the compact
+ * form: line 1 starts at 0, and each subsequent start is a byte (UTF-16 code unit)
+ * offset into the generated text.
+ */
+export interface GeneratedScript {
+  lineStarts: number[]
+  /** Total generated text length, for whole-script range recognition. */
+  length: number
+}
+
 export interface ScriptInfo {
   url: string
   /**
@@ -34,6 +50,8 @@ export interface ScriptInfo {
    * URL, or a `data:` URI carrying an inline map.
    */
   sourceMapURL?: string
+  /** Present when the source can supply the generated text's line starts. */
+  generated?: GeneratedScript
 }
 
 /**
@@ -57,6 +75,23 @@ export interface Source {
   take(): Promise<V8ScriptCoverage[]>
   /** `scriptId` -> info, populated from `Debugger.scriptParsed`. */
   scripts(): ReadonlyMap<string, ScriptInfo>
+  /**
+   * Generated line starts for a script, when this source can supply them.
+   *
+   * Called once per script that has an executed function and a source map. The
+   * in-process source fetches the script text lazily (the inspector answers
+   * synchronously); a socket source carries the data in its script rows. Absent or
+   * undefined means the build falls back to the file on disk, which is correct
+   * only when that file is what V8 compiled.
+   */
+  generated?(scriptId: string): GeneratedScript | undefined
+  /**
+   * Fetches generated text for the scripts the recorder is about to publish.
+   *
+   * Called once at the end of the run, outside every test window. A source that
+   * cannot prepare leaves it absent and the build falls back to the file.
+   */
+  prepare?(scriptIds: readonly string[]): Promise<void> | void
   close(): void
 }
 

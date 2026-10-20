@@ -122,6 +122,37 @@ importers:
         specifier: ^7.0.2
         version: 7.0.2
 
+  packages/mutate:
+    dependencies:
+      '@spikedpunch/cbd':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@japa/runner':
+        specifier: ^5.4.0
+        version: 5.4.0
+      '@types/node':
+        specifier: ^26.6.5
+        version: 26.6.5
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/mutate/fixture:
+    devDependencies:
+      '@spikedpunch/cbd-vitest':
+        specifier: workspace:*
+        version: link:../../vitest
+      vitest:
+        specifier: ^5.0.5
+        version: 5.0.5(@types/node@26.6.5)(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2))
+
+  packages/mutate/fixture-nt:
+    devDependencies:
+      '@spikedpunch/cbd-node-test':
+        specifier: workspace:*
+        version: link:../../node-test
+
   packages/node-test:
     dependencies:
       '@spikedpunch/cbd':

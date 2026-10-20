@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { test } from '@japa/runner'
 import { changesSince, parseUnifiedDiff } from '../src/changes.js'
 import { tempRepo } from './support/git.js'
@@ -199,6 +200,71 @@ test('nothing changed yields nothing', () => {
     repo.write('a.ts', 'one\n')
     const base = repo.commit('base')
     assert.deepEqual(changesSince({ root: repo.root, since: base }), [])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+// `cbd-0na.1`: `git diff` never lists an untracked file, so a new file under
+// include was invisible and `select` answered "nothing changed".
+test('an untracked file is a change in worktree mode', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\n')
+    const base = repo.commit('base')
+    repo.write('src/new.ts', 'import pg from "pg"\n')
+
+    const change = changesSince({ root: repo.root, since: base }).find(
+      (entry) => entry.path === 'src/new.ts',
+    )
+    assert.equal(change?.status, 'A')
+    assert.deepEqual(change?.hunks, [], 'an untracked file has no old side')
+    assert.deepEqual(change?.insertions, [0], 'a new file is inserted at the start')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('an untracked file under a subdirectory root is relative to that root', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('packages/app/src/a.ts', 'one\n')
+    const base = repo.commit('base')
+    repo.write('packages/app/src/new.ts', 'two\n')
+
+    // The same coordinate `git diff --relative` uses: `src/new.ts`, not the
+    // repository-relative path, so the factory's `resolve(root, …)` is right.
+    const changes = changesSince({ root: join(repo.root, 'packages/app'), since: base })
+    assert.deepEqual(changes.map((change) => change.path), ['src/new.ts'])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('an ignored untracked file is not a change', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('.gitignore', '*.gen.ts\n')
+    repo.write('a.ts', 'one\n')
+    const base = repo.commit('base')
+    repo.write('src/data.gen.ts', 'generated\n')
+    repo.write('src/new.ts', 'hand-written\n')
+
+    const paths = changesSince({ root: repo.root, since: base }).map((entry) => entry.path)
+    assert.deepEqual(paths, ['src/new.ts'])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('--no-worktree asks about a commit, so untracked files are not changes', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\n')
+    const base = repo.commit('base')
+    repo.write('src/new.ts', 'untracked\n')
+
+    assert.deepEqual(changesSince({ root: repo.root, since: base, worktree: false }), [])
   } finally {
     repo.cleanup()
   }

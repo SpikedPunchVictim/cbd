@@ -200,6 +200,9 @@ export async function recordersFor(
         // The service's execution is the service's. Both shards are merged later by
         // `buildMap`, which unions the touch sets of a test recorded twice.
         pid: service.pid,
+        // A window opens for every test on this recorder too; only the tests that
+        // actually touched the service can observe its module state.
+        role: 'service',
       }),
     )
   }

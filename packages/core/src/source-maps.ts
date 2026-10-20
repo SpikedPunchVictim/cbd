@@ -242,7 +242,7 @@ function createProjectionResolver(
 export function createScriptResolver(
   scriptUrl: string,
   info: ScriptInfo | undefined,
-  options: { projection: ProjectionRule[]; cache: FileCache },
+  options: { projection: ProjectionRule[]; cache: FileCache; index?: LineIndex },
 ): ScriptResolver | null {
   if (!scriptUrl.startsWith('file:')) return null
 
@@ -253,7 +253,11 @@ export function createScriptResolver(
     return null
   }
 
-  const index = options.cache.index(generatedPath)
+  // A transformed script's offsets are into the generated text, which is not the
+  // file on disk. The shard records that text's line starts and passes the
+  // resulting index here; the file is still the script URL (for relative maps and
+  // staleness), but it must not be indexed as if V8 had compiled it (`cbd-x2j`).
+  const index = options.index ?? options.cache.index(generatedPath)
   if (index === null) return null
 
   if (info?.sourceMapURL) {

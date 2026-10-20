@@ -14,10 +14,15 @@
  */
 import inspector from 'node:inspector'
 import type { InstrumentScope } from '../instrument-protocol.js'
-import type { ScriptInfo, Source, V8ScriptCoverage } from '../types.js'
+import { buildLineIndex } from '../line-index.js'
+import type { GeneratedScript, ScriptInfo, Source, V8ScriptCoverage } from '../types.js'
 
 interface SessionResult {
   result: V8ScriptCoverage[]
+}
+
+interface ScriptSourceResult {
+  scriptSource: string
 }
 
 export async function inProcessSource(): Promise<Source> {
@@ -25,6 +30,25 @@ export async function inProcessSource(): Promise<Source> {
   session.connect()
 
   const scripts = new Map<string, ScriptInfo>()
+  let closed = false
+
+  function generatedFor(scriptId: string): GeneratedScript | undefined {
+    if (closed) return undefined
+    const holder: { done?: boolean; source?: string; error?: Error } = {}
+    try {
+      session.post('Debugger.getScriptSource', { scriptId }, (err, res) => {
+        holder.done = true
+        if (err) holder.error = err
+        else holder.source = (res as ScriptSourceResult).scriptSource
+      })
+    } catch {
+      return undefined
+    }
+    if (!holder.done || holder.error !== undefined || holder.source === undefined) return undefined
+    const index = buildLineIndex(holder.source)
+    return { lineStarts: index.starts, length: index.length }
+  }
+
   session.on('Debugger.scriptParsed', (event) => {
     const params = event.params
     scripts.set(params.scriptId, {
@@ -32,6 +56,29 @@ export async function inProcessSource(): Promise<Source> {
       sourceMapURL: params.sourceMapURL,
     })
   })
+
+  const generated = (scriptId: string): GeneratedScript | undefined =>
+    scripts.get(scriptId)?.generated
+
+  /**
+   * Fetch generated text for the recorded scripts.
+   *
+   * Called by the recorder's `prepare()` after the last test, never at a window
+   * boundary. A synchronous source read in a closing window lengthened that
+   * window and broke the boundary-drift measurement (`cbd-x2j`, the straddle
+   * e2e); the inspector answers synchronously, so the end of the run is the right
+   * place to pay for it.
+   */
+  function prepare(scriptIds: readonly string[]): void {
+    for (const scriptId of scriptIds) {
+      if (closed) return
+      const info = scripts.get(scriptId)
+      if (info === undefined || info.generated !== undefined) continue
+      if (!info.url.startsWith('file:') || info.sourceMapURL === undefined) continue
+      const value = generatedFor(scriptId)
+      if (value !== undefined) info.generated = value
+    }
+  }
 
   const call = (method: string, params: Record<string, unknown> = {}): Promise<SessionResult> =>
     new Promise((resolve, reject) => {
@@ -103,7 +150,10 @@ export async function inProcessSource(): Promise<Source> {
     takeSync,
     take: async () => carriedOnce((await call('Profiler.takePreciseCoverage')).result),
     scripts: () => scripts,
+    generated,
+    prepare,
     close: () => {
+      closed = true
       try {
         session.post('Profiler.stopPreciseCoverage', () => {})
       } catch {

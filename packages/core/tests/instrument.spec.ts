@@ -104,6 +104,8 @@ function buildRequest(id: number, op: InstrumentOp): InstrumentRequest {
       return { id, op: 'ack', ackId: 0 }
     case 'correlate':
       return { id, op: 'correlate', header: 'x-cbd-correlation' }
+    case 'generated':
+      return { id, op: 'generated', ids: [] }
   }
 }
 

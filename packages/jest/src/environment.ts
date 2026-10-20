@@ -36,7 +36,7 @@ interface CoreAdapter {
   FileSink: new (path: string) => unknown
   Recorder: new (options: unknown) => {
     runStart(): void
-    runEnd(): void
+    runEnd(): Promise<void> | void
     testStart(title: string, file: string | null): void
     testEnd(title: string, status: 'passed' | 'failed' | 'skipped'): void
   }
@@ -81,7 +81,8 @@ class CbdEnvironment extends TestEnvironment {
 
   override async teardown(): Promise<void> {
     if (this.#recorder !== null) {
-      this.#recorder.runEnd()
+      // Outside every test window: transformed-script coordinates are fetched here.
+      await this.#recorder.runEnd()
       this.#recorder = null
     }
     this.#source?.close?.()

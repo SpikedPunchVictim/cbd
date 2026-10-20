@@ -50,7 +50,7 @@
 import { statSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { CorrelatedTest, OwnerIndex } from './correlate.js'
-import { FileCache } from './line-index.js'
+import { FileCache, sameLineStarts } from './line-index.js'
 import { scriptPrefilter, type ScanOptions } from './normalize.js'
 import { createRelocator } from './relocate.js'
 import { sourceMapUrlOf } from './source-maps.js'
@@ -101,6 +101,13 @@ export interface RecorderOptions {
    */
   scan?: ScanOptions
   pid?: number
+  /**
+   * `'service'` records a process the suite observes rather than the process
+   * running the tests. It changes one thing in the map: a `@load` touch is
+   * attributed only to the tests that actually touched this shard, because the
+   * adapters open a window for every test on every recorder.
+   */
+  role?: 'service'
   now?: () => number
   /**
    * Resolves a correlation id to the test that opened it.
@@ -173,7 +180,13 @@ export interface ProjectedCapture {
 }
 
 /** Turns one capture's deltas into the ranges and table rows the shard stores. */
-type Projector = (capture: RawCapture) => ProjectedCapture
+interface Projector {
+  project(capture: RawCapture): ProjectedCapture
+  /** Script ids recorded so far, for the source's end-of-run generated fetch. */
+  scriptIds(): string[]
+  /** Update rows for transformed scripts, after the source has prepared. */
+  finish(): ShardScript[]
+}
 
 const EMPTY_RAW: RawCapture = { coverage: [], ids: [], requests: [] }
 
@@ -197,6 +210,7 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
   const cache = new FileCache()
   const knownScripts = new Set<string>()
   const knownFunctions = new Set<string>()
+  const rows = new Map<string, ShardScript>()
 
   /**
    * The script's table row, or `null` when the script cannot be recorded.
@@ -266,6 +280,7 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
         const row = tableRow(script)
         if (row === null) continue
         knownScripts.add(script.scriptId)
+        rows.set(script.scriptId, row)
         scripts.push(row)
       }
 
@@ -297,14 +312,45 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
     return { touches, scripts, functions }
   }
 
-  return (capture) => ({
-    window: project(capture.coverage),
-    ids: capture.ids,
-    requests: capture.requests.map((request) => ({
-      ids: request.ids,
-      window: project(request.coverage),
-    })),
-  })
+  return {
+    project(capture) {
+      return {
+        window: project(capture.coverage),
+        ids: capture.ids,
+        requests: capture.requests.map((request) => ({
+          ids: request.ids,
+          window: project(request.coverage),
+        })),
+      }
+    },
+    scriptIds: () => [...rows.keys()],
+    finish() {
+      // The source has fetched generated text for these scripts at the end of the
+      // run, outside every window. An update row is written only when the text is
+      // not the file's — an untransformed script needs nothing (`cbd-x2j`).
+      const updates: ShardScript[] = []
+      for (const row of rows.values()) {
+        if (row.generated !== undefined) continue
+        const generated = source.generated?.(row.scriptId)
+        if (generated === undefined) continue
+        let fileIndex
+        try {
+          fileIndex = cache.index(fileURLToPath(row.url))
+        } catch {
+          fileIndex = null
+        }
+        if (
+          fileIndex !== null &&
+          generated.length === fileIndex.length &&
+          sameLineStarts(generated.lineStarts, fileIndex.starts)
+        ) {
+          continue
+        }
+        updates.push({ ...row, generated })
+      }
+      return updates
+    },
+  }
 }
 
 /** One record per line, whether the boundary produced one or a correlated run produced several. */
@@ -337,18 +383,19 @@ interface Windows {
    */
   commitWindow(build: (capture: ProjectedCapture) => ShardRecord | ShardRecord[] | null): void
   /**
-   * A record whose content is not settled until every window ahead of it has been
-   * read. The footer, and so far only the footer, is one: it reports the drift of the
-   * run, and the boundary this same call just sent is still in flight.
+   * The end of the run: let every window settle, prepare the source (generated
+   * script text), then write the table updates and the footer.
    *
-   * The mirror image of `commitWindow`, and the rule inverts with it. There, `build`
-   * must be a pure function of its argument because it runs at a point in the run
-   * that depends on the source; here, `build` runs precisely *because* it is late.
-   * Nothing that varies per window may be read inside it, and nothing that is a fact
-   * of the run may be left out of it — the two halves of the footer are split exactly
-   * that way.
+   * The footer is the one record whose content is not settled until every window
+   * ahead of it has been read: it reports drift, and the boundary this same call
+   * just sent is still in flight. Preparing the source here keeps its reads outside
+   * every window (`cbd-x2j`), and the footer stays behind the windows it follows.
    */
-  commitFinal(build: () => ShardRecord): void
+  prepareAndFinish(
+    prepare: () => Promise<void> | void,
+    updates: () => ShardRecord[],
+    footer: () => ShardRecord,
+  ): void
   /** Resolves once every record has reached the sink. */
   drained(): Promise<void>
 }
@@ -397,15 +444,23 @@ function syncWindows(source: Source, sink: ShardSink, project: Projector): Windo
         // also be reported as unhealthy rather than silently trusted.
         capture = EMPTY_RAW
       }
-      const projected = project(capture)
+      const projected = project.project(capture)
       appendTable(sink, projected)
       const records = build(projected)
       if (records !== null) appendRecords(sink, records)
     },
-    commitFinal(build) {
+    prepareAndFinish(prepare, updates, footer) {
       // Nothing to wait for: a synchronous source has already answered every window
       // by the time this is called, which is why its footer carries no drift.
-      sink.append(JSON.stringify(build()))
+      const pending = prepare()
+      if (pending instanceof Promise) {
+        throw new Error(
+          'a synchronous source must prepare generated script text synchronously; ' +
+            `${source.kind} returned a promise`,
+        )
+      }
+      for (const row of updates()) sink.append(JSON.stringify(row))
+      sink.append(JSON.stringify(footer()))
     },
     drained: () => Promise.resolve(),
   }
@@ -457,15 +512,17 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector
         }
         // Projected inside the chain, not when the reply landed, so the table's
         // first-sighting bookkeeping sees windows in boundary order.
-        const projected = project(capture)
+        const projected = project.project(capture)
         appendTable(sink, projected)
         const records = build(projected)
         if (records !== null) appendRecords(sink, records)
       })
     },
-    commitFinal(build) {
-      queue(() => {
-        sink.append(JSON.stringify(build()))
+    prepareAndFinish(prepare, updates, footer) {
+      queue(async () => {
+        await prepare()
+        for (const row of updates()) sink.append(JSON.stringify(row))
+        sink.append(JSON.stringify(footer()))
       })
     },
     drained: () => chain,
@@ -498,17 +555,22 @@ function windowsFor(source: Source, sink: ShardSink, project: Projector): Window
 export class Recorder {
   #windows: Windows
   #source: Source
+  #projector: Projector
   #commit: string
   #pid: number
+  #role: 'service' | undefined
   #now: () => number
   #testCount = 0
   #loadCaptured = false
-  #open: { title: string; file: string | null; startedAt: number } | null = null
+  #open: { title: string; file: string | null; startedAt: number; ordinal?: number } | null = null
+  /** `(file, title)` -> occurrences seen this run. The first has no ordinal. */
+  #ordinals = new Map<string, number>()
   #owners: OwnerIndex | undefined
 
   constructor(options: RecorderOptions) {
     this.#commit = options.commit
     this.#pid = options.pid ?? process.pid
+    this.#role = options.role
     this.#now = options.now ?? Date.now
     this.#owners = options.owners
 
@@ -517,7 +579,8 @@ export class Recorder {
     this.#source = source
     // Projection only: no file is read and no position is resolved here. The
     // build does that once per distinct function (ADR-0002).
-    this.#windows = windowsFor(source, options.sink, projectorFor(source, scan))
+    this.#projector = projectorFor(source, scan)
+    this.#windows = windowsFor(source, options.sink, this.#projector)
   }
 
   /**
@@ -612,6 +675,7 @@ export class Recorder {
       commit: this.#commit,
       pid: this.#pid,
       startedAt: new Date(this.#now()).toISOString(),
+      ...(this.#role === undefined ? {} : { role: this.#role }),
     })
   }
 
@@ -624,7 +688,15 @@ export class Recorder {
     } else {
       this.#bucket('between')
     }
-    this.#open = { title, file, startedAt: this.#now() }
+    const key = `${file ?? ''}\u0000${title}`
+    const seen = this.#ordinals.get(key) ?? 0
+    this.#ordinals.set(key, seen + 1)
+    this.#open = {
+      title,
+      file,
+      startedAt: this.#now(),
+      ...(seen === 0 ? {} : { ordinal: seen }),
+    }
   }
 
   testEnd(title: string, status: TestStatus, durationMs?: number): void {
@@ -637,11 +709,13 @@ export class Recorder {
     const open = this.#open
     const file = open?.title === title ? open.file : (open?.file ?? null)
     const elapsed = durationMs ?? (open === null ? 0 : this.#now() - open.startedAt)
+    const ordinal = open?.title === title ? open.ordinal : undefined
 
     this.#emit((capture) => ({
       type: 'test',
       title,
       file,
+      ...(ordinal === undefined ? {} : { ordinal }),
       status,
       durationMs: elapsed,
       touches: capture.window.touches,
@@ -662,20 +736,23 @@ export class Recorder {
     // reached only by teardown as startup code, like @load.
     this.#bucket('teardown')
 
-    // Everything about the footer except the drift is known here, and is captured
-    // here. The drift is not: it is the distance between a boundary being sent and
-    // being received, and the boundary this call just sent is still in flight — so
-    // reading it now would report a run of N windows as N-1 and understate, by one
-    // window, the very error the number exists to expose. `commitFinal` builds the
-    // footer when the queue reaches it, which is after every reply ahead of it has
-    // landed and the count is whole.
+    // The footer is built after every window (including teardown) settles, so a
+    // queued source's drift count is whole. The source then prepares generated
+    // script text — outside every window, because a fetch in a closing window
+    // lengthened it and showed up as drift (`cbd-x2j`, the straddle e2e) — and the
+    // table updates and footer are written behind the windows they follow.
     const tests = this.#testCount
     const finishedAt = new Date(this.#now()).toISOString()
     const source = this.#source
-    this.#windows.commitFinal(() => {
-      const drift = driftOf(source)
-      return { type: 'end', tests, finishedAt, ...(drift === null ? {} : { drift }) }
-    })
+    const projector = this.#projector
+    this.#windows.prepareAndFinish(
+      () => source.prepare?.(projector.scriptIds()),
+      () => projector.finish(),
+      () => {
+        const drift = driftOf(source)
+        return { type: 'end', tests, finishedAt, ...(drift === null ? {} : { drift }) }
+      },
+    )
   }
 
   /**

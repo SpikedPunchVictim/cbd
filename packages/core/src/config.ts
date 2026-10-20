@@ -23,7 +23,7 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import type { CbdConfig } from './factory.js'
 import { matchesAnyGlob } from './glob.js'
-import type { SelectConfig } from './select.js'
+import type { AlwaysSelectEntry, SelectConfig } from './select.js'
 
 /** The on-disk shape. Every key is optional; absent means the default. */
 export interface CbdConfigFile {
@@ -32,6 +32,11 @@ export interface CbdConfigFile {
   include?: string[]
   exclude?: string[]
   alwaysAll?: string[]
+  /**
+   * Tests every matching subset must include. Either a repo-relative test file or
+   * `file > title`; `when` limits the trigger to changes matching those globs.
+   */
+  alwaysSelect?: Array<{ tests: string[]; when?: string[] }>
   unknownPolicy?: 'all' | 'ignore'
   betweenPolicy?: 'all' | 'ignore'
   testFiles?: string[]
@@ -52,6 +57,7 @@ const KEYS = new Set([
   'include',
   'exclude',
   'alwaysAll',
+  'alwaysSelect',
   'unknownPolicy',
   'betweenPolicy',
   'testFiles',
@@ -178,10 +184,60 @@ function checkScalars(file: Record<string, unknown>, path: string): void {
   }
 }
 
+/** `file > title` names one test; a bare path names every test the file defines. */
+function parseAlwaysSelectTest(raw: string, root: string, where: string): AlwaysSelectEntry['tests'][number] {
+  const separator = ' > '
+  const at = raw.indexOf(separator)
+  const file = (at === -1 ? raw : raw.slice(0, at)).trim()
+  const title = at === -1 ? undefined : raw.slice(at + separator.length).trim()
+  if (file === '') throw new Error(`cbd: ${where} has an empty test file`)
+  if (title !== undefined && title === '') throw new Error(`cbd: ${where} has an empty test title`)
+  const absolute = isAbsolute(file) ? file : join(root, file)
+  return title === undefined ? { file: absolute } : { file: absolute, title }
+}
+
+/**
+ * `alwaysSelect` — tests that cannot appear in coverage and must always run.
+ *
+ * Validated strictly, because dropping a malformed entry would make the list
+ * silently stop protecting the very tests it exists for.
+ */
+function alwaysSelect(raw: unknown, root: string, path: string): AlwaysSelectEntry[] | undefined {
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) {
+    throw new Error(`cbd: ${path} "alwaysSelect" must be an array`)
+  }
+  return raw.map((entry, index) => {
+    const where = `alwaysSelect[${String(index)}]`
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`cbd: ${path} ${where} must be an object with "tests" and optional "when"`)
+    }
+    const record = entry as Record<string, unknown>
+    for (const key of Object.keys(record)) {
+      if (key !== 'tests' && key !== 'when') {
+        throw new Error(`cbd: ${path} ${where} has an unknown key "${key}"`)
+      }
+    }
+    const tests = strings(record.tests, `${where}.tests`, path)
+    if (tests === undefined || tests.length === 0) {
+      throw new Error(`cbd: ${path} ${where}.tests must be a non-empty array of strings`)
+    }
+    const when = strings(record.when, `${where}.when`, path)
+    if (when !== undefined && when.length === 0) {
+      throw new Error(`cbd: ${path} ${where}.when must not be empty when present`)
+    }
+    return {
+      tests: tests.map((test) => parseAlwaysSelectTest(test, root, `${where}.tests`)),
+      ...(when === undefined ? {} : { when: absoluteGlobs(root, when) }),
+    }
+  })
+}
+
 function selectFrom(file: Record<string, unknown>, root: string, path: string): SelectConfig {
   const include = strings(file.include, 'include', path)
   const exclude = strings(file.exclude, 'exclude', path)
   const alwaysAll = strings(file.alwaysAll, 'alwaysAll', path)
+  const alwaysSelected = alwaysSelect(file.alwaysSelect, root, path)
   const testFiles = strings(file.testFiles, 'testFiles', path)
   const testFilePolicy = file.testFilePolicy
   if (
@@ -206,6 +262,7 @@ function selectFrom(file: Record<string, unknown>, root: string, path: string): 
   const select: SelectConfig = {}
   if (include !== undefined || exclude !== undefined) select.include = predicate
   if (alwaysAll !== undefined) select.alwaysAll = absoluteGlobs(root, alwaysAll)
+  if (alwaysSelected !== undefined) select.alwaysSelect = alwaysSelected
   if (testFiles !== undefined) select.testFiles = absoluteGlobs(root, testFiles)
   if (testFilePolicy !== undefined) select.testFilePolicy = testFilePolicy
   if (unknownPolicy !== undefined) select.unknownPolicy = unknownPolicy

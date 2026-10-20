@@ -1542,3 +1542,197 @@ tests and the four `resolve()` tests that call it. Selecting `cacheDir() > respe
 (exercising the regex escape in the runner's space-joined spelling) ran **one test** and recorded
 exactly one record; the other two files still ran but recorded none. CommonJS `require('node:test')`
 files work unchanged — the preload is ESM and installs the same global hooks.
+
+## 2026-10-19 — mutation spike, first pass (`cbd-0ro`)
+
+`mutantTests` landed in core (`cbd-0ro.1`): the `select` safety ladder applied to a mutant range,
+with per-test function evidence winning over the file-level buckets. A StrykerJS `TestRunner`
+prototype selects through `CBD_SELECTION` and disables recording; the pieces Stryker's API requires
+were discovered by running it: the `__STRYKER_ACTIVE_MUTANT__` activation variable, 0-based internal
+line numbers, and a non-empty dry-run test list.
+
+Results on two fixture projects (see `packages/mutate/SPIKE.md`): node:test/JS matched the full-suite
+killed/survived set 63/63 at 92.06%, selecting a median of 2 of 25 tests per mutant; Vitest/TS matched
+73/73 at 93.15%, but 53 of 73 mutants fell back to `all`. The cause is `cbd-x2j`: the build indexes
+the on-disk source as the generated script, so a transformed Vitest module's offsets clamp to the
+file's last line (`add@0` at line 31 instead of 1-3). Node:test plain JS has correct ranges. Stryker's
+own `perTest` runner reported every Vitest mutant survived in this environment, so the full-suite
+command runner is the score oracle.
+
+On the micro-fixtures, per-mutant startup dominated: node:test selection took 24.2 s against the full
+suite's 15.9 s. ADR-0015 records a conditional go: keep the package/helper, fix `cbd-x2j` before
+claiming Vitest/Jest, and re-measure speed on a suite with many test files.
+
+## 2026-10-19 — mutation selection goes generic (`cbd-0ro`, ADR-0016)
+
+The Stryker prototype was removed. The project wants no mutation-engine dependency, and Grizzly
+already owns mutation specs, `find`/`replace` application, builds, lane restarts and kill
+verification (`typescript/tools/dev-cli` + `.agents/review-feedback/scripts/mutate.mjs`). What
+Grizzly lacks is the selection question, which is the part CBD answered well.
+
+`@spikedpunch/cbd-mutate` is now a generic selector: `mutantTests` re-exported, and
+`cbd-mutate select --file <source> --line <n> [--format json]` prints
+`{mode, why, titles, tests}` from the map. No Stryker, no test-framework dependency, no mutation
+application and no recording. The contract is explicit that a subset is a **superset** of killers:
+a mutant is killed when **any** candidate fails, not when every candidate fails.
+
+Grizzly integration is a spec-row source location (`select: {file, line}`) and a candidate verdict in
+`mutate.mjs`; the report is `/tmp/cbd-grizzly-mutation-integration.md`. The remaining hard blocker is
+`cbd-x2j`: ts-node/Vitest/Jest transform in memory, and the build currently resolves their V8 offsets
+against the source file, so line ranges can be wrong. Plain JavaScript and untransformed builds are
+correct. The generic package's 4 CLI tests pass; core 254 pass.
+
+## 2026-10-19 — transformed-script coordinates (`cbd-x2j`)
+
+The build used to index the file named by a script URL as if V8 had compiled it. That is true for
+plain JavaScript and a tsc build, and false for Vitest/Vite, Jest and ts-node, where V8's offsets are
+into generated text. The Vitest fixture showed it plainly: `add` at offsets 748-785 in a 597-byte
+`.ts`, every function clamped to the file's last line, and 53 of 73 mutation mutants forced to `all`.
+
+A script row now carries an optional `generated: {lineStarts, length}` when the generated text is not
+the file's. The recorder writes it as an **end-of-run update row**, written after the teardown
+boundary has settled; `scriptTable` merges the update into the earlier row. `Source.prepare(ids)`
+supplies the data: the in-process source reads `Debugger.getScriptSource` synchronously, the socket
+source asks the instrument with a new `generated` op, and the rescanning source delegates. A source
+read at a window boundary lengthened that window and broke the straddle drift test; preparing after
+the last window keeps the measurement honest. Untransformed scripts compare equal and record nothing,
+so tsc-built maps keep their size.
+
+Validation: core 255 (including a synthetic transformed-source resolve test), Vitest e2e now asserts
+`add@0` is lines 1-3, the node:test map is unchanged, and the Vitest mutation fixture selects
+`math > adds positive numbers` for `src/math.ts:2` instead of `all`. Japa 66 pass alone; the
+full-workspace run hit its known load-sensitive straddle drift flake once.
+
+## 2026-10-19 — same-named tests in one file (`cbd-gkj`)
+
+The map keyed a test by `(title, file)`, so duplicate describe blocks or colliding `.each` rows
+merged into one entry: coverage and failures conflated, and selection could only run both. Measured
+on Strapi with Jest: 608 records became 588 map tests, 18 duplicate pairs.
+
+The recorder now assigns an **ordinal** per `(file, title)` in test-start order — absent for the
+first occurrence, then 1, 2, … — and the shard carries it on the test row. `resolveShard`,
+`TestEntry`, the map merge and `mergeShards` all key by `(title, file, ordinal)`; the first
+occurrence keeps the old shape, so existing maps and single-title tests are unchanged. Selection
+still filters by title and runs every occurrence (safe over-selection); the map's coverage and
+failures no longer merge. `cbd stats` reports `duplicateTests` groups and the CLI lists them.
+
+The honest limit: a subset recording that runs only a *later* duplicate starts its local count at
+zero and cannot know its full-run ordinal, so that shard's window may merge with the first
+occurrence. A full recording is deterministic; the shard docblock and CBD.md §6.2 say so.
+
+Validation: core 257 (a map test proves two same-title tests keep separate coverage, a recorder test
+pins the ordinal in the shard), and every package suite passes sequentially (japa 66, mocha 8,
+vitest 6, jest 6, node-test 9, mutate 4, cli 39, fixture 42+1, probe 5). The Strapi app was not
+re-run for this change; the measured 18-pair case is what the map test reproduces.
+
+## 2026-10-19 — Grizzly mutation integration, first row (`cbd-0ro.6`, `cbd-0ro.3`)
+
+The generic selector was wired into Grizzly's `mutate.mjs` in the measurement clone (uncommitted).
+A mutant row may carry `select: {file, line, endLine?}`; the runner asks `cbd-mutate select` for
+candidates, fills the killer list, and uses candidate semantics: killed when **any** candidate
+fails, not when every one does. A no-coverage row is reported without running; an `all` selection is
+refused until the spec has a `testAll` command.
+
+Recorded the int-cli `unit` suite (CBD japa plugin in its `bin/test.ts`): **1082 tests, 74 files**.
+The validation mutant rethrows `removeManifest`'s swallowed error; `src/manifest.ts:349` selected
+exactly the one test named for it. G1 (`select`) and G1h (hand-named killer) both killed it, restored
+the file byte-for-byte and exited 0. Candidate counts on the same map: line 348 → 1, line 165 → 84,
+line 221 → 390 of 1082 — the function-level superset in practice.
+
+ADR-0016 records **go** for the selector and the Grizzly design. Remaining production work is
+`testAll`, one-process candidate runs, a larger-suite measurement, service coverage in the map, and
+keeping the new verdict in step with dev-cli's digest. The clone and its specs/map are uncommitted,
+per the Grizzly rule; the integration report is `/tmp/cbd-grizzly-mutation-integration.md`.
+
+## 2026-10-20 — one-process candidates and `mode: all` (`cbd-wrp`, `cbd-d18`)
+
+Both production gaps from the first Grizzly row are closed in the clone's `mutate.mjs`. A spec may
+now name `testSelected`: a subset row writes its candidates to a `{titles}` file, sets
+`CBD_SELECTION`, and runs the whole set once, with any failure as the kill. A row opts out with
+`"testSelected": null`. A row whose selection is `all` runs the spec's `testAll` after mutation and
+restart; a missing command fails the spec before anything is mutated. Both paths re-run a kill on
+the restored tree, like the named-killer path. `PLAIN_VERDICTS` gained `killed by the full suite` in
+both `mutate.mjs` and dev-cli's `digest.ts`.
+
+Measured on the 1082-test / 74-file map with five rows (`spike-cbd-measure.json`, serial clone):
+
+| row | selection | candidates | killers s | verdict |
+|---|---|---|---|---|
+| M1 | `manifest.ts:349` | 1 | 6 | killed by at least one candidate |
+| M2 | `manifest.ts:168` | 84 | 10 | killed by at least one candidate |
+| M3 | `manifest.ts:1` (load → all) | full suite | 15 | killed by the full suite |
+| M4 | `verify/index.ts:232` | 6, per candidate | 46 | killed by at least one candidate |
+| M5 | same as M4 | 6, one process | 6 | killed by at least one candidate |
+
+Phase split: selection 1.24 s (0.25 s/row), baseline 80.2 s (ten unmutated runs), rows 83.4 s,
+total 164.9 s. One suite invocation is 4.8 s with one selected test, 6.0 s with 6, 7.3 s with 84,
+8.3 s with all 1082 (medians of three): ts-node/japa compiles every spec before filtering, so
+selection saves execution, not registration. The one-process path is therefore the decisive win
+(46 s → 6 s at six candidates, same verdict; a per-candidate M2 is extrapolated at ~84 × 5 s per
+pass, not run). ADR-0016 records **go** for the one-process design and for large suites, with the
+startup-bound limitation stated.
+
+## 2026-10-20 — selection safety gaps from grizzly T-29-015 (`cbd-0na`)
+
+Six cases where `cbd select` could return a subset that omitted a test the change broke, or drop
+information silently. Each was reproduced against the published 0.0.1 (`/tmp/cbd-0.0.1-probe.txt`)
+and against this tree (`/tmp/cbd-0.0.2-probe.txt`), with the same six-case probe:
+
+| case | 0.0.1 | this tree |
+|---|---|---|
+| untracked file is a change | `false` | `true` |
+| module-scope change selects the binding test | `[0]` (function's tests only) | `[0,1]` (load observers ∪ function) |
+| helper that defines tests is a test file | `function`, no warning | `test-file`, 1 warning |
+| `alwaysSelect` accepted | rejected as an unknown key | accepted |
+| map loads in a second checkout | first checkout's absolute path | second checkout's path |
+| `selection.ignored` | absent | `["…/docs/readme.md"]` |
+
+- **Untracked files** (`cbd-0na.1`): `changesSince` adds `git ls-files --others
+  --exclude-standard` in worktree mode as status `A` with insertion point 0. `--no-worktree` still
+  asks about a commit. The factory excludes the state directory.
+- **Module-scope changes** (`cbd-0na.2`): the map records `shardTests` (the tests that can observe a
+  shard's module state) and `loadShards` (per file, the shards that evaluated it). A top-level change
+  selects the union of those tests with the function index's. A service shard is marked
+  `role: 'service'` and contributes only the tests that actually touched it, because every recorder
+  opens a window for every test title. Old maps have neither field and fall back to `mode: all`.
+- **Helpers that define tests** (`cbd-0na.3`): a changed, seen file matching a test glob is scanned
+  for a registration call (`test(`/`it(`/`suite(`/`describe(`, including modifiers); if found, the
+  test-file rule applies, selecting the tests that executed code in the helper and warning about an
+  added test. The scan is textual, and `alwaysSelect` is the explicit escape hatch.
+- **`alwaysSelect`** (`cbd-0na.4`): new config key `[{ tests: ["file" | "file > title"], when?: ["glob"] }]`.
+  Matching entries are added with reason `always`; an entry the map cannot resolve forces `mode: all`
+  and warns; malformed entries are rejected by the loader and the schema. A no-`when` entry fires on
+  any in-scope change, not on an empty change set.
+- **Portable maps** (`cbd-0na.5`): `saveMap` stores paths relative to its canonical root (paths
+  outside stay absolute), and `loadMap` resolves them against the loading root.
+- **Ignored changes** (`cbd-0na.6`): `Selection.ignored` names changed files outside `include` that
+  no rule claimed; the text output prints them too. `alwaysAll` and `alwaysSelect.when` still claim
+  a change outside `include`.
+
+Docs: CBD.md §8.2–§8.5, the root and package READMEs, the schema, and `CHANGELOG.md`. Packages are
+bumped to 0.0.2 and not published (owner approval required).
+
+Validation: core 282 (new: untracked, subdirectory coordinates, load observers, service attribution,
+registration scan, alwaysSelect, ignored, map portability), CLI 42, japa 66; the full workspace
+suite passes sequentially. The paired probe outputs are in `/tmp/cbd-0.0.1-probe.txt` and
+`/tmp/cbd-0.0.2-probe.txt`.
+
+### Replayed on a copy of the reporting repository
+
+The rebuilt map (relative paths, `shardTests`/`loadShards`) was replayed against a temp copy of the
+grizzly-sv checkout at the recording's base, with the recorded shards' paths remapped to the copy.
+The six cases against the real 360-test pipeline map:
+
+1. untracked `edge/pipeline/src/zzProbeUntracked.ts` → `all`, `unknown-file`, and the file is in
+   `changes`;
+2. the `appliedHash.ts` import-line mutant → subset of 360, including
+   `fix 3 F6: the pipeline and the rules library share one canonicalJson` (the 0.0.1 answer was 22
+   and omitted it);
+3. a `test(...)` added inside `ledger-contract.ts` → `test-file`, 112 tests, and the added-test
+   warning;
+4. an `alwaysSelect` entry for the AC29 source-text test → AC29 selected with reason `always`;
+5. the same map copied into a second checkout at another path → subset of 360, zero `unmapped`;
+6. a change to `.agents/review-feedback/scripts/cbd-agreement.mjs` → zero tests and
+   `selection.ignored` names it.
+
+The copy is `/tmp/cbd-grizzly-test`; the original checkout was not modified.

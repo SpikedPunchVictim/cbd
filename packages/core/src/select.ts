@@ -32,12 +32,33 @@ export type AllWhy =
   | 'stale-map'
   | 'no-map'
   | 'test-file'
+  | 'always-unknown'
 
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
   | { kind: 'file'; file: string; tests: number[] }
   | { kind: 'test-file'; file: string; tests: number[] }
+  | { kind: 'always'; file?: string; tests: number[] }
   | { kind: 'all'; why: AllWhy; file?: string }
+
+/**
+ * One test an `alwaysSelect` entry names: a file, or `file > title`.
+ *
+ * `file` is absolute by the time `select` sees it — the config loader resolves
+ * repository-relative locators against the root, the same way it resolves globs.
+ * `title` is the map's bare title, not a qualified describe path.
+ */
+export interface AlwaysSelectTest {
+  file: string
+  title?: string
+}
+
+/** A configured test (or whole test file) that every matching subset must include. */
+export interface AlwaysSelectEntry {
+  tests: AlwaysSelectTest[]
+  /** Globs of changes that trigger the entry. Absent means any in-scope change. */
+  when?: string[]
+}
 
 export interface MapInfo {
   commit: string
@@ -62,6 +83,12 @@ export interface Selection {
   unmapped: string[]
   /** Changed files the map knows no test reaches. */
   untested: string[]
+  /**
+   * Changed files outside `include` (and not claimed by `alwaysAll` or an
+   * `alwaysSelect.when`). They are not selected, but saying so distinguishes
+   * "nothing changed" from "a change was deliberately out of scope" (`cbd-0na.6`).
+   */
+  ignored: string[]
   warnings: string[]
   map: MapInfo
 }
@@ -89,6 +116,17 @@ export interface SelectConfig {
   /** Make a stale or dirty map force `mode: all` rather than merely warn. */
   strict?: boolean
   maxAgeCommits?: number
+  /** Tests every matching subset must also run, for oracles that read sources as text. */
+  alwaysSelect?: AlwaysSelectEntry[]
+  /**
+   * Whether a changed path statically looks like it defines tests.
+   *
+   * A helper module can define tests through a function a spec calls; the map
+   * attributes those tests to the registering spec, so the registry alone cannot
+   * see the helper as a test file (`cbd-0na.3`). The factory supplies a reader; a
+   * missing callback keeps the pre-existing registry-only behaviour.
+   */
+  definesTests?: (path: string) => boolean
 }
 
 const DEFAULT_TEST_FILES = [
@@ -97,6 +135,27 @@ const DEFAULT_TEST_FILES = [
   '**/__tests__/**',
   '**/tests/**',
 ]
+
+/**
+ * Does this text contain a test-registration call?
+ *
+ * A helper that defines tests through a shared function — `defineLedgerContract(test)`
+ * called from a spec, with the `test(...)` calls living in the helper — registers
+ * tests the map attributes to the spec. The helper therefore has no directly
+ * defined tests and used to be answered as ordinary code, so a test added there was
+ * neither selected nor warned about (`cbd-0na.3`).
+ *
+ * The scan is deliberately narrow and textual: the framework's registration name is
+ * not knowable from a coverage map, and the cost of a false positive is a warning
+ * plus the tests that touch the file, while a false negative is the silent miss.
+ * A file that imports tests through an alias it invents will still fall through;
+ * name that file in `alwaysSelect` if it matters.
+ */
+export function fileDefinesTests(text: string): boolean {
+  return /(?:^|[^\w$.'"])(?:test|it|suite|describe)\s*(?:\.\s*(?:each|skip|only|todo|failing|concurrent)\s*)?\(/m.test(
+    text,
+  )
+}
 
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((a, b) => a - b)
@@ -157,14 +216,25 @@ function testFileChange(
   testFiles: string[],
   policy: 'known' | 'all',
   testsDefinedIn: (file: string) => number[],
+  testsTouchingFile: (file: string) => number[],
+  definesTests: (file: string) => boolean,
+  seen: (file: string) => boolean,
   forceAll: (why: AllWhy, file: string) => void,
   selected: Set<number>,
   reasons: Reason[],
   warnings: string[],
 ): boolean {
   if (matchesAnyGlob(path, testFiles) === null) return false
-  const tests = testsDefinedIn(path)
-  if (tests.length === 0) return false
+  const direct = testsDefinedIn(path)
+  // A helper that defines tests is a test file even though the map files those
+  // tests under the spec that called it. A file the map has never seen stays on
+  // the unknown-file path: its added tests must run, and `known` would drop them.
+  const indirect = direct.length === 0 && seen(path) && definesTests(path)
+  if (direct.length === 0 && !indirect) return false
+  // Which tests to select under `known`: the registry answer when there is one,
+  // otherwise every test that executed code in the defining file. That includes
+  // tests registered elsewhere, which is over-selection — the safe direction.
+  const tests = direct.length > 0 ? direct : testsTouchingFile(path)
 
   if (policy === 'all') {
     // Not `unmapped`: the map can answer for the tests it knows. The policy
@@ -195,11 +265,13 @@ export function select(
   const testFilePolicy = config.testFilePolicy ?? 'known'
   const unknownPolicy = config.unknownPolicy ?? 'all'
   const betweenPolicy = config.betweenPolicy ?? 'all'
+  const definesTests = config.definesTests ?? ((): boolean => false)
 
   const reasons: Reason[] = []
   const selected = new Set<number>()
   const unmapped: string[] = []
   const untested: string[] = []
+  const ignored: string[] = []
   const warnings: string[] = []
   let forced = false
 
@@ -274,7 +346,10 @@ export function select(
       continue
     }
 
-    if (!include(path)) continue
+    if (!include(path)) {
+      ignored.push(path)
+      continue
+    }
 
     // Rule 3 — a test file whose tests the registry can name. Under the default
     // `testFilePolicy: 'all'` the whole suite runs, because the map cannot name a
@@ -294,6 +369,9 @@ export function select(
         testFiles,
         testFilePolicy,
         testsDefinedIn,
+        testsTouchingFile,
+        definesTests,
+        (file) => seen.has(file),
         forceAll,
         selected,
         reasons,
@@ -340,10 +418,38 @@ export function select(
         outsideEveryFunction ||
         (change.hunks.length === 0 && (change.insertions ?? []).length === 0)
       ) {
-        const tests = testsTouchingFile(path)
-        if (tests.length > 0) {
-          for (const index of tests) selected.add(index)
-          reasons.push({ kind: 'file', file: path, tests })
+        // Module-scope state is not confined to the file's functions. A test can
+        // compare a top-level binding without ever calling a function in the
+        // module, so "the tests that touched the file" is not "the tests that can
+        // observe it" (`cbd-0na.2`). The map attributes a `@load`/`@teardown`
+        // touch to the tests in the process that produced it; those tests shared
+        // the module instance and are the honest answer. A map built before that
+        // attribution existed has no answer, and falls back to rule 2's `all`.
+        if (loadFiles.has(path) || teardownFiles.has(path)) {
+          const shards = map.loadShards?.[path]
+          const observers =
+            shards === undefined || map.shardTests === undefined
+              ? undefined
+              : shards.flatMap((index) => map.shardTests![index] ?? [])
+          if (observers === undefined || observers.length === 0) {
+            unmapped.push(path)
+            forceAll('load', path)
+          } else {
+            // The union with the function index matters when one process loaded
+            // the module and another called into it: both sets can observe it.
+            const tests = uniqueSorted([...observers, ...testsTouchingFile(path)])
+            for (const index of tests) selected.add(index)
+            reasons.push({ kind: 'file', file: path, tests })
+          }
+        } else if (betweenFiles.has(path) && betweenPolicy === 'all') {
+          unmapped.push(path)
+          forceAll('between', path)
+        } else {
+          const tests = testsTouchingFile(path)
+          if (tests.length > 0) {
+            for (const index of tests) selected.add(index)
+            reasons.push({ kind: 'file', file: path, tests })
+          }
         }
       }
       continue
@@ -351,6 +457,50 @@ export function select(
 
     // Rules 2, 9, 7, 6 — see `noTouches`.
     noTouches(path)
+  }
+
+  // Always-select — tests that cannot appear in coverage, such as an oracle that
+  // reads source files as text, or a repository-wide dependency-direction scan.
+  // They are added after the per-file rules so a `when` glob can claim a change
+  // that `include` would otherwise ignore. An entry the map cannot resolve is not
+  // dropped: the list exists to prevent under-selection, so a stale entry runs
+  // everything and says why (`cbd-0na.4`).
+  // A no-`when` entry fires on any in-scope change, not on "no change at all":
+  // a clean tree must stay a zero-test selection.
+  const inScope = changes.some((change) => include(change.path))
+  for (const entry of config.alwaysSelect ?? []) {
+    const triggered =
+      entry.when === undefined
+        ? inScope
+        : changes.some((change) => matchesAnyGlob(change.path, entry.when!) !== null)
+    if (!triggered) continue
+
+    const indices: number[] = []
+    const unknown: string[] = []
+    for (const locator of entry.tests) {
+      const matches: number[] = []
+      map.tests.forEach((test, index) => {
+        if (test.file !== locator.file) return
+        if (locator.title !== undefined && test.title !== locator.title) return
+        matches.push(index)
+      })
+      if (matches.length === 0) {
+        unknown.push(locator.title === undefined ? locator.file : `${locator.file} > ${locator.title}`)
+      } else {
+        indices.push(...matches)
+      }
+    }
+
+    if (unknown.length > 0) {
+      warnings.push(
+        `alwaysSelect names ${unknown.join(', ')}, which the map does not know; running every test`,
+      )
+      forceAll('always-unknown')
+      continue
+    }
+    const tests = uniqueSorted(indices)
+    for (const index of tests) selected.add(index)
+    reasons.push({ kind: 'always', tests })
   }
 
   // Rule 10 — a map that is dirty or far behind cannot be trusted to be complete.
@@ -374,6 +524,7 @@ export function select(
     tests: forced ? [] : uniqueSorted(selected),
     unmapped: [...new Set(unmapped)].sort(),
     untested: [...new Set(untested)].sort(),
+    ignored: [...new Set(ignored)].sort(),
     warnings,
     map: info,
   }

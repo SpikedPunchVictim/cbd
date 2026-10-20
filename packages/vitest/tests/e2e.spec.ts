@@ -67,6 +67,15 @@ test('a run writes one complete shard per test file, and the map answers', () =>
     }))
     const map = buildMap(inputs, { commit: 'vitest-e2e' })
     assert.equal(map.tests.length, 3)
+    // `cbd-x2j`: Vitest compiles in memory, so V8's offsets are into generated
+    // text. The build must use the shard's generated line starts, not the source
+    // file's; otherwise every function resolves to the file's last line.
+    const add = map.files[mathFile]?.['add@0']
+    assert.equal(add?.startLine, 1)
+    assert.equal(add?.endLine, 1)
+    const sub = map.files[mathFile]?.['sub@0']
+    assert.equal(sub?.startLine, 2)
+    assert.equal(sub?.endLine, 2)
     assert.deepEqual(
       testsForFunction(map, mathFile, 'add@0').map((entry) => entry.title).sort(),
       ['another file also adds', 'math > adds'],

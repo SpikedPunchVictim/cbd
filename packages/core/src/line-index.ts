@@ -23,6 +23,15 @@ export function buildLineIndex(text: string): LineIndex {
   return { starts, length: text.length }
 }
 
+/** Whether two line-start tables describe the same generated text shape. */
+export function sameLineStarts(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return false
+  }
+  return true
+}
+
 /** 1-based line containing `offset`. */
 export function lineAt(index: LineIndex, offset: number): number {
   const { starts } = index

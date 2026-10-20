@@ -57,7 +57,7 @@ export interface InstalledAdapter {
    * that callback is the only point guaranteed to be ahead of it — which is why
    * the footer is written here rather than from an `afterAll` hook.
    */
-  finish(): void
+  finish(): Promise<void>
 }
 
 /**
@@ -133,5 +133,11 @@ export function mochaWindowHooks(recorder: Recorder): {
  */
 export function installMochaAdapter(mocha: Mocha, recorder: Recorder): InstalledAdapter {
   mocha.rootHooks(mochaWindowHooks(recorder))
-  return { recorder, finish: () => recorder.runEnd() }
+  return {
+    recorder,
+    async finish() {
+      // Outside every test window: transformed-script coordinates are fetched here.
+      await recorder.runEnd()
+    },
+  }
 }

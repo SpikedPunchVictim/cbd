@@ -56,29 +56,38 @@ reason. It never silently skips a test.
 
 ## Quick start
 
-Install the core, the CLI, and the adapter for your runner. The japa example:
+Install the core, the CLI, and the adapter for your runner. The Vitest example:
 
 ```sh
-pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-japa
+pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-vitest
 ```
 
-Configure the adapter once, in the runner's config (it is inert unless CBD asks it to record):
+Add the setup file once. **This is the complete config change** — there are no CBD variables to put
+in it:
 
-```js
-// bin/test.js (japa)
-import { configure, processCLIArgs, run } from '@japa/runner'
-import { cbd } from '@spikedpunch/cbd-japa'
+```ts
+// vitest.config.ts
+import { defineConfig } from 'vitest/config'
 
-processCLIArgs(process.argv.slice(2))
-configure({ files: ['tests/**/*.spec.js'], plugins: [cbd()] })
-await run()
+export default defineConfig({
+  test: {
+    setupFiles: ['@spikedpunch/cbd-vitest/setup'],
+  },
+})
 ```
 
-Record a map for the current commit (this runs the suite once):
+Record a map for the current commit. `cbd collect` runs the suite with recording enabled and builds
+the map afterwards; it sets `CBD_SHARD` and `CBD_COMMIT` for the child, so **you do not set either
+variable yourself**:
 
 ```sh
-pnpm exec cbd collect -- pnpm test
+pnpm exec cbd collect -- pnpm vitest run
 ```
+
+A plain `pnpm exec vitest run`, without `cbd collect`, leaves the setup inert and is a normal Vitest
+run. That is why the line above can be committed. The variables are read by the setup file at run
+time, not configured in `vitest.config.ts`; manual recording is documented in the
+[Vitest adapter README](packages/vitest/README.md).
 
 After editing a source file, ask what to run:
 
@@ -107,8 +116,18 @@ if (selection.mode === 'all') {
 
 ## Framework setup
 
-Each adapter is enabled by `CBD_SHARD`, which `cbd collect` sets for the child run. With that variable
-absent the adapter does nothing, so the setup can be committed to the repository.
+Recording is triggered by `CBD_SHARD`, which `cbd collect` sets for the child run. It is an
+environment variable, not a config key or an adapter option; without it the adapter does nothing,
+so the setup snippets below can be committed.
+
+**Vitest**
+
+```ts
+// vitest.config.ts
+export default defineConfig({
+  test: { setupFiles: ['@spikedpunch/cbd-vitest/setup'] },
+})
+```
 
 **japa**
 
@@ -121,15 +140,6 @@ configure({ files: ['tests/**/*.spec.js'], plugins: [cbd()] })
 
 ```sh
 NODE_OPTIONS="--import @spikedpunch/cbd-mocha/auto" mocha
-```
-
-**Vitest**
-
-```ts
-// vitest.config.ts
-export default defineConfig({
-  test: { setupFiles: ['@spikedpunch/cbd-vitest/setup'] },
-})
 ```
 
 **Jest**
@@ -165,6 +175,10 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
   "$schema": "./node_modules/@spikedpunch/cbd/cbd.config.schema.json",
   "include": ["src/**", "tests/**"],
   "alwaysAll": ["data/**"],
+  "alwaysSelect": [
+    { "tests": ["tests/schema.spec.ts > the source names no unknown column"],
+      "when": ["src/schema/**"] }
+  ],
   "maxAgeCommits": 50
 }
 ```
@@ -173,6 +187,7 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
 | --- | --- |
 | `include` / `exclude` | Repository-relative globs limiting which changed files the selection considers. |
 | `alwaysAll` | Globs whose changes always force a full run (schema-only or generated files, for example). |
+| `alwaysSelect` | Tests every matching subset must also run, for oracles that read sources as text. Each entry is `{ "tests": ["file" or "file > title"], "when": ["glob"] }`; `when` is optional. An entry the map cannot resolve forces a full run and warns. |
 | `unknownPolicy` | `"all"` (default) or `"ignore"`: what a changed file the map has never seen means. |
 | `betweenPolicy` | `"all"` (default) or `"ignore"`: what code executed outside any test window means. |
 | `testFiles` | Globs that identify test files. |
@@ -186,7 +201,7 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `CBD_SHARD` | adapters | Write coverage windows to this shard. Unset means the adapter is inert. |
+| `CBD_SHARD` | adapters | Base path for coverage shards; the adapter may write one beside it per test file (Vitest). Unset means the adapter is inert. |
 | `CBD_COMMIT` | adapters | The commit the recording belongs to. Defaults to `unknown`. |
 | `CBD_SELECTION` | adapters | A JSON file `{ "titles": string[] }`; the run is narrowed to those tests. |
 | `CBD_SOCKET_DIR` | instrument, japa | Directory of the instrumented service's socket; declares that a service should be recorded. |

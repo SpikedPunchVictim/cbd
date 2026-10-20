@@ -1,0 +1,30 @@
+{
+  "name": "@spikedpunch/cbd-mutate",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generic mutation-test selection: map a mutant location to candidate killer tests from a CBD coverage map.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": "./dist/src/index.js"
+  },
+  "engines": {
+    "node": ">=20.16"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node bin/test.js"
+  },
+  "dependencies": {
+    "@spikedpunch/cbd": "workspace:*"
+  },
+  "devDependencies": {
+    "@japa/runner": "^5.4.0",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  },
+  "bin": {
+    "cbd-mutate": "./bin/cbd-mutate.js"
+  }
+}

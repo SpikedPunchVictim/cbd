@@ -56,6 +56,8 @@ function reasonLine(root: string, reason: Reason): string {
       return `${shown(root, reason.file)} (${plural(reason.tests.length, 'test')})`
     case 'test-file':
       return `${shown(root, reason.file)} (test file, ${plural(reason.tests.length, 'test')})`
+    case 'always':
+      return `alwaysSelect (${plural(reason.tests.length, 'test')})`
     case 'all':
       return reason.file === undefined
         ? reason.why
@@ -77,6 +79,12 @@ export function selectLines(result: SelectResult, root: string): string[] {
       ? `all tests for ${files} (map ${summary})`
       : `${plural(result.selected.length, 'test')} for ${files} (map ${summary})`,
   )
+  if (result.selection.ignored.length > 0) {
+    lines.push(
+      `ignored ${plural(result.selection.ignored.length, 'changed file')}: ` +
+        result.selection.ignored.map((path) => shown(root, path)).join(', '),
+    )
+  }
   return lines
 }
 
@@ -196,6 +204,12 @@ export function statsLines(result: StatsResult, root: string): string[] {
         `  ${shown(root, file.file)}: ${plural(file.tests, 'test')}, ` +
           `${plural(file.functions, 'function')}`,
       )
+    }
+  }
+  if (result.duplicateTests.length > 0) {
+    lines.push('duplicate titles (distinguished by ordinal in the map):')
+    for (const group of result.duplicateTests.slice(0, 5)) {
+      lines.push(`  ${shown(root, group.file ?? '(no file)')}: ${group.title} (${String(group.count)})`)
     }
   }
   if (result.untestedFiles.length > 0) {

@@ -128,8 +128,10 @@ if (recorder !== null || only !== undefined) {
     const first = installMochaAdapter(this, recorder)
     adapter = first
 
-    return originalRun.call(this, (failures: number) => {
-      first.finish()
+    return originalRun.call(this, async (failures: number) => {
+      // Mocha's CLI exits from this callback, so the footer and the generated
+      // coordinates must be written before it is called.
+      await first.finish()
       return callback?.(failures)
     })
   }

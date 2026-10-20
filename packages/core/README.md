@@ -47,7 +47,7 @@ if (selection.mode === 'all') {
 - `map` — the commit, age, path and shard list the answer came from.
 
 Options: `since` (default: the map's commit), `worktree` (default `true`), `strict`, `commit`.
-Selection rules (`include`, `alwaysAll`, `unknownPolicy`, `betweenPolicy`, `maxAgeCommits`, …) live in
+Selection rules (`include`, `alwaysAll`, `alwaysSelect`, `unknownPolicy`, `betweenPolicy`, `maxAgeCommits`, …) live in
 `select`'s config and are usually loaded from `cbd.config.json` with `loadConfig`.
 
 ### Verbs

@@ -1,0 +1,8 @@
+{
+  "name": "cbd-mutate-fixture-nt",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@spikedpunch/cbd-node-test": "workspace:*"
+  }
+}

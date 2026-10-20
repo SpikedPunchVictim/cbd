@@ -66,6 +66,14 @@ export {
 
 export { StaleShardError } from './resolve.js'
 
+export {
+  mutantTests,
+  type MutantPolicy,
+  type MutantSelection,
+  type MutantTarget,
+  type MutantWhy,
+} from './mutate.js'
+
 export { matchesAnyGlob, matchesGlob } from './glob.js'
 
 export {

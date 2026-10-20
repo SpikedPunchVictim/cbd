@@ -25,6 +25,29 @@
       "items": { "type": "string" },
       "description": "Globs whose change forces mode: all (lockfiles, manifests, tsconfig, migrations)."
     },
+    "alwaysSelect": {
+      "type": "array",
+      "description": "Tests every matching subset must include, for oracles that read sources as text and cannot appear in coverage. An entry the map cannot resolve forces mode: all and warns.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tests"],
+        "properties": {
+          "tests": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "description": "Test locators: a repository-relative test file, or 'file > bare test title'."
+          },
+          "when": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "description": "Repository-relative globs of changes that trigger the entry. Absent means any in-scope change."
+          }
+        }
+      }
+    },
     "unknownPolicy": {
       "enum": ["all", "ignore"],
       "default": "all",

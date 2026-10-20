@@ -237,6 +237,12 @@ class SocketClient {
     return this.#send(id, op, sentAtUs, header)
   }
 
+  /** Generated line starts for scripts the recorder already saw, at end of run. */
+  generated(ids: string[]): Promise<InstrumentResponse> {
+    const id = this.#nextId++
+    return this.#send(id, 'generated', undefined, undefined, ids)
+  }
+
   /**
    * A take, with the id it was sent under.
    *
@@ -269,9 +275,10 @@ class SocketClient {
 
   #send(
     id: number,
-    op: 'hello' | 'take' | 'close' | 'correlate',
+    op: 'hello' | 'take' | 'close' | 'correlate' | 'generated',
     sentAtUs?: number,
     header?: string,
+    ids?: string[],
   ): Promise<InstrumentResponse> {
     if (this.#closed) return Promise.reject(new SocketSourceError('the socket is closed'))
 
@@ -282,7 +289,7 @@ class SocketClient {
       }, this.#timeoutMs)
 
       this.#pending.set(id, { resolve, reject, timer })
-      this.#socket.write(encodeMessage(buildRequest(id, op, sentAtUs, header)))
+      this.#socket.write(encodeMessage(buildRequest(id, op, sentAtUs, header, ids)))
     })
   }
 
@@ -304,9 +311,10 @@ class SocketClient {
 
 function buildRequest(
   id: number,
-  op: 'hello' | 'take' | 'close' | 'correlate',
+  op: 'hello' | 'take' | 'close' | 'correlate' | 'generated',
   sentAtUs?: number,
   header?: string,
+  ids?: string[],
 ): InstrumentRequest {
   switch (op) {
     case 'hello':
@@ -317,6 +325,8 @@ function buildRequest(
       return { id, op: 'close' }
     case 'correlate':
       return { id, op: 'correlate', header: header ?? '' }
+    case 'generated':
+      return { id, op: 'generated', ids: ids ?? [] }
   }
 }
 
@@ -646,6 +656,7 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
       scripts.set(row.id, {
         url: row.url,
         ...(row.sourceMapURL === undefined ? {} : { sourceMapURL: row.sourceMapURL }),
+        ...(row.generated === undefined ? {} : { generated: row.generated }),
       })
     }
   }
@@ -824,6 +835,22 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
     }),
 
     scripts: () => scripts,
+    generated: (scriptId: string) => scripts.get(scriptId)?.generated,
+    async prepare(scriptIds: readonly string[]) {
+      if (closed || scriptIds.length === 0) return
+      try {
+        const reply = await client.generated([...scriptIds])
+        if (reply.ok && reply.op === 'generated') {
+          for (const [id, generated] of Object.entries(reply.result.generated)) {
+            const info = scripts.get(id)
+            if (info !== undefined) info.generated = generated
+          }
+        }
+      } catch {
+        // An instrument older than this op, or a socket that died at the end:
+        // the build falls back to the file. Never make the run fail here.
+      }
+    },
 
     close: () => {
       if (closed) return

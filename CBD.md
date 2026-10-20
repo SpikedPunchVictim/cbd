@@ -328,7 +328,12 @@ export function testKey(id: TestId): string   // "japa:key-server:tests/x.spec.t
 
 - **Dataset tests** (japa `.with()`, `test.each`) collapse to one ID: selection reruns the whole
   test, so per-row identity buys nothing and breaks when rows change.
-- **Duplicates** get an `ordinal`; `cbd stats` lists them, since a renamed duplicate shifts ordinals.
+- **Duplicates** get an `ordinal`: absent for the first occurrence in a file, then 1, 2, … in
+  test-start order. The map identity is `(title, file, ordinal)`, so their coverage and failures no
+  longer merge. Selection still filters by title and runs every occurrence — safe over-selection —
+  and `cbd stats` lists the duplicate groups. A subset recording that runs only a *later* duplicate
+  cannot know its full-run ordinal and may merge with the first occurrence; a full recording is
+  deterministic.
 - **Renames** look like a deleted test plus a new unmapped test. A new test file or test is
   `unmapped` and is always selected (section 8.3).
 
@@ -359,12 +364,20 @@ and ordinals are resolved once, by `cbd build`.
   inspector reported, the inspector's wins — it describes the bytes V8 executed. Measured on the
   grizzly stores run: 2,437 service script rows carried 35.2 MB of file-declared maps, 62.4% of
   that shard (`cbd-n9t.1`).
+- A **transformed script's** offsets index generated text, not the file: Vitest/Vite, Jest and
+  ts-node compile in memory. A later `script` row for the same script may carry
+  `generated: {"lineStarts":[…],"length":…}`; it is written after the run's last window, once the
+  source's `prepare()` has fetched the text, and the build merges it into the script row. The build
+  indexes those line starts instead of the file. Untransformed scripts omit the field and record
+  nothing extra (`cbd-x2j`).
 - A **function** row is written once per `(script, start offset, end offset)`, the first
   time any window executes it. The **range** is the identity, not the start: Jest's
   CommonJS VM wrapper and the first function it contains can both begin at offset 0,
   and a start-only key merged `add` into `<module>`. Names are V8's raw
   `functionName`; the build decides the module body (`<module>`) and anonymous
   (`<anonymous>`) names.
+- A **test** row may carry `ordinal` (absent for the first occurrence of a `(file, title)`, then
+  1, 2, …), which is what keeps same-named tests in one file distinct in the map (`cbd-gkj`).
 - **Touches** are `scriptId -> [[startOffset, endOffset], …]` for the functions that ran.
   Nothing in a window names a file, a line or a function.
 - **Ordinals are assigned from the union over every window**, in resolved source order.
@@ -597,19 +610,29 @@ branch whose base is `Y`, must count every change in `X..worktree`, or a change 
 `X` and `Y` is invisible. `cbd select` with no map for the current base finds the nearest ancestor
 commit that has one (`git rev-list --first-parent`), and reports how far back it is.
 
+**Untracked files are changes in worktree mode.** `git diff` never lists them, and a new file is the
+most common change in a working tree; leaving them out answered "nothing changed" while a new file
+broke the suite (`cbd-0na.1`). `git ls-files --others --exclude-standard` supplies them as status
+`A` with insertion point 0, so they flow through the normal rules — a never-seen file reaches
+`unknownPolicy` (`all` by default). `--no-worktree` asks about a commit, so untracked files are not
+part of that answer. The state directory is excluded: shards and maps are build artifacts, not
+source changes.
+
 ### 8.3 Selection rules, in order
 
 | case | result |
 |---|---|
 | a changed file matches `alwaysAll` globs (lockfile, `package.json`, test config, `tsconfig*`, migrations — user-configured) | `mode: all`, reason names the file |
 | a changed file is touched only by `@load` or `@teardown` (startup code, global setup) | `mode: all` |
-| a changed file is a test file (it defines tests the map knows) | select the tests the map knows in that file and **warn that an added test cannot be named** (`testFilePolicy: 'known'`, the default); `'all'` forces the suite; a new test file the map has never seen → all |
+| a changed file is a test file (it defines tests the map knows, or is a helper that statically contains a registration call) | select the tests the map knows in that file and **warn that an added test cannot be named** (`testFilePolicy: 'known'`, the default); `'all'` forces the suite; a new test file the map has never seen → all |
 | a changed file is in the map, and a hunk intersects a mapped function's line range | the tests that touched that function |
-| a changed file is in the map, and a hunk is outside every function (imports, top-level constants, class field initializers) | every test that touched the file |
+| a changed file is in the map, and a hunk is outside every function (imports, top-level constants, class field initializers) | every test that touched the file, **plus every test in the process that evaluated the module body** (`@load`/`@teardown`); `mode: all` when the map has no such attribution |
 | a changed file is in the map but no test touched it | nothing selected; reported as `untested` |
 | a changed file was **never seen** by the map and matches `include` | `mode: all` by default (`unknownPolicy: 'all' \| 'ignore' \| 'file-importers'`) |
 | a deleted file in the map | every test that touched it |
 | a file touched by `@between` only | its tests cannot be known; `mode: all` by default (`betweenPolicy`) |
+| a change matches an `alwaysSelect` entry's `when`, or the entry has no `when` | the named tests are added, with reason `always`; an entry the map cannot resolve forces `mode: all` and warns |
+| a changed file is outside `include` and no rule claims it | ignored, and named in `selection.ignored` |
 | the map is `dirty` or older than `maxAgeCommits` | the selection carries a warning; `--strict` makes it `mode: all` |
 
 A **pure insertion** has no old-side line range — git writes it as `@@ -N,0 +M,K @@` — so it cannot
@@ -633,10 +656,44 @@ ordinary code, not a test definition. It is answered by the function rules from 
 evidence; handing it to the test-file rule asked the registry for tests it does not have and escalated
 to `all` (`cbd-e9l`, where that cost 26 points of all-rate on the target suite).
 
+A helper can define tests through a function a spec calls (`defineLedgerContract(test)`): the
+`test(...)` calls live in the helper, but the runner attributes them to the spec that registered
+them, so the registry cannot see the helper as a test file. The selector therefore scans a
+changed, seen file that matches a test glob for a registration call (`test(`, `it(`, `suite(`,
+`describe(`, including `.each`/`.skip`/`.only`) and applies the test-file rule to it. Under `known`
+it selects the tests that executed code in that file and warns about an added test; under `all` it
+runs the suite. The scan is textual and can miss an aliased registration; a file it misses is still
+answered by the function rules, and `alwaysSelect` can name it explicitly (`cbd-0na.3`).
+
+**Module-scope code is not confined to the functions a test called.** A test can compare a top-level
+binding of a module without ever calling a function in it — the case that broke `cbd-0na.2`, where an
+import-line edit selected the 22 tests of the file's only function and left out the test that
+compared the module-scope binding. When the module body ran outside a test window, the map records
+which tests were in that process (`shardTests` and `loadShards`); those tests shared the module instance and can
+observe it. A top-level change selects their union with the function index's tests. A map built
+before that attribution existed has no answer and falls back to `mode: all`, which is what rule 2
+already does for a file reached *only* by `@load`. A shard marked `role: 'service'` is the
+exception to "the whole process": it is not where the tests ran, and its recorder names every test
+title, so only the tests that actually touched the service are observers.
+
 `alwaysAll` is checked **before** `include`, because it is a statement that a change there is beyond
 the map's ability to answer, not a filter. The example config above lists `**/migrations/**` there
 although `include` covers only `src/**`; checking `include` first silently dropped those changes,
 which is under-selection (`cbd-0lu` found it on the fixture's JSON data file).
+
+**`alwaysSelect` is for tests the map can never name.** A test that reads source files as text — a
+schema-dialect check, a dependency-direction scan, a grep for a forbidden token — executes no code
+from the files it reads, so coverage cannot connect the two. The entry names tests (`file` or
+`file > bare title`) and is added to every subset whose `when` globs match a change; with no `when`
+it fires on any in-scope change. An entry the map cannot resolve is not dropped: it forces
+`mode: all` and warns, so a renamed test cannot silently stop being protected. The config loader
+resolves repository-relative locators and rejects malformed entries; a `when` may claim a change
+outside `include`, which is what lets an entry protect a source tree the normal selection ignores
+(`cbd-0na.4`).
+
+**Ignored is not empty.** A changed file outside `include` (and not claimed by `alwaysAll` or an
+`alwaysSelect.when`) is dropped from the selection, but it is named in `selection.ignored`; without
+it a consumer cannot tell "nothing changed" from "a change I was told to ignore" (`cbd-0na.6`).
 
 A **never seen** file is the important case: a TypeScript file containing only types, a `const enum`
 that the compiler inlines into its users, a SQL file, a JSON fixture read with `fs`, an environment
@@ -653,20 +710,24 @@ export interface Selection {
   tests: TestId[]                      // empty when mode is 'all'
   unmapped: string[]                   // changed files the map could not answer for
   untested: string[]                   // changed files the map knows no test reaches
+  ignored: string[]                    // changed files outside include, and not claimed by a rule
   map: { commit: string; distance: number; dirty: boolean; builtAt: string }
 }
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
   | { kind: 'file'; file: string; tests: number[] }
-  | { kind: 'test-file'; file: string }
-  | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map' | 'test-file'; file?: string }
+  | { kind: 'test-file'; file: string; tests: number[] }
+  | { kind: 'always'; tests: number[] }
+  | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map' | 'test-file' | 'always-unknown'; file?: string }
 ```
 
 ### 8.5 Other queries
 
 `cbd`'s verbs and the exported API answer the map's two directions. The map on disk is
-`<stateDir>/maps/<commit>/map.json`; its shape (`CoverageMap`: `tests`, `files`, buckets, `seen`)
-is the supported export for another tool, and every query below is derived from it.
+`<stateDir>/maps/<commit>/map.json`; its shape (`CoverageMap`: `tests`, `files`, buckets, `seen`,
+`shardTests` and `loadShards`) is the supported export for another tool, and every query below is derived from it.
+Paths are stored relative to the map's root and resolved when it is loaded, so a map recorded in one
+worktree answers the same in another checkout of the same commit (`cbd-0na.5`).
 
 - `reaches(title, file[:line], { file? })` — `cbd reaches` — does this one test reach the file or
   line? Returns the resolved test, the target, whether the map has seen the file, the functions of
@@ -751,6 +812,12 @@ which is safe over-selection rather than a miss.
   "include": ["src/**", "libs/*/src/**"],
   "exclude": ["**/*.d.ts", "**/generated/**"],
   "alwaysAll": ["pnpm-lock.yaml", "**/package.json", "**/tsconfig*.json", "**/migrations/**", "tests/**/bin/*.ts"],
+  "alwaysSelect": [
+    { "tests": ["tests/drain.spec.ts > AC29: the drain source names no outcome-unknown column"],
+      "when": ["edge/pipeline/src/**"] },
+    { "tests": ["tests/pipeline.spec.ts > no file imports outside the package"],
+      "when": ["edge/pipeline/src/**"] }
+  ],
   "unknownPolicy": "all",
   "betweenPolicy": "all",
   "testFilePolicy": "known",

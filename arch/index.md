@@ -32,6 +32,8 @@ missing family.
 | [0012](decisions/0012-diff-from-the-map-commit.md) | Take the diff from the map's commit, not the branch base | draft |
 | [0013](decisions/0013-one-map-per-commit.md) | One map per commit, merged from its shards | draft |
 | [0014](decisions/0014-the-source-array-is-the-seam.md) | The source array is the integration seam | draft |
+| [0015](decisions/0015-mutation-testing-is-a-stryker-integration.md) | Mutation testing is a Stryker integration over the coverage map | deprecated |
+| [0016](decisions/0016-mutation-selection-is-generic.md) | Mutation selection is generic; drivers own mutation | draft |
 
 The backfill is complete: the decisions that had only lived in docblocks, the design document and
 the log now have records. New decisions are added as records rather than as a planned list here.

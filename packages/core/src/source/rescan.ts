@@ -417,6 +417,25 @@ export async function rescanningSocketSource(
 
     dispatch,
     scripts,
+    generated: (scriptId: string) => scripts().get(scriptId)?.generated,
+    async prepare(scriptIds: readonly string[]) {
+      const byPid = new Map<string, string[]>()
+      for (const prefixed of scriptIds) {
+        const colon = prefixed.indexOf(':')
+        if (colon === -1) continue
+        const pid = prefixed.slice(0, colon)
+        const local = prefixed.slice(colon + 1)
+        const list = byPid.get(pid)
+        if (list === undefined) byPid.set(pid, [local])
+        else list.push(local)
+      }
+      await Promise.all(
+        [...byPid].map(async ([pid, ids]) => {
+          const target = targets.find((candidate) => String(candidate.pid) === pid)
+          await target?.source.prepare?.(ids)
+        }),
+      )
+    },
 
     /**
      * The run's boundaries, over every target, as one set of numbers.

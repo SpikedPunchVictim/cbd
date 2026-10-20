@@ -26,7 +26,7 @@
  */
 import { statSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { FileCache } from './line-index.js'
+import { FileCache, sameLineStarts } from './line-index.js'
 import { displayName, type ScanOptions } from './normalize.js'
 import { canonicalProjectionRules } from './projection.js'
 import { createRelocator } from './relocate.js'
@@ -46,6 +46,8 @@ import {
 export interface ResolvedTest {
   title: string
   file: string | null
+  /** Repeated-title discriminator from the shard; absent for the first. */
+  ordinal?: number
   status: ShardTest['status']
   durationMs: number
   touches: TouchRef[]
@@ -144,6 +146,22 @@ function scriptTable(scripts: ShardScript[], name: string): Map<string, ShardScr
           `(${prior.url} and ${script.url}); the shard is inconsistent`,
       )
     }
+    // A transformed script's generated line starts arrive in an end-of-run update
+    // row (`cbd-x2j`). Adopt them; two different generated shapes for one script
+    // are a writer bug the build must not choose between.
+    if (script.generated !== undefined) {
+      if (prior.generated === undefined) {
+        table.set(script.scriptId, { ...prior, generated: script.generated })
+      } else if (
+        prior.generated.length !== script.generated.length ||
+        !sameLineStarts(prior.generated.lineStarts, script.generated.lineStarts)
+      ) {
+        throw new Error(
+          `cbd: shard ${name} records two different generated shapes for script ` +
+            `${script.scriptId}; the shard is inconsistent`,
+        )
+      }
+    }
   }
   return table
 }
@@ -241,6 +259,10 @@ function identitiesFor(
   // bytes `verifyScript` just checked (`cbd-n9t.1`). A row that carries one — a
   // loader-injected map with no on-disk comment — keeps it.
   const sourceMapURL = script.sourceMapURL ?? sourceMapUrlOf(cache.text(path) ?? '')
+  const generatedIndex =
+    script.generated === undefined
+      ? undefined
+      : { starts: script.generated.lineStarts, length: script.generated.length }
   const resolver = createScriptResolver(
     stableUrl,
     {
@@ -250,6 +272,7 @@ function identitiesFor(
     {
       projection: canonicalProjectionRules(options.scan?.projection ?? []),
       cache,
+      ...(generatedIndex === undefined ? {} : { index: generatedIndex }),
     },
   )
   if (resolver === null) return empty
@@ -396,6 +419,7 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
     tests: tests.map((test) => ({
       title: test.title,
       file: test.file,
+      ...(test.ordinal === undefined ? {} : { ordinal: test.ordinal }),
       status: test.status,
       durationMs: test.durationMs,
       touches: touchesOf(test.touches),

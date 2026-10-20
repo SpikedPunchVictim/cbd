@@ -42,8 +42,9 @@ import net from 'node:net'
 import inspector from 'node:inspector'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildLineIndex } from './line-index.js'
 import { sourceMapUrlOf } from './source-maps.js'
-import type { V8Function, V8Range, V8ScriptCoverage } from './types.js'
+import type { GeneratedScript, V8Function, V8Range, V8ScriptCoverage } from './types.js'
 import {
   CORRELATION_HEADER_ENV,
   INSTRUMENT_PROTOCOL,
@@ -501,6 +502,26 @@ async function start(dir: string): Promise<void> {
     }
   }
 
+  /**
+   * The generated text's line starts, fetched synchronously from the inspector.
+   *
+   * Only called for a script whose map had to travel — a loader-injected map. That
+   * is the case where the file on disk is not the text V8 compiled, so the build
+   * cannot convert offsets with the file's line index (`cbd-x2j`). A tsc-built
+   * script whose file declares its map needs nothing: the file is the script.
+   */
+  function generatedFor(scriptId: string): GeneratedScript | undefined {
+    const holder: { done?: boolean; source?: string; error?: Error } = {}
+    session.post('Debugger.getScriptSource', { scriptId }, (err, res) => {
+      holder.done = true
+      if (err) holder.error = err
+      else holder.source = (res as { scriptSource: string }).scriptSource
+    })
+    if (!holder.done || holder.error !== undefined || holder.source === undefined) return undefined
+    const index = buildLineIndex(holder.source)
+    return { lineStarts: index.starts, length: index.length }
+  }
+
   session.on('Debugger.scriptParsed', (event) => {
     const params = event.params
     const row: ScriptRow = { id: params.scriptId, url: params.url }
@@ -681,6 +702,19 @@ async function start(dir: string): Promise<void> {
           if (header === '') throw new Error('correlate needs a non-empty header name')
           installCorrelation(header)
           reply(connection, { id, op: 'correlate', ok: true, result: { header } })
+          return
+        }
+        case 'generated': {
+          // This request arrives after the last window, so the source reads it
+          // causes cannot lengthen a boundary. It is the only place the module
+          // fetches generated text.
+          const generated: Record<string, GeneratedScript> = {}
+          for (const scriptId of request.ids) {
+            if (!scripts.has(scriptId)) continue
+            const value = generatedFor(scriptId)
+            if (value !== undefined) generated[scriptId] = value
+          }
+          reply(connection, { id, op: 'generated', ok: true, result: { generated } })
           return
         }
         case 'take': {

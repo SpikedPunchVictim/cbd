@@ -26,7 +26,7 @@ function readShard(path: string): { type: string; [key: string]: unknown }[] {
 async function runOneTest(recorder: Recorder): Promise<void> {
   recorder.testStart('alpha', '/repo/tests/a.spec.js')
   recorder.testEnd('alpha', 'passed', 7)
-  recorder.runEnd()
+  await recorder.runEnd()
   await recorder.drained()
 }
 

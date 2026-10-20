@@ -159,21 +159,27 @@ test('select works against a map built from a real recording', () => {
     assert.equal(selection.untested.length, 0)
     assert.equal(selection.unmapped.length, 0)
 
-    // The cross-cutting property. It belongs to the FILE, not to one function:
-    // a change inside `slug` reaches only its own callers, but a change to the
-    // shared module reaches every test that goes through any of its exports —
-    // which is the case a filename-based rule cannot express at all.
-    const wholeFile = new Set<number>()
-    for (const entry of Object.values(map.files[mathFile]!)) {
-      for (const index of entry.tests) wholeFile.add(index)
-    }
+    // Module-scope code is not confined to the functions a test called. The
+    // suite imports this module while it loads, so a top-level edit can be read
+    // by a test that never calls one of its functions — the case `cbd-0na.2`
+    // reported, where a test compared a module-scope binding. The answer is the
+    // tests in the process that loaded it, which for this one-shard fixture is
+    // every test; the point is that it never narrows to the functions' callers.
     assert.ok(
-      wholeFile.size >= 5,
-      `expected several tests to reach src/helpers.ts, got ${wholeFile.size}`,
+      map.load.some((ref) => ref[0] === mathFile),
+      'expected src/helpers.ts to have been evaluated at load',
     )
-    // And a change outside every function widens to exactly that set.
+    assert.ok(
+      (map.loadShards?.[mathFile]?.length ?? 0) > 0,
+      'expected the load touch to be attributed to the process that produced it',
+    )
     const outside = select(map, [{ path: mathFile, status: 'M', hunks: [{ start: 1, end: 1 }] }])
-    assert.deepEqual(outside.tests, [...wholeFile].sort((a, b) => a - b))
+    assert.equal(outside.mode, 'subset')
+    assert.deepEqual(
+      outside.tests,
+      map.tests.map((_, index) => index),
+      'every test in the loading process is a candidate',
+    )
 
     // A change to a file the map never saw escalates, as rule 7 requires.
     const unknown: Change = {

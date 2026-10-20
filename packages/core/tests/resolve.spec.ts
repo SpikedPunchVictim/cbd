@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
+import { buildLineIndex } from '../src/line-index.js'
 import { resolveShard, StaleShardError } from '../src/resolve.js'
 import type {
   ShardFunction,
@@ -176,6 +177,67 @@ test('two functions that share a start offset resolve separately', () => {
     )
     assert.deepEqual(resolved.load.map((ref) => ref[1]), ['<module>@0'])
     assert.deepEqual(resolved.tests[0]?.touches.map((ref) => ref[1]), ['add@0'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// `cbd-x2j`: a loader compiles text that is not the file on disk. The shard
+// records the generated text's line starts, so offsets are converted before the
+// source map is asked. Without them, the file index clamps the offset to its last
+// line and the forward fallback lands on a different mapping.
+test('a transformed script resolves through its generated line starts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cbd-resolve-generated-'))
+  try {
+    const file = join(root, 'mod.ts')
+    const source = ['// a source comment', 'export function alpha() {', '  return 1', '}'].join('\n')
+    writeFileSync(file, source)
+
+    // Ten generated lines before the function make the offset longer than the
+    // source file, which is what clamped the old build to the last source line.
+    const generated = `${Array.from({ length: 10 }, (_, i) => `// generated ${String(i)}`).join('\n')}\nfunction alpha(){return 1}\n`
+    const start = generated.indexOf('function alpha')
+
+    // Line 5 maps to source line 4; line 11 (the function) maps to source line 2.
+    // VLQ: AAGA = [0,0,+3,0], AAFA = [0,0,-2,0] from the previous source line.
+    const map = {
+      version: 3,
+      sources: [realpathSync(file)],
+      names: [],
+      mappings: ';;;;AAGA;;;;;;AAFA',
+    }
+    const inline = Buffer.from(JSON.stringify(map)).toString('base64')
+    const stat = statSync(file)
+    const index = buildLineIndex(generated)
+
+    const resolved = resolveShard(
+      shard([
+        header(),
+        {
+          type: 'script',
+          scriptId: '1',
+          url: pathToFileURL(file).href,
+          sourceMapURL: `data:application/json;base64,${inline}`,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        },
+        // The end-of-run update row the recorder writes after `prepare()`.
+        {
+          type: 'script',
+          scriptId: '1',
+          url: pathToFileURL(file).href,
+          generated: { lineStarts: index.starts, length: index.length },
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        },
+        fn(start, generated.length, 'alpha'),
+        { type: 'test', title: 'a', file: null, status: 'passed', durationMs: 1, touches: { '1': [[start, generated.length]] } },
+        end(1),
+      ]),
+    )
+    // The source map says line 2. A file-index conversion would clamp to line 4
+    // (the source has four lines) and forward to the line-5 mapping instead.
+    assert.deepEqual(resolved.tests[0]?.touches, [[realpathSync(file), 'alpha@0', 2, 2]])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

@@ -67,6 +67,8 @@ export interface AdapterWiring {
    * execution belongs in a shard naming the service.
    */
   pid?: number
+  /** `'service'` records a process the suite observes rather than the test process. */
+  role?: 'service'
   /** Resolves a correlation id to the test that sent it. Absent without correlation. */
   owners?: OwnerIndex
 }
@@ -227,27 +229,31 @@ export function installJapaAdapter(
   let finished: Promise<void> | null = null
   const finish = (): Promise<void> => {
     if (finished !== null) return finished
-    for (const recorder of recorders) recorder.runEnd()
-    // A synchronous source has already written everything, so these resolve
-    // immediately and cost a microtask. A queued one resolves when its last record
-    // reaches the sink — and an unawaited drain would leave that shard without its
-    // footer, which `parseShard` refuses rather than trusts.
-    //
-    // Closing comes *after* the drains and never before them: a closed source cannot
-    // answer, so closing early would drop the records still in flight. But it does
-    // have to happen, because a socket source holds an open `net.Socket` and an open
-    // socket keeps Node alive — without this the run prints its summary, reports
-    // every test green, and then hangs until something kills it.
-    finished = Promise.all(recorders.map((recorder) => recorder.drained()))
-      .then(() => {
-        for (const recorder of recorders) recorder.close()
-      })
-      .finally(() => {
-        // The HTTP patch is a process-wide side effect; leaving it in place after
-        // the run would put an id on requests nobody is recording.
-        options.correlation?.end()
-        options.correlation?.release()
-      })
+    finished = (async () => {
+      // Generated coordinates are fetched here, after the last test and outside
+      // every window (`cbd-x2j`). A source that cannot prepare is a no-op.
+      for (const recorder of recorders) {
+        await recorder.runEnd()
+      }
+      // A synchronous source has already written everything, so these resolve
+      // immediately and cost a microtask. A queued one resolves when its last
+      // record reaches the sink — and an unawaited drain would leave that shard
+      // without its footer, which `parseShard` refuses rather than trusts.
+      //
+      // Closing comes *after* the drains and never before them: a closed source
+      // cannot answer, so closing early would drop the records still in flight.
+      // But it does have to happen, because a socket source holds an open
+      // `net.Socket` and an open socket keeps Node alive — without this the run
+      // prints its summary, reports every test green, and then hangs until
+      // something kills it.
+      await Promise.all(recorders.map((recorder) => recorder.drained()))
+      for (const recorder of recorders) recorder.close()
+    })().finally(() => {
+      // The HTTP patch is a process-wide side effect; leaving it in place after
+      // the run would put an id on requests nobody is recording.
+      options.correlation?.end()
+      options.correlation?.release()
+    })
     return finished
   }
 

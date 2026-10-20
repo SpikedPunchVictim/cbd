@@ -33,6 +33,7 @@ import {
   type TestEntry,
 } from './map.js'
 import {
+  fileDefinesTests,
   select as selectCore,
   verify as verifyCore,
   type SelectConfig,
@@ -111,6 +112,8 @@ export interface SelectResult {
   /**
    * The changes the selection considered — the config's `include`/`exclude`
    * applied, since a file outside the project is not this selection's question.
+   * Anything dropped by that scope filter is named in `selection.ignored`, so a
+   * consumer can tell "nothing changed" from "a change I was told to ignore".
    */
   changes: Change[]
   map: MapSummary
@@ -197,6 +200,13 @@ export interface StatsResult {
   testsPerFunction: Quantiles
   /** The files reached by the most tests, widest first (at most ten). */
   topFiles: FileStat[]
+  /**
+   * `(file, title)` groups that carry an ordinal, newest first.
+   *
+   * A duplicate title is not an error, but a renamed one shifts the ordinals, so
+   * the list is part of reading a map (`cbd-gkj`).
+   */
+  duplicateTests: Array<{ title: string; file: string | null; count: number }>
 }
 
 export interface Quantiles {
@@ -283,6 +293,12 @@ function dirtyTree(root: string, stateDir: string): boolean {
   } catch {
     return false
   }
+}
+
+/** Whether `path` is `dir` or under it, both absolute. */
+function inside(path: string, dir: string): boolean {
+  const rel = relative(dir, path)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 /** Every `.ndjson` under a directory, at any depth. */
@@ -413,7 +429,15 @@ export function createCbd(config: CbdConfig): Cbd {
       const since = options.since ?? loaded.map.commit
       const include = config.select?.include ?? ((): boolean => true)
       const alwaysAll = config.select?.alwaysAll ?? []
-      const changes = changesSince({
+      // A change outside `include` is not this selection's question — unless a
+      // rule claims it explicitly. `alwaysAll` has always survived the scope
+      // filter (§8.3 rule 1); an `alwaysSelect.when` must too, or the entry could
+      // never fire for a file outside include.
+      const claimedByWhen = (config.select?.alwaysSelect ?? []).flatMap(
+        (entry) => entry.when ?? [],
+      )
+      const stateRoot = resolve(root, stateDir)
+      const allChanges = changesSince({
         root,
         since,
         worktree: options.worktree !== false,
@@ -424,23 +448,51 @@ export function createCbd(config: CbdConfig): Cbd {
           path: resolve(root, change.path),
           ...(change.from === undefined ? {} : { from: resolve(root, change.from) }),
         }))
-        // `alwaysAll` is independent of `include` (§8.3 rule 1), so it survives
-        // the scope filter; anything else outside the project is not this
-        // selection's question.
-        .filter(
-          (change) =>
-            include(change.path) || matchesAnyGlob(change.path, alwaysAll) !== null,
-        )
+        // Shards and maps are build artifacts. If the state directory is not
+        // gitignored, its files would otherwise read as untracked source changes
+        // and force a full run on every selection.
+        .filter((change) => !inside(change.path, stateRoot))
+      const changes = allChanges.filter(
+        (change) =>
+          include(change.path) ||
+          matchesAnyGlob(change.path, alwaysAll) !== null ||
+          matchesAnyGlob(change.path, claimedByWhen) !== null,
+      )
+      const considered = new Set(changes)
+      const ignored = allChanges
+        .filter((change) => !considered.has(change))
+        .map((change) => change.path)
+
+      const definitions = new Map<string, boolean>()
+      const definesTests = (path: string): boolean => {
+        const cached = definitions.get(path)
+        if (cached !== undefined) return cached
+        let result = false
+        try {
+          result = fileDefinesTests(readFileSync(path, 'utf8'))
+        } catch {
+          // A deleted or unreadable file cannot be scanned; the rules below have
+          // their own answer for it, and a miss here is an ordinary helper.
+          result = false
+        }
+        definitions.set(path, result)
+        return result
+      }
+
       const info = summarize(loaded)
-      const selection = selectCore(loaded.map, changes, {
-        ...config.select,
-        ...(options.strict === undefined ? {} : { strict: options.strict }),
-      }, {
-        commit: info.commit,
-        distance: info.distance,
-        dirty: info.dirty,
-        builtAt: info.builtAt,
-      })
+      const selection: Selection = {
+        ...selectCore(loaded.map, changes, {
+          ...config.select,
+          definesTests,
+          ...(options.strict === undefined ? {} : { strict: options.strict }),
+        }, {
+          commit: info.commit,
+          distance: info.distance,
+          dirty: info.dirty,
+          builtAt: info.builtAt,
+        }),
+        ignored: [...new Set(ignored)].sort(),
+      }
       const selected = selection.tests
         .map((index) => loaded.map.tests[index])
         .filter((entry): entry is TestEntry => entry !== undefined)
@@ -573,6 +625,16 @@ export function createCbd(config: CbdConfig): Cbd {
       fileStats.sort((a, b) => b.tests - a.tests || a.file.localeCompare(b.file))
 
       const untestedFiles = map.seen.filter((file) => map.files[file] === undefined)
+      const byTitle = new Map<string, { title: string; file: string | null; count: number }>()
+      for (const entry of map.tests) {
+        const key = `${entry.title}\u0000${entry.file ?? ''}`
+        const group = byTitle.get(key)
+        if (group === undefined) byTitle.set(key, { title: entry.title, file: entry.file, count: 1 })
+        else group.count += 1
+      }
+      const duplicateTests = [...byTitle.values()]
+        .filter((group) => group.count > 1)
+        .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title))
       return {
         map: summarize(loaded),
         tests: map.tests.length,
@@ -595,6 +657,7 @@ export function createCbd(config: CbdConfig): Cbd {
         functionsPerFile: quantilesOf(perFileFunctions),
         testsPerFunction: quantilesOf(perFunctionTests),
         topFiles: fileStats.slice(0, 10),
+        duplicateTests,
       }
     },
 

@@ -124,7 +124,7 @@ function run(tree: Tree, records: string): ShardRecord[] {
   return parseShard(records)
 }
 
-test('each window lands in the bucket it belongs to', () => {
+test('each window lands in the bucket it belongs to', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([
@@ -175,7 +175,7 @@ test('each window lands in the bucket it belongs to', () => {
   }
 })
 
-test('the end record counts the tests that were recorded', () => {
+test('the end record counts the tests that were recorded', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([payload(tree.url, {}), payload(tree.url, {})])
@@ -201,7 +201,7 @@ test('the end record counts the tests that were recorded', () => {
   }
 })
 
-test('a failed test is still recorded, and says so', () => {
+test('a failed test is still recorded, and says so', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([payload(tree.url, {}), payload(tree.url, {}), payload(tree.url, { beta: 1 })])
@@ -226,7 +226,7 @@ test('a failed test is still recorded, and says so', () => {
 
 // japa emits an end for a skipped test but the body never runs, so its window is
 // empty. Recording it as 'skipped' is what lets the map builder drop it.
-test('a skipped test is recorded with an empty window', () => {
+test('a skipped test is recorded with an empty window', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([payload(tree.url, {}), payload(tree.url, {}), payload(tree.url, {})])
@@ -250,7 +250,7 @@ test('a skipped test is recorded with an empty window', () => {
   }
 })
 
-test('an end with no matching start is still recorded rather than dropped', () => {
+test('an end with no matching start is still recorded rather than dropped', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([payload(tree.url, {}), payload(tree.url, {})])
@@ -273,7 +273,7 @@ test('an end with no matching start is still recorded rather than dropped', () =
   }
 })
 
-test('empty buckets are not written, so a long run does not bloat its shard', () => {
+test('empty buckets are not written, so a long run does not bloat its shard', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([payload(tree.url, {})])
@@ -296,7 +296,7 @@ test('empty buckets are not written, so a long run does not bloat its shard', ()
   }
 })
 
-test('a source that throws costs its window, not the run', () => {
+test('a source that throws costs its window, not the run', async () => {
   const broken: Source = {
     kind: 'broken',
     supportsSync: true,
@@ -737,7 +737,7 @@ test('a source that can be driven neither way is refused, not recorded as empty'
 // `cbd-xnp.2`: identity is the function's range, not its start. Jest's VM wrapper
 // and the first function it contains both start at 0; keying by start dropped the
 // function.
-test('two executed functions that share a start offset keep separate rows', () => {
+test('two executed functions that share a start offset keep separate rows', async () => {
   const tree = makeTree()
   try {
     const source = scriptedSource([
@@ -777,7 +777,7 @@ test('two executed functions that share a start offset keep separate rows', () =
 // `cbd-n9t.1`: a map the file itself declares is recoverable at build time, so the
 // shard must not repeat it — tsc's inline maps are tens of KB per script. A map
 // only the loader injected has no on-disk comment and must still be recorded.
-test('a map the file declares is not repeated in the shard', () => {
+test('a map the file declares is not repeated in the shard', async () => {
   const tree = makeTree()
   try {
     const row = scriptRow(tree, { url: tree.url, sourceMapURL: 'mod.js.map' }, 'mod.js.map')
@@ -792,7 +792,7 @@ test('a map the file declares is not repeated in the shard', () => {
   }
 })
 
-test('a loader-injected map with no on-disk comment is recorded', () => {
+test('a loader-injected map with no on-disk comment is recorded', async () => {
   const tree = makeTree()
   try {
     const injected = 'data:application/json;base64,AAAA'
@@ -803,11 +803,36 @@ test('a loader-injected map with no on-disk comment is recorded', () => {
   }
 })
 
-test('a file-declared map that differs from the reported one keeps the reported one', () => {
+test('a file-declared map that differs from the reported one keeps the reported one', async () => {
   const tree = makeTree()
   try {
     const row = scriptRow(tree, { url: tree.url, sourceMapURL: 'reported.map' }, 'on-disk.map')
     assert.equal(row.type === 'script' ? row.sourceMapURL : undefined, 'reported.map')
+  } finally {
+    tree.cleanup()
+  }
+})
+
+test('a repeated title in one file is recorded with an ordinal', () => {
+  const tree = makeTree()
+  try {
+    const source = scriptedSource([payload(tree.url, { alpha: 1 })])
+    const sink = new StringSink()
+    const recorder = new Recorder({ source, sink, commit: 'c0ffee' })
+    recorder.runStart()
+    recorder.testStart('same', null)
+    recorder.testEnd('same', 'passed')
+    recorder.testStart('same', null)
+    recorder.testEnd('same', 'passed')
+    recorder.runEnd()
+
+    const tests = parseShard(sink.text).filter(
+      (record): record is Extract<ShardRecord, { type: 'test' }> => record.type === 'test',
+    )
+    assert.deepEqual(
+      tests.map((entry) => entry.ordinal),
+      [undefined, 1],
+    )
   } finally {
     tree.cleanup()
   }

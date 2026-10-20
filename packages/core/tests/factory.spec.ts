@@ -532,6 +532,7 @@ test.group('createCbd', () => {
         tests: [0],
         unmapped: [],
         untested: [],
+        ignored: [],
         warnings: [],
         map: { commit, distance: 0, dirty: false, builtAt: 'T0' },
       }

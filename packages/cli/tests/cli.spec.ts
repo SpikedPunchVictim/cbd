@@ -140,7 +140,85 @@ test.group('cbd select', () => {
 
       const result = invoke(root, 'select')
       assert.equal(result.code, EXIT.ok)
-      assert.match(result.out.at(-1)!, /^0 tests for 1 changed file/)
+      // Two changes: src/other.ts and the untracked cbd.config.json written above.
+      // Untracked files are changes in worktree mode (`cbd-0na.1`).
+      assert.match(result.out.at(-1)!, /^0 tests for 2 changed files/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('an untracked source file is a change and escalates', () => {
+    const { repo, root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      // Never added to the index: `git diff` cannot see it, but a select-mode run
+      // must not treat the tree as unchanged (`cbd-0na.1`).
+      repo.write('src/untracked.ts', 'export const surprise = 1;\n')
+
+      const result = invoke(root, 'select', '--format', 'json')
+      assert.equal(result.code, EXIT.all)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { mode: string; ignored: string[] }
+        changes: Array<{ path: string }>
+      }
+      assert.equal(parsed.selection.mode, 'all')
+      assert.ok(parsed.changes.some((change) => change.path.endsWith('/src/untracked.ts')))
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a change outside include is named in selection.ignored', () => {
+    const { repo, root, cleanup } = prepared()
+    try {
+      writeFileSync(join(root, 'cbd.config.json'), JSON.stringify({ include: ['src/**'] }))
+      repo.write('docs/readme.md', '# docs\n')
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+
+      const result = invoke(root, 'select', '--format', 'json')
+      assert.equal(result.code, EXIT.ok)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { ignored: string[] }
+      }
+      assert.ok(
+        parsed.selection.ignored.some((path) => path.endsWith('/docs/readme.md')),
+        `expected docs/readme.md in ignored, got ${JSON.stringify(parsed.selection.ignored)}`,
+      )
+
+      const text = invoke(root, 'select')
+      assert.equal(text.code, EXIT.ok)
+      // The config itself is outside include too, and is named rather than hidden.
+      assert.match(
+        text.out.join('\n'),
+        /ignored 2 changed files: cbd\.config\.json, docs\/readme\.md/,
+      )
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('an alwaysSelect entry is added to a triggered subset', () => {
+    const { repo, root, cleanup } = prepared()
+    try {
+      writeFileSync(
+        join(root, 'cbd.config.json'),
+        JSON.stringify({
+          include: ['src/**'],
+          alwaysSelect: [{ tests: ['tests/a.spec.ts > adds'] }],
+        }),
+      )
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const result = invoke(root, 'select', '--format', 'json')
+      assert.equal(result.code, EXIT.ok)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { mode: string; tests: number[]; reasons: Array<{ kind: string }> }
+      }
+      assert.equal(parsed.selection.mode, 'subset')
+      assert.ok(parsed.selection.reasons.some((reason) => reason.kind === 'always'))
+      assert.deepEqual(parsed.selection.tests, [0, 1])
     } finally {
       cleanup()
     }

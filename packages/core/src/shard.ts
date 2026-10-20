@@ -77,6 +77,16 @@ export interface ShardScript {
   /** The URL file's size and mtime at recording time; the build refuses a mismatch. */
   size: number
   mtimeMs: number
+  /**
+   * Present when V8 compiled text that differs from the file on disk — a loader
+   * transformed the module (Vitest/Vite, Jest, ts-node). V8's offsets are into
+   * this text, not the file, so the build must convert offsets with these line
+   * starts before asking the source map (`cbd-x2j`).
+   *
+   * Omitted for an untransformed script: the file's own line index is the
+   * generated index, and the build already reads it.
+   */
+  generated?: { lineStarts: number[]; length: number }
 }
 
 /** One executed function, written the first time any window reports it. */
@@ -95,12 +105,32 @@ export interface ShardHeader {
   commit: string
   pid: number
   startedAt: string
+  /**
+   * `'service'` when this process is a service being observed, not the process
+   * running the tests.
+   *
+   * The adapters open a window for every test on every recorder, so a service
+   * shard names all test titles even though a test that made no request never
+   * touched the service. Load attribution must not treat those as observers of
+   * the service's module state (`cbd-0na.2`). Absent means a test process.
+   */
+  role?: 'service'
 }
 
 export interface ShardTest {
   type: 'test'
   title: string
   file: string | null
+  /**
+   * Disambiguates a repeated `(file, title)` in one run.
+   *
+   * Absent for the first occurrence of a title in a file, then 1, 2, … for later
+   * ones. The recorder assigns it in test-start order; a full recording is
+   * deterministic. A subset recording that runs only a later duplicate cannot know
+   * its full-run ordinal, so the map may merge that shard's window with the first
+   * occurrence (`cbd-gkj`).
+   */
+  ordinal?: number
   /** A non-green test's window is not trustworthy; the map builder drops these. */
   status: 'passed' | 'failed' | 'skipped'
   durationMs: number

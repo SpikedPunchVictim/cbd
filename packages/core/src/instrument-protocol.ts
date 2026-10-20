@@ -32,7 +32,7 @@
  * for data that never changes after the first time.
  */
 import { join } from 'node:path'
-import type { V8ScriptCoverage } from './types.js'
+import type { GeneratedScript, V8ScriptCoverage } from './types.js'
 
 export const INSTRUMENT_PROTOCOL = 1
 
@@ -93,6 +93,15 @@ export interface ScriptRow {
   id: string
   url: string
   sourceMapURL?: string
+  /**
+   * Generated line starts, for a loader-transformed script.
+   *
+   * The service's inspector answers `Debugger.getScriptSource` synchronously; the
+   * module records the line starts only when it had to send an injected map,
+   * because that is the case where the file on disk is not the text V8 compiled
+   * (`cbd-x2j`). The collector's `socketSource` carries this into `ScriptInfo`.
+   */
+  generated?: GeneratedScript
 }
 
 export interface HelloResult {
@@ -252,7 +261,7 @@ export function snapshotPath(dir: string, pid: number): string {
   return join(dir, `pid-${String(pid)}.coverage.json`)
 }
 
-export type InstrumentOp = 'hello' | 'take' | 'close' | 'ack' | 'correlate'
+export type InstrumentOp = 'hello' | 'take' | 'close' | 'ack' | 'correlate' | 'generated'
 
 export type InstrumentRequest =
   | { id: number; op: 'hello' }
@@ -271,6 +280,14 @@ export type InstrumentRequest =
    * never again, but a second collector is not an error.
    */
   | { id: number; op: 'correlate'; header: string }
+  /**
+   * Generated line starts for named scripts, fetched after the last window.
+   *
+   * The end-of-run request is the one place a source read is outside every test
+   * window. Asking at a take would lengthen that boundary; asking at scriptParsed
+   * puts the read inside whatever window happens to be open (`cbd-x2j`).
+   */
+  | { id: number; op: 'generated'; ids: string[] }
 
 export type InstrumentResponse =
   | { id: number; op: 'hello'; ok: true; result: HelloResult }
@@ -278,6 +295,12 @@ export type InstrumentResponse =
   | { id: number; op: 'close'; ok: true; result: { closing: true } }
   | { id: number; op: 'ack'; ok: true; result: { acked: number } }
   | { id: number; op: 'correlate'; ok: true; result: { header: string } }
+  | {
+      id: number
+      op: 'generated'
+      ok: true
+      result: { generated: Record<string, GeneratedScript> }
+    }
   | { id: number; op: string; ok: false; error: string }
 
 export function encodeMessage(message: InstrumentRequest | InstrumentResponse): string {

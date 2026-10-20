@@ -174,6 +174,36 @@ export function parseUnifiedDiff(diff: string): Change[] {
 }
 
 /**
+ * Files git does not track yet.
+ *
+ * `git diff` never lists them, and a new file is the most common change in a
+ * worktree — so a selection that ignored untracked files could answer "nothing
+ * changed" while the suite is broken (`cbd-0na.1`). `--exclude-standard` honours
+ * `.gitignore`, global excludes and the repository's exclude file, which is what
+ * keeps build output and `.cbd` out of the answer.
+ *
+ * Empty hunks and insertion point 0 mirror a committed addition: there is nothing
+ * on the old side to range over. A never-seen file then reaches `unknownPolicy`
+ * (all by default); a file the map does know falls through to the whole-file rule.
+ * Paths are relative to `root`, the same coordinate `git diff --relative` prints.
+ */
+function untrackedChanges(exec: (args: string[]) => string): Change[] {
+  let out: string
+  try {
+    out = exec(['ls-files', '--others', '--exclude-standard'])
+  } catch {
+    // The diff succeeded but this failed; an untracked file is not worth failing
+    // the whole selection over, and the safe answer for one is all, not nothing.
+    return []
+  }
+  return out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '')
+    .map((path) => ({ path, status: 'A', hunks: [], insertions: [0] }) as Change)
+}
+
+/**
  * `--relative` is what makes a subdirectory root work.
  *
  * `git diff` prints paths relative to the repository root, while the factory
@@ -182,6 +212,9 @@ export function parseUnifiedDiff(diff: string): Change[] {
  * `packages/core/packages/core/…`. Restricting the diff to the current directory is
  * also the right scope for a project root: a change outside it is not this
  * project's to select for.
+ *
+ * **Untracked files are changes only in worktree mode.** `--no-worktree` asks what
+ * a commit changed; a file that is not in the index is not part of that answer.
  */
 export function changesSince(options: ChangesOptions): Change[] {
   const exec = options.exec ?? ((args: string[]) => defaultExec(options.root, args))
@@ -196,7 +229,14 @@ export function changesSince(options: ChangesOptions): Change[] {
   ]
   if (options.worktree === false) args.splice(1, 0, 'HEAD')
   try {
-    return parseUnifiedDiff(exec(args))
+    const changes = parseUnifiedDiff(exec(args))
+    if (options.worktree !== false) {
+      const known = new Set(changes.map((change) => change.path))
+      for (const change of untrackedChanges(exec)) {
+        if (!known.has(change.path)) changes.push(change)
+      }
+    }
+    return changes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
   } catch (error) {
     throw new Error(
       `changesSince: git diff from ${options.since} failed in ${options.root}: ${String(error)}`,

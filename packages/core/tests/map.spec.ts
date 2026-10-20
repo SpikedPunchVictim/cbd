@@ -6,7 +6,14 @@
  * in its coordinates — merging, widening, non-green exclusion, and the queries.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -195,6 +202,36 @@ test('load and between buckets merge across shards with the widest range', () =>
   assert.deepEqual(map.between, [[B, 'timer@0', 2, 2]])
 })
 
+test('a service shard attributes load only to the tests that touched it', () => {
+  // The adapters open a window for every test on the service recorder too, so a
+  // shard that names a test is not evidence the test observed the service.
+  const service: ResolvedShard = {
+    name: 'service',
+    header: { ...header(), role: 'service' },
+    tests: [
+      testRecord('over HTTP', [ref(A, 'route@0', 1, 3)]),
+      testRecord('in this process', []),
+    ],
+    load: [ref(A, '<module>@0', 0, 9)],
+    between: [],
+    teardown: [],
+  }
+  const map = mergeShards([service], { commit: 'c0ffee' })
+  assert.deepEqual(map.shardTests?.[0], [0])
+  assert.deepEqual(map.loadShards?.[A], [0])
+})
+
+test('a test shard attributes load to every test in the process', () => {
+  const map = mergeShards(
+    [shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)]), testRecord('reads', [])], {
+      load: [ref(B, '<module>@0', 0, 9)],
+    })],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.shardTests?.[0], [0, 1])
+  assert.deepEqual(map.loadShards?.[B], [0])
+})
+
 test('the map records which shards produced it', () => {
   const map = mergeShards([shard('one.jsonl', [])], { commit: 'c0ffee' })
   assert.deepEqual(map.shards, ['one.jsonl'])
@@ -227,6 +264,55 @@ test('saving and loading round-trips, reporting bytes and parse time', () => {
     )
   } finally {
     rmSync(root, { recursive: true, force: true })
+  }
+})
+
+// `cbd-0na.5`: absolute paths made a recording work only in the worktree that
+// made it. The map stores them relative to its root and resolves them on load.
+test('a map saved in one checkout resolves in a second checkout of the same commit', () => {
+  // Canonical roots, as `createCbd` uses: a recorded module URL resolves through
+  // symlinks, so `/var` vs `/private/var` must not decide whether a path is inside.
+  const first = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-first-')))
+  const second = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-second-')))
+  try {
+    const source = join(first, 'src/a.ts')
+    const spec = join(first, 'tests/a.spec.ts')
+    const built = mergeShards(
+      [
+        shard(
+          's1',
+          [{ ...testRecord('adds', [ref(source, 'add@0', 1, 3)]), file: spec }],
+          { load: [ref(source, '<module>@0', 0, 9)] },
+        ),
+      ],
+      { commit: 'c0ffee' },
+    )
+    saveMap(first, built)
+
+    const stored = JSON.parse(
+      readFileSync(join(mapDir(first, 'c0ffee'), 'map.json'), 'utf8'),
+    ) as { files: Record<string, unknown>; tests: Array<{ file: string | null }>; seen: string[] }
+    assert.deepEqual(Object.keys(stored.files), ['src/a.ts'])
+    assert.equal(stored.tests[0]?.file, 'tests/a.spec.ts')
+    assert.deepEqual(stored.seen, ['src/a.ts'])
+
+    mkdirSync(mapDir(second, 'c0ffee'), { recursive: true })
+    copyFileSync(
+      join(mapDir(first, 'c0ffee'), 'map.json'),
+      join(mapDir(second, 'c0ffee'), 'map.json'),
+    )
+
+    const loaded = loadMap(second, 'c0ffee')
+    assert.deepEqual(Object.keys(loaded.map.files), [join(second, 'src/a.ts')])
+    assert.equal(loaded.map.tests[0]?.file, join(second, 'tests/a.spec.ts'))
+    assert.deepEqual(loaded.map.seen, [join(second, 'src/a.ts')])
+    assert.deepEqual(
+      testsForFunction(loaded.map, join(second, 'src/a.ts'), 'add@0').map((entry) => entry.title),
+      ['adds'],
+    )
+  } finally {
+    rmSync(first, { recursive: true, force: true })
+    rmSync(second, { recursive: true, force: true })
   }
 })
 
@@ -335,4 +421,36 @@ test('the pid in a shard header does not affect the merge', () => {
   assert.equal(map.tests[0]?.title, 'x')
   assert.deepEqual(Object.keys(map.files[A]!), ['add@0'])
   assert.deepEqual(Object.keys(map.files[B]!), ['helper@0'])
+})
+
+test('same title and file stay distinct with an ordinal', () => {
+  const file = '/repo/tests/x.spec.ts'
+  const map = mergeShards(
+    [
+      shard('s1', [
+        { title: 'same', file, status: 'passed', durationMs: 1, touches: [ref(A, 'a@0', 1, 1)] },
+        {
+          title: 'same',
+          file,
+          ordinal: 1,
+          status: 'passed',
+          durationMs: 1,
+          touches: [ref(A, 'b@0', 1, 1)],
+        },
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.equal(map.tests.length, 2)
+  assert.deepEqual(
+    map.tests.map((entry) => [entry.title, entry.file, entry.ordinal]),
+    [
+      ['same', file, undefined],
+      ['same', file, 1],
+    ],
+  )
+  // Each occurrence keeps its own coverage; a function reached only by the
+  // second does not pull the first into the answer.
+  assert.deepEqual(testsForFunction(map, A, 'a@0').map((entry) => entry.ordinal), [undefined])
+  assert.deepEqual(testsForFunction(map, A, 'b@0').map((entry) => entry.ordinal), [1])
 })
