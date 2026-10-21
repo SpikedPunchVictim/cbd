@@ -512,19 +512,23 @@ export function select(
     }
   }
 
+  // Rule 0 — the config itself. A config change means the map cannot answer for
+  // any file, so it is checked before the loop and forces all once, naming the
+  // config. Charging it to every changed file told a consumer that sources and
+  // tests had changed the config, and skipped their own reasons.
+  if (config.configChanged === true) forceAll('config-changed', config.configFile)
+
   for (const change of changes) {
     const path = change.path
 
-    // Rule 0 — the config itself. It changes what the other rules mean, so a
-    // map built under the old file cannot answer for a selection under the new
-    // one. Checked before `include`: the config often sits outside it.
-    if (
-      config.configChanged === true ||
-      (config.configFile !== undefined &&
-        (samePath(path, config.configFile) ||
-          (change.from !== undefined && samePath(change.from, config.configFile))))
-    ) {
-      forceAll('config-changed', path)
+    const isConfig =
+      config.configFile !== undefined &&
+      (samePath(path, config.configFile) ||
+        (change.from !== undefined && samePath(change.from, config.configFile)))
+    if (isConfig) {
+      // The range-wide reason above already named the config. A caller that did
+      // not set `configChanged` gets the per-file reason here instead.
+      if (config.configChanged !== true) forceAll('config-changed', path)
       continue
     }
 

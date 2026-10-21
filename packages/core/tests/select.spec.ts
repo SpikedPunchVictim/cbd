@@ -95,6 +95,43 @@ test('rule 0: renaming the config away also forces all', () => {
   assert.deepEqual(reasonKinds(result), ['all:config-changed'])
 })
 
+test('rule 0: configChanged names the config once and leaves other files their reasons', () => {
+  const config = '/repo/cbd.config.json'
+  const result = select(makeMap(), [change(config), change(SRC, [{ start: 2, end: 2 }])], {
+    configFile: config,
+    configChanged: true,
+  })
+  assert.equal(result.mode, 'all')
+  // One reason, for the file that changed the config — not one per changed file.
+  assert.deepEqual(
+    result.reasons
+      .filter((reason) => reason.kind === 'all')
+      .map((reason) => (reason.kind === 'all' ? reason.file : undefined)),
+    [config],
+  )
+  assert.ok(
+    result.reasons.some((reason) => reason.kind === 'function' && reason.file === SRC),
+    `expected SRC's own reason, got: ${reasonKinds(result).join(', ')}`,
+  )
+})
+
+test('rule 0: configChanged forces all even when the config is not in the change list', () => {
+  // A base leg can report the config as changed without the config appearing in
+  // the changes the selector is given.
+  const config = '/repo/cbd.config.json'
+  const result = select(makeMap(), [change(SRC, [{ start: 2, end: 2 }])], {
+    configFile: config,
+    configChanged: true,
+  })
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(
+    result.reasons
+      .filter((reason) => reason.kind === 'all')
+      .map((reason) => (reason.kind === 'all' ? reason.file : undefined)),
+    [config],
+  )
+})
+
 // --- rule 1 -----------------------------------------------------------------
 test('rule 1: a file matching alwaysAll forces mode: all', () => {
   const result = select(makeMap(), [change('/repo/package.json')], {

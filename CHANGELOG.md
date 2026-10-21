@@ -13,6 +13,11 @@ until a tag is pushed and the publish workflow runs.
   stores the file under, and `loadMap` resolves it back, so in-memory ids are
   unchanged and the stored map is portable. Matching on file and title, as
   grizzly does, was unaffected; printing or comparing ids was not.
+- **A config change names only the config file.** A range-wide `configChanged`
+  flag forced all and labeled every changed file `config-changed`, skipping their
+  own reasons. It now forces all once, names the config, and leaves the other
+  changed files their normal diagnosis. A config change reported only by a base
+  leg still produces the single reason naming the config.
 
 ## 0.0.4 — 2026-10-20
 
