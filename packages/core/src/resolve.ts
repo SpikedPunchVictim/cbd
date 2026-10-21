@@ -24,7 +24,8 @@
  *   change to it then reaches §8.3's unknown-file rule and runs everything — the
  *   safe direction.
  */
-import { statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { FileCache, sameLineStarts } from './line-index.js'
 import { displayName, type ScanOptions } from './normalize.js'
@@ -152,7 +153,12 @@ function scriptTable(scripts: ShardScript[], name: string): Map<string, ShardScr
       table.set(script.scriptId, script)
       continue
     }
-    if (prior.url !== script.url || prior.size !== script.size || prior.mtimeMs !== script.mtimeMs) {
+    if (
+      prior.url !== script.url ||
+      prior.size !== script.size ||
+      prior.mtimeMs !== script.mtimeMs ||
+      prior.hash !== script.hash
+    ) {
       throw new Error(
         `cbd: shard ${name} records script ${script.scriptId} twice with different content ` +
           `(${prior.url} and ${script.url}); the shard is inconsistent`,
@@ -241,13 +247,33 @@ function verifyScript(script: ShardScript, path: string): void {
         `measured against that file; re-record the run. (${String(error)})`,
     )
   }
-  if (stat.size !== script.size || stat.mtimeMs !== script.mtimeMs) {
-    throw new StaleShardError(
-      `cbd: ${path} changed since it was recorded (size ${String(script.size)} -> ${String(stat.size)}, ` +
-        `mtime ${String(script.mtimeMs)} -> ${String(stat.mtimeMs)}). Byte offsets are only meaningful ` +
-        'against the bytes they were measured from, so this shard is refused; re-record the run.',
-    )
+  if (stat.size !== script.size) {
+    throw stale(script, path, stat)
   }
+  if (stat.mtimeMs === script.mtimeMs) return
+  // A rebuild can touch the file without changing a byte. When the shard carries
+  // a hash, compare content before refusing; a real change still fails below.
+  if (script.hash !== undefined) {
+    let current: string
+    try {
+      current = createHash('sha256').update(readFileSync(path)).digest('hex')
+    } catch (error) {
+      throw new StaleShardError(
+        `cbd: the build cannot re-read ${path}, which the recorded run executed. The offsets ` +
+          `were measured against that file; re-record the run. (${String(error)})`,
+      )
+    }
+    if (current === script.hash) return
+  }
+  throw stale(script, path, stat)
+}
+
+function stale(script: ShardScript, path: string, stat: { size: number; mtimeMs: number }): StaleShardError {
+  return new StaleShardError(
+    `cbd: ${path} changed since it was recorded (size ${String(script.size)} -> ${String(stat.size)}, ` +
+      `mtime ${String(script.mtimeMs)} -> ${String(stat.mtimeMs)}). Byte offsets are only meaningful ` +
+      'against the bytes they were measured from, so this shard is refused; re-record the run.',
+  )
 }
 
 /** Resolve one script's functions, once. */

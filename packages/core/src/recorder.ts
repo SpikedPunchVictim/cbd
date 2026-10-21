@@ -47,7 +47,8 @@
  * strategy projects each window *inside* its chain rather than when the reply
  * arrives, so the table is written in boundary order.
  */
-import { statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { CorrelatedTest, OwnerIndex } from './correlate.js'
 import type { TestRefDetail } from './contract.js'
@@ -255,6 +256,14 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
     const reported = info?.sourceMapURL
     const keep = reported !== undefined && declared !== reported
 
+    let hash: string | undefined
+    try {
+      hash = createHash('sha256').update(readFileSync(path)).digest('hex')
+    } catch {
+      // A file that cannot be re-read cannot be hash-checked; the size/mtime guard
+      // still applies, and the build may refuse a rebuild it could have accepted.
+    }
+
     return {
       type: 'script',
       scriptId: script.scriptId,
@@ -262,6 +271,7 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
       ...(keep ? { sourceMapURL: reported } : {}),
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      ...(hash === undefined ? {} : { hash }),
     }
   }
 

@@ -6,7 +6,8 @@
  * window, which is what fixes the A4 ordinal collision.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -65,6 +66,7 @@ function script(tree: Tree): ShardScript {
     url: tree.url,
     size: stat.size,
     mtimeMs: stat.mtimeMs,
+    hash: createHash('sha256').update(readFileSync(tree.file)).digest('hex'),
   }
 }
 
@@ -89,6 +91,27 @@ const alpha = rangeOf('function alpha() {\n  return 1\n}')
 const arrowOne = rangeOf('() => 1')
 const arrowTwo = rangeOf('() => 2')
 const late = rangeOf('function late() {\n  return 3\n}')
+
+test('a rebuilt file with identical bytes is accepted; a changed one is not', () => {
+  const tree = makeTree()
+  try {
+    const row = script(tree)
+    // A suite that rebuilds its own dist changes the mtime without changing a byte.
+    const rebuilt = { ...row, mtimeMs: row.mtimeMs - 60_000 }
+    assert.doesNotThrow(() => resolveShard(shard([header(), rebuilt, end(0)])))
+
+    // Same size and mtime shift, different bytes: still refused.
+    const changed = { ...rebuilt, hash: '0'.repeat(64) }
+    assert.throws(() => resolveShard(shard([header(), changed, end(0)])), StaleShardError)
+
+    // A pre-hash shard keeps the mtime rule.
+    const legacy = { ...rebuilt }
+    delete legacy.hash
+    assert.throws(() => resolveShard(shard([header(), legacy, end(0)])), StaleShardError)
+  } finally {
+    tree.cleanup()
+  }
+})
 
 test('byte ranges resolve to the map identity and line range', () => {
   const tree = makeTree()

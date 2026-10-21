@@ -78,6 +78,15 @@ export interface ShardScript {
   size: number
   mtimeMs: number
   /**
+   * SHA-256 of the file's bytes at recording time.
+   *
+   * A suite can rebuild its own `dist` during the run, which changes the mtime
+   * without changing a byte. When the mtime differs the build hashes the file and
+   * accepts it if the hash matches; a real content change is still refused. Absent
+   * on shards written before the field existed, where size/mtime remains the rule.
+   */
+  hash?: string
+  /**
    * Present when V8 compiled text that differs from the file on disk — a loader
    * transformed the module (Vitest/Vite, Jest, ts-node). V8's offsets are into
    * this text, not the file, so the build must convert offsets with these line

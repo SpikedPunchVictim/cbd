@@ -130,6 +130,21 @@ function run(tree: Tree, records: string): ShardRecord[] {
   return parseShard(records)
 }
 
+test('a script row carries a content hash for the stale check', () => {
+  const tree = makeTree()
+  try {
+    const row = scriptRow(tree)
+    assert.equal(row.type, 'script')
+    assert.match(
+      row.type === 'script' ? (row.hash ?? '') : '',
+      /^[0-9a-f]{64}$/,
+      'a script row must carry a SHA-256 of the bytes it was recorded against',
+    )
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('reads noted in a window belong to that test; reads outside are dropped', () => {
   const tree = makeTree()
   try {
