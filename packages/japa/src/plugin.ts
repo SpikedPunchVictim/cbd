@@ -51,6 +51,7 @@ import {
   FileSink,
   SOCKET_DIR_ENV,
   inProcessSource,
+  installReadTracking,
   readSelection,
   rescanningSocketSource,
   scanFromEnv,
@@ -74,9 +75,9 @@ export interface CbdOptions {
   /** Defaults to `CBD_COMMIT`, then `'unknown'`. */
   commit?: string
   /**
-   * Defaults to `scanFromEnv()`. Only `prefilter`/`selfRoots` act here: a v2 shard
-   * defers projection and relocation to `cbd build`, which reads the same
-   * environment variables itself (ADR-0002).
+   * Defaults to `scanFromEnv()`. Only `prefilter`/`selfRoots`/`includeSelf` act
+   * here: a v2 shard defers projection and relocation to `cbd build`, which reads
+   * the same environment variables itself (ADR-0002).
    */
   scan?: ScanOptions
   /**
@@ -246,6 +247,10 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
       // Installed after the sources are open, so a service that cannot be reached
       // leaves no patched HTTP client behind.
       correlator?.install()
+      // The test process reads; the service's reads happen in its own process and
+      // are not observable here. Only the first recorder is the in-process one.
+      const stopReads = installReadTracking(recorders[0]!)
+      emitter.on('runner:end', stopReads)
       installJapaAdapter(
         emitter,
         recorders,

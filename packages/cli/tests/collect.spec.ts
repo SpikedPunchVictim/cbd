@@ -59,9 +59,18 @@ test.group('cbd collect', () => {
       assert.match(logged.selection!, /\.cbd\/selection\.json$/)
       assert.equal(logged.shard.startsWith(`${join(root, '.cbd', 'shards')}/`), true)
       const selection = JSON.parse(readFileSync(logged.selection!, 'utf8')) as {
-        titles: string[]
+        version: number
+        tests: Array<{ id: string; file: string | null; title: string }>
       }
-      assert.deepEqual(selection.titles, ['adds', 'reads'])
+      assert.equal(selection.version, 2)
+      assert.deepEqual(
+        selection.tests.map((test) => test.title),
+        ['adds', 'reads'],
+      )
+      assert.deepEqual(
+        selection.tests.map((test) => test.id),
+        [`${spec}::adds`, `${spec}::reads`],
+      )
     } finally {
       cleanup()
     }
@@ -250,6 +259,27 @@ test.group('cbd collect', () => {
     }
   })
 
+  test('a command that dies before recording is not reported as a shard', () => {
+    const { root, cleanup } = prepared()
+    try {
+      // A module that cannot load is the shape from the field: the wrapper exits
+      // non-zero before the runner ever installs the adapter, so no shard exists.
+      const result = invoke(root, 'collect', '--', process.execPath, '-e', 'process.exit(1)')
+
+      assert.equal(result.code, EXIT.error)
+      const out = result.out.join('\n')
+      assert.doesNotMatch(out, /recorded to/)
+      assert.match(out, /no tests ran; nothing recorded/)
+      // The build is not attempted, so there is no contradictory "no shards"
+      // error and no map for a run that never happened.
+      assert.doesNotMatch(result.err.join('\n'), /no shards/)
+      assert.doesNotMatch(result.err.join('\n'), /cbd: cbd:/)
+      const maps = join(root, '.cbd', 'maps')
+      assert.equal(existsSync(maps) ? readdirSync(maps).length : 0, 0)
+    } finally {
+      cleanup()
+    }
+  })
   test('collect is only collect with "-- <command>"', () => {
     const { root, cleanup } = prepared()
     try {

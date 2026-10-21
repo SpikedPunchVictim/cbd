@@ -106,6 +106,18 @@ jobs:
       # The npm side must name this repository, workflow file and environment
       # (`npm`) as a trusted publisher for each package. A publish from any other
       # workflow identity fails with a 401 even though the build succeeded.
+      #
+      # Changelogs are generated here as well as by each package's `prepack`, so
+      # the tarball carries one even if a lifecycle hook is skipped by the client
+      # doing the publishing.
+      - name: Generate package changelogs
+        run: |
+          set -euo pipefail
+          for dir in packages/core packages/cli packages/japa packages/mocha \
+                     packages/vitest packages/jest packages/node-test; do
+            (cd "$dir" && node ../../scripts/sync-changelogs.mjs)
+          done
+
       - name: Publish
         shell: bash
         env:

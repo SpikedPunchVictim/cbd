@@ -23,6 +23,8 @@ export type {
   FileStat,
   MapSummary,
   Quantiles,
+  ReachRow,
+  ReachRowResult,
   ReachesResult,
   SelectOptions,
   SelectResult,
@@ -90,6 +92,7 @@ export {
   commitsSince,
   headCommit,
   intersects,
+  mergeChanges,
   parseUnifiedDiff,
   sameCommit,
   type Change,
@@ -117,4 +120,21 @@ export {
  * `CBD_SELECTION` and a runner reads it. The reader itself (`readSelection`) lives
  * behind the adapter seam with the other environment readers.
  */
-export { SELECTION_ENV, type SelectionFile } from './env.js'
+export { SELECTION_ENV, writeSelection, type SelectionFile, type SelectionTest } from './env.js'
+
+export {
+  ADAPTER_CONTRACT_VERSION,
+  testId,
+  testRef,
+  type TestRef,
+  type TestRefDetail,
+} from './contract.js'
+export {
+  activateRecordSink,
+  recordDependency,
+  recordDirRead,
+  recordOpaque,
+  recordRead,
+  recordSink,
+  type RecordSink,
+} from './record.js'

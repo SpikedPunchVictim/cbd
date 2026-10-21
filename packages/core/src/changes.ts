@@ -58,10 +58,86 @@ export interface Change {
 export interface ChangesOptions {
   root: string
   since: string
+  /**
+   * Compare two commits, with `since` as the old side and this as the new one.
+   *
+   * `select --since` uses this to project a caller's base onto the map's commit:
+   * the map's function ranges are measured at its commit, so the change between
+   * the base and that commit has to be read on the map's side (`newHunks`). The
+   * old-side numbers name lines that have since moved. A two-commit question has
+   * no working tree, so no untracked file is part of it.
+   */
+  to?: string
   /** Compare against the working tree (default) or against HEAD. */
   worktree?: boolean
   /** Run git for real, or return nothing. Injected so tests need no repository. */
   exec?: (args: string[]) => string
+}
+
+/**
+ * The union of two change sets, by path.
+ *
+ * `cbd select --since <base>` has two honest views of the same working tree: the
+ * diff from the base the caller asked about, and the diff from the map's commit,
+ * which is what the recording actually covers. A consumer that called select
+ * twice and merged the answers itself lost the warnings of the second call — and
+ * had to reimplement this merge. Returning one answer is the point; hunks union,
+ * status prefers the modification spelling that keeps every rule available, and a
+ * rename survives if either side saw one.
+ */
+export function mergeChanges(
+  a: readonly Change[],
+  b: readonly Change[],
+): Change[] {
+  const byPath = new Map<string, Change>()
+  const add = (change: Change): void => {
+    const existing = byPath.get(change.path)
+    if (existing === undefined) {
+      byPath.set(change.path, {
+        ...change,
+        hunks: [...change.hunks],
+        ...(change.newHunks === undefined ? {} : { newHunks: [...change.newHunks] }),
+        ...(change.insertions === undefined ? {} : { insertions: [...change.insertions] }),
+      })
+      return
+    }
+    existing.hunks = uniqueRanges([...existing.hunks, ...change.hunks])
+    const newHunks = [...(existing.newHunks ?? []), ...(change.newHunks ?? [])]
+    if (newHunks.length > 0) existing.newHunks = uniqueRanges(newHunks)
+    const insertions = [...(existing.insertions ?? []), ...(change.insertions ?? [])]
+    if (insertions.length > 0) existing.insertions = [...new Set(insertions)].sort((x, y) => x - y)
+    // A deletion on one side and a modification on the other means the file is
+    // not simply gone; keeping the modification lets the function rules answer.
+    if (existing.status === 'D' && change.status !== 'D') existing.status = change.status
+    if (existing.from === undefined && change.from !== undefined) existing.from = change.from
+  }
+  for (const change of a) add(change)
+  for (const change of b) add(change)
+  return [...byPath.values()]
+}
+
+function uniqueRanges(ranges: LineRange[]): LineRange[] {
+  const seen = new Set<string>()
+  const sorted: LineRange[] = []
+  for (const range of ranges) {
+    const key = `${String(range.start)}:${String(range.end)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    sorted.push({ ...range })
+  }
+  sorted.sort((x, y) => x.start - y.start || x.end - y.end)
+  // The same edit seen from two baselines can describe one region as 1-1 and 1-2;
+  // an overlapping or adjacent pair is one region to every rule that reads hunks.
+  const merged: LineRange[] = []
+  for (const range of sorted) {
+    const last = merged.at(-1)
+    if (last !== undefined && range.start <= last.end + 1) {
+      last.end = Math.max(last.end, range.end)
+    } else {
+      merged.push(range)
+    }
+  }
+  return merged
 }
 
 const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
@@ -187,14 +263,18 @@ export function parseUnifiedDiff(diff: string): Change[] {
  * (all by default); a file the map does know falls through to the whole-file rule.
  * Paths are relative to `root`, the same coordinate `git diff --relative` prints.
  */
-function untrackedChanges(exec: (args: string[]) => string): Change[] {
+function untrackedChanges(exec: (args: string[]) => string, root: string): Change[] {
   let out: string
   try {
     out = exec(['ls-files', '--others', '--exclude-standard'])
-  } catch {
-    // The diff succeeded but this failed; an untracked file is not worth failing
-    // the whole selection over, and the safe answer for one is all, not nothing.
-    return []
+  } catch (error) {
+    // The diff was readable but the untracked list was not. Answering without it
+    // could omit a new file — the most common change in a worktree — and a
+    // selection that silently forgets one is exactly the under-selection this
+    // function exists to prevent, so refuse rather than guess.
+    throw new Error(
+      `changesSince: git ls-files --others failed in ${root}: ${String(error)}`,
+    )
   }
   return out
     .split('\n')
@@ -215,6 +295,8 @@ function untrackedChanges(exec: (args: string[]) => string): Change[] {
  *
  * **Untracked files are changes only in worktree mode.** `--no-worktree` asks what
  * a commit changed; a file that is not in the index is not part of that answer.
+ * A two-commit question (`to`) has no working tree at all, so it never includes
+ * one either.
  */
 export function changesSince(options: ChangesOptions): Change[] {
   const exec = options.exec ?? ((args: string[]) => defaultExec(options.root, args))
@@ -227,21 +309,25 @@ export function changesSince(options: ChangesOptions): Change[] {
     '--relative',
     options.since,
   ]
-  if (options.worktree === false) args.splice(1, 0, 'HEAD')
+  if (options.to !== undefined) args.push(options.to)
+  else if (options.worktree === false) args.splice(1, 0, 'HEAD')
+  let changes: Change[]
   try {
-    const changes = parseUnifiedDiff(exec(args))
-    if (options.worktree !== false) {
-      const known = new Set(changes.map((change) => change.path))
-      for (const change of untrackedChanges(exec)) {
-        if (!known.has(change.path)) changes.push(change)
-      }
-    }
-    return changes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+    changes = parseUnifiedDiff(exec(args))
   } catch (error) {
-    throw new Error(
-      `changesSince: git diff from ${options.since} failed in ${options.root}: ${String(error)}`,
-    )
+    const range =
+      options.to === undefined
+        ? `from ${options.since}`
+        : `from ${options.since} to ${options.to}`
+    throw new Error(`changesSince: git diff ${range} failed in ${options.root}: ${String(error)}`)
   }
+  if (options.to === undefined && options.worktree !== false) {
+    const known = new Set(changes.map((change) => change.path))
+    for (const change of untrackedChanges(exec, options.root)) {
+      if (!known.has(change.path)) changes.push(change)
+    }
+  }
+  return changes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 }
 
 export function intersects(a: LineRange, b: LineRange): boolean {

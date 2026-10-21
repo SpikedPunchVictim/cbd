@@ -34,20 +34,26 @@ test.group('cbd.config.json', () => {
             },
           ],
           unknownPolicy: 'all',
+          unknownPolicyFor: [{ paths: ['tools/**'], policy: 'ignore' }],
           betweenPolicy: 'ignore',
           testFiles: ['**/*.spec.ts'],
           testFilePolicy: 'known',
           maxAgeCommits: 50,
           strict: true,
           stateDir: 'build/cbd',
+          mapsDir: '../shared/maps',
         },
         root,
       )
 
       assert.equal(config.root, root)
       assert.equal(config.stateDir, 'build/cbd')
+      assert.equal(config.mapsDir, '../shared/maps')
       const select = config.select!
       assert.equal(select.unknownPolicy, 'all')
+      assert.deepEqual(select.unknownPolicyFor, [
+        { paths: [join(root, 'tools/**')], policy: 'ignore' },
+      ])
       assert.equal(select.betweenPolicy, 'ignore')
       assert.equal(select.testFilePolicy, 'known')
       assert.equal(select.maxAgeCommits, 50)
@@ -127,6 +133,16 @@ test.group('cbd.config.json', () => {
     }
   })
 
+  test('mapsDir is a non-empty string when present', () => {
+    const { root, cleanup } = tempRoot()
+    try {
+      assert.throws(() => parseConfig({ mapsDir: '' }, root), /"mapsDir" must be a non-empty string/)
+      assert.throws(() => parseConfig({ mapsDir: 1 }, root), /"mapsDir" must be a non-empty string/)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('alwaysSelect entries are validated, not dropped when malformed', () => {
     const { root, cleanup } = tempRoot()
     try {
@@ -153,6 +169,30 @@ test.group('cbd.config.json', () => {
       assert.throws(
         () => parseConfig({ alwaysSelect: [{ tests: ['a.spec.ts > '] }] }, root),
         /empty test title/,
+      )
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('unknownPolicyFor entries are validated', () => {
+    const { root, cleanup } = tempRoot()
+    try {
+      assert.throws(
+        () => parseConfig({ unknownPolicyFor: 'tools/**' }, root),
+        /"unknownPolicyFor" must be an array/,
+      )
+      assert.throws(
+        () => parseConfig({ unknownPolicyFor: [{ paths: [] }] }, root),
+        /unknownPolicyFor\[0\]\.paths must be a non-empty array/,
+      )
+      assert.throws(
+        () => parseConfig({ unknownPolicyFor: [{ paths: ['a/**'], policy: 'warn' }] }, root),
+        /unknownPolicyFor\[0\]\.policy must be "all" or "ignore"/,
+      )
+      assert.throws(
+        () => parseConfig({ unknownPolicyFor: [{ paths: ['a/**'], extra: 1 }] }, root),
+        /unknownPolicyFor\[0\] has an unknown key "extra"/,
       )
     } finally {
       cleanup()

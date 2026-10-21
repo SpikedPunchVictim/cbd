@@ -3,6 +3,77 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
+## 0.0.4 — 2026-10-20
+
+- **Reads are recorded.** The adapters wrap the test process's public
+  `node:fs` / `node:fs/promises` read, stat, existence and directory-listing calls
+  and attribute them to the open test window. The shard and map carry `reads` and
+  `dirReads`; a change to a read file — or to any file under a listed directory —
+  selects the tests that read or listed it, with reason `read`. Named ESM imports
+  are covered via `syncBuiltinESMExports`; the recorder's own projection reads are
+  suppressed. Reads through a captured reference before install, native addons,
+  child processes, or a separately started service are not seen; `alwaysSelect`
+  remains the escape hatch.
+- **`unknownPolicyFor`.** Per-glob overrides for a file the map has
+  never seen, e.g. `[{ "paths": ["typescript/tools/**"], "policy": "ignore" }]`.
+  The first matching entry wins, only `all`/`ignore` are accepted, a known file is
+  unaffected, an ignored unknown file appears in `selection.ignored` with the
+  matching entry named, and an entry whose globs match no file in the repository
+  warns. A map without the new fields selects exactly as before.
+- **Dogfooding.** `CBD_INCLUDE_SELF=1` lifts the self-root floor so a
+  repository that records its own suites gets its `src` in the map instead of a
+  map of test files. This repository now does exactly that: `cbd.config.json` at
+  the root, the japa adapter in every package's runner (loaded only when
+  recording or selecting), and `pnpm dogfood:record` / `pnpm dogfood:select`.
+- **Adapter contract.** Tests have a runner-neutral id (`file::title`) in the map,
+  the JSON answer and the selection file, which is now v2
+  (`{ "version": 2, "tests": [...] }`); v1 title-only files are still read. Test
+  helpers can declare facts coverage cannot see: `recordRead`, `recordDirRead`,
+  `recordDependency` and `recordOpaque` are exported from `@spikedpunch/cbd`, and
+  an opaque declaration selects the test on any in-scope change. The map now keeps
+  each test's status and duration. `ADAPTER_CONTRACT_VERSION` is exported; the
+  contract is window-based rather than `AsyncLocalStorage`-based, for the reason
+  recorded in ADR-0017.
+- **`cbd collect` accuracy.** A command that dies before the adapter records now
+  reports "no tests ran; nothing recorded" instead of naming a shard that was
+  never written, skips the build, and no longer prints a doubled `cbd: cbd:`
+  prefix.
+- **Changelogs ship.** Every published package generates `CHANGELOG.md` from the
+  repository changelog in a `prepack` step and includes it in its tarball.
+- **`cbd explain … | head` exits quietly.** A reader that closes the pipe early
+  raised an unhandled `EPIPE` and printed a stack trace; the bin now treats it as
+  a normal end of output.
+- **Incremental recording.** `cbd build --incremental` and `cbd collect
+  --incremental` carry a previous map's tests forward when every file they used is
+  unchanged, and mark files whose evidence could not be carried as `partial` — a
+  later change to one runs everything. The marker survives a chain of incremental
+  builds, and a dropped test that declared an opaque dependency keeps that
+  declaration (with no stale evidence attached), so an invisible dependency is
+  never lost to a carry. Buckets and per-shard load attribution are
+  not carried, so a module-scope change in a load-reached file also escalates.
+- **Shared maps.** The `mapsDir` config key moves per-commit maps out of
+  `<stateDir>/maps`; an absolute path lets worktrees and review sandboxes share one
+  set while shards and the selection file stay local.
+- **Read-only what-if selection.** `select --patch <file.diff>` and
+  `select --change <path>:<start>[-<end>]` answer a prospective edit without
+  touching the tree, through the same diff reader `--since` uses.
+- **Batch reaches.** `reaches --batch <rows.json>` answers neutral mutant rows
+  (`{file, lines}` or `{file, find}`, optional `killers`) with the tests that reach
+  each and whether each named killer is among them.
+- **One answer for a base ref.** `select --since <base>` now unions the named base's
+  diff with the map commit's, instead of asking a consumer to call twice and merge.
+  A base older than the map is read at the map commit's line numbers, so a function
+  whose lines moved in between is not named by its old position — which would drop
+  the tests that reach it.
+- **Cost, in one place.** Test status and duration are kept on the map; `select`
+  reports the subset's recorded milliseconds against the whole map.
+- **`--format summary`.** Mode, selected of total, reason counts, warnings, ignored
+  files, map age and estimate in a few lines.
+- **Capabilities and `--emit-selection`.** `cbd --version --format json` lists
+  `adapterContract` and the supported features; `select --emit-selection <path>`
+  writes the v2 file adapters read and removes a stale one when the answer is all
+  or empty.
+
 ## 0.0.3 — 2026-10-21
 
 Round-2 feedback from grizzly-sv T-29-015.

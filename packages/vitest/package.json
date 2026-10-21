@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-vitest",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "Vitest adapter: turns a plain Vitest run into per-test coverage windows, and selects with them.",
   "main": "./dist/src/index.js",
@@ -11,7 +11,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node bin/test.js"
+    "test": "node scripts/build.mjs && node bin/test.js",
+    "prepack": "node ../../scripts/sync-changelogs.mjs"
   },
   "dependencies": {
     "@spikedpunch/cbd": "workspace:*"
@@ -26,7 +27,8 @@
     "vitest": "^5.0.5"
   },
   "files": [
-    "dist/src"
+    "dist/src",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"

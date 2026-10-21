@@ -34,6 +34,7 @@ missing family.
 | [0014](decisions/0014-the-source-array-is-the-seam.md) | The source array is the integration seam | draft |
 | [0015](decisions/0015-mutation-testing-is-a-stryker-integration.md) | Mutation testing is a Stryker integration over the coverage map | deprecated |
 | [0016](decisions/0016-mutation-selection-is-generic.md) | Mutation selection is generic; drivers own mutation | draft |
+| [0017](decisions/0017-adapter-contract.md) | Adapter contract: ids, the record API, and the window boundary | draft |
 
 The backfill is complete: the decisions that had only lived in docblocks, the design document and
 the log now have records. New decisions are added as records rather than as a planned list here.

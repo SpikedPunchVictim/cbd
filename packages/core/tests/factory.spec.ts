@@ -198,6 +198,30 @@ test.group('createCbd', () => {
     }
   })
 
+  test('an incremental build treats a rename as a change to both paths', () => {
+    const { repo, commit, cleanup } = prepared()
+    try {
+      const cbd = createCbd({ root: repo.root })
+      cbd.build()
+      repo.git(['mv', 'src/a.ts', 'src/b.ts'])
+      const renamed = repo.commit('rename a to b')
+      assert.notEqual(renamed, commit)
+      // The recording at the new commit ran nothing: every base test must be
+      // dropped, not carried with evidence for a file that no longer exists.
+      writeShard(repo.root, 'after.ndjson', shardText(renamed, []))
+
+      const result = cbd.build({ commit: renamed, incremental: true })
+      assert.equal(result.incremental?.base, commit)
+      assert.equal(result.incremental?.carried, 0)
+
+      const map = loadMap(repo.root, renamed).map
+      assert.equal(map.tests.length, 0)
+      assert.ok(map.partial?.some((path) => path.endsWith('/src/a.ts')))
+    } finally {
+      cleanup()
+    }
+  })
+
   test('build refuses an interrupted shard, and --partial is the opt-in', () => {
     const { repo, a, commit, cleanup } = prepared()
     try {
@@ -403,6 +427,104 @@ test.group('createCbd', () => {
       assert.equal(lockedResult.selection.mode, 'all')
     } finally {
       cleanup()
+    }
+  })
+
+  /**
+   * A base older than the map's commit. Everything between them is already in
+   * the map, but its hunks are in the base's line numbers: f moves from 5..7 to
+   * 15..17 because g grew above it. Matching the base's line 6 against the map
+   * points at g, so the test that reaches the changed f is silently dropped.
+   */
+  test('select --since reads a base older than the map in the map’s coordinates', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    const a = join(root, 'src/a.ts')
+    const spec = join(root, 'tests/a.spec.ts')
+    try {
+      repo.write(
+        'src/a.ts',
+        ['const x = 1', 'function g() {', '  return 1', '}', 'function f() {', '  return 2', '}'].join(
+          '\n',
+        ) + '\n',
+      )
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      const base = repo.commit('base')
+
+      repo.write(
+        'src/a.ts',
+        [
+          'const x = 1',
+          'function g() {',
+          ...Array.from({ length: 10 }, (_, i) => `  let p${String(i)} = ${String(i)}`),
+          '  return 1',
+          '}',
+          'function f() {',
+          '  return 20',
+          '}',
+        ].join('\n') + '\n',
+      )
+      const mapCommit = repo.commit('map')
+      writeShard(
+        repo.root,
+        'run.ndjson',
+        shardText(mapCommit, [
+          { title: 'tf', file: spec, touches: [ref(a, 'f@0', 15, 17)] },
+          { title: 'tg', file: spec, touches: [ref(a, 'g@0', 2, 14)] },
+        ]),
+      )
+      const cbd = createCbd({ root: repo.root })
+      cbd.build()
+
+      // Both functions changed between the base and the map commit, so both
+      // tests are selected — but only if f's hunk is read at line 16, where the
+      // map measured it.
+      const result = cbd.select({ since: base })
+      assert.equal(result.selection.mode, 'subset')
+      assert.deepEqual(result.selected.map((entry) => entry.title).sort(), ['tf', 'tg'])
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  /**
+   * Rule 0 asks whether the config a map was built under still matches the one
+   * loaded now. A config above `--root` is outside the relative diff, so it is
+   * checked against the map's commit directly; comparing it with an older base
+   * instead would force the whole suite for a config change the map already
+   * contains.
+   */
+  test('select does not force all for a config change that predates the map', () => {
+    const repo = tempRepo()
+    const top = realpathSync(repo.root)
+    const app = join(top, 'packages/app')
+    const config = join(top, 'cbd.config.json')
+    const a = join(app, 'src/a.ts')
+    const spec = join(app, 'tests/a.spec.ts')
+    try {
+      repo.write('cbd.config.json', '{"include":["src/**"]}\n')
+      repo.write('packages/app/src/a.ts', 'export const a = 1\n')
+      repo.write('packages/app/tests/a.spec.ts', "import { a } from '../src/a.js'\n")
+      const base = repo.commit('config v1')
+
+      repo.write('cbd.config.json', '{"include":["src/**","lib/**"]}\n')
+      repo.commit('config v2')
+      repo.write('packages/app/src/a.ts', 'export const a = 2\n')
+      const mapCommit = repo.commit('map')
+
+      writeShard(
+        app,
+        'run.ndjson',
+        shardText(mapCommit, [{ title: 'reads a', file: spec, touches: [ref(a, 'a@0', 1, 1)] }]),
+      )
+      const cbd = createCbd({ root: app, configFile: config })
+      cbd.build()
+
+      const result = cbd.select({ since: base })
+      assert.equal(result.selection.mode, 'subset')
+      assert.deepEqual(result.selected.map((entry) => entry.title), ['reads a'])
+    } finally {
+      repo.cleanup()
     }
   })
 

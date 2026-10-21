@@ -41,6 +41,10 @@ interface CoreAdapter {
     testEnd(title: string, status: 'passed' | 'failed' | 'skipped'): void
   }
   inProcessSource(): Promise<unknown>
+  installReadTracking(sink: {
+    noteRead(path: string): void
+    noteReadDir(path: string): void
+  }): () => void
   packageCodeRoots(moduleUrl: string, packageName: string): string[]
   scanFromEnv(): Record<string, unknown> | undefined
 }
@@ -49,6 +53,7 @@ class CbdEnvironment extends TestEnvironment {
   #file: string | null
   #recorder: CoreAdapter['Recorder'] extends new (...args: never[]) => infer R ? R : never | null = null
   #source: { close?: () => void } | null = null
+  #stopReads: (() => void) | null = null
   #opened = new WeakSet<object>()
 
   constructor(config: unknown, context: JestContextLike) {
@@ -77,6 +82,7 @@ class CbdEnvironment extends TestEnvironment {
       },
     })
     this.#recorder.runStart()
+    this.#stopReads = core.installReadTracking(this.#recorder)
   }
 
   override async teardown(): Promise<void> {
@@ -85,6 +91,8 @@ class CbdEnvironment extends TestEnvironment {
       await this.#recorder.runEnd()
       this.#recorder = null
     }
+    this.#stopReads?.()
+    this.#stopReads = null
     this.#source?.close?.()
     this.#source = null
     await super.teardown()

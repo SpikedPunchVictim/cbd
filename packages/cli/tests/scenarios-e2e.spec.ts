@@ -486,3 +486,51 @@ test.group('idle', () => {
     cleanup()
   }
 })
+
+// ---------------------------------------------------------------------------
+// I5 — a test that reads a file, and one that lists a directory
+// ---------------------------------------------------------------------------
+
+test('I5: reads and directory listings select the test when the file changes', () => {
+  const { root, cleanup } = scenario('i5', {
+    'src/keep.js': 'export const keep = true\n',
+    'data/schema.txt': 'a\n',
+    'tests/reads.spec.js': `import assert from 'node:assert/strict'
+import { readFileSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { test } from '@japa/runner'
+
+const here = dirname(fileURLToPath(import.meta.url))
+
+test('checks the schema text', () => {
+  assert.equal(readFileSync(join(here, '..', 'data', 'schema.txt'), 'utf8'), 'a\\n')
+})
+
+test('lists the sources', () => {
+  assert.ok(readdirSync(join(here, '..', 'src')).includes('keep.js'))
+})
+`,
+  })
+  try {
+    record(root, baseEnv(root))
+
+    const schema = join(root, 'data/schema.txt')
+    writeFileSync(schema, 'b\n')
+    const read = select(root)
+    assert.equal(read.status, 0)
+    assert.deepEqual(read.result.selected.map((entry) => entry.title), ['checks the schema text'])
+    assert.ok(
+      read.result.selection.reasons.some((reason) => reason.kind === 'read'),
+      'the answer should name the read reason',
+    )
+
+    git(root, 'checkout', '--', 'data/schema.txt')
+    writeFileSync(join(root, 'src/new.js'), 'export const added = true\n')
+    const listed = select(root)
+    assert.equal(listed.status, 0)
+    assert.deepEqual(listed.result.selected.map((entry) => entry.title), ['lists the sources'])
+  } finally {
+    cleanup()
+  }
+})

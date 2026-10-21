@@ -10,6 +10,12 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { Recorder } from '../src/recorder.js'
+import {
+  recordDependency,
+  recordDirRead,
+  recordOpaque,
+  recordRead,
+} from '../src/record.js'
 import { parseShard, StringSink, summarizeShard } from '../src/shard.js'
 import type { ShardRecord, ShardTouch } from '../src/shard.js'
 import type {
@@ -123,6 +129,72 @@ function scriptRow(tree: Tree, info?: ScriptInfo, declaration?: string): ShardRe
 function run(tree: Tree, records: string): ShardRecord[] {
   return parseShard(records)
 }
+
+test('reads noted in a window belong to that test; reads outside are dropped', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    recorder.runStart()
+    recorder.noteRead('/before-any-test')
+    recorder.testStart('reads', null)
+    recorder.noteRead('/during-test')
+    recorder.noteReadDir('/listed-dir')
+    recorder.testEnd('reads', 'passed')
+    recorder.noteRead('/between-tests')
+    recorder.runEnd()
+
+    const testRecord = summarizeShard(parseShard(sink.text, 'reads')).tests[0]
+    assert.deepEqual(testRecord?.reads, ['/during-test'])
+    assert.deepEqual(testRecord?.dirReads, ['/listed-dir'])
+  } finally {
+    tree.cleanup()
+  }
+})
+
+test('the record API reaches the open window, and nothing outside it', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    const endsWith = (suffix: string) => (path: string): boolean => path.endsWith(suffix)
+
+    recorder.runStart()
+    recordRead('before-the-window.txt')
+    recorder.testStart('declares', null)
+    recordRead('relative/read.txt')
+    recordDirRead('relative/dir')
+    recordDependency(['dep/one.ts', 'dep/two.ts'])
+    recordOpaque('spawns a tool')
+    recorder.testEnd('declares', 'passed')
+    // The sink is released with the window: a helper running between tests must
+    // not charge its work to the test that just ended.
+    recordRead('after-the-window.txt')
+    recordOpaque('after')
+    recorder.runEnd()
+
+    const testRecord = summarizeShard(parseShard(sink.text, 'declares')).tests[0]
+    assert.equal(testRecord?.reads?.length, 3)
+    assert.equal(testRecord?.reads?.some(endsWith('relative/read.txt')), true)
+    assert.equal(testRecord?.reads?.some(endsWith('before-the-window.txt')), false)
+    assert.equal(testRecord?.reads?.some(endsWith('after-the-window.txt')), false)
+    // A declared dependency is a read: the map treats both as "this test needs it".
+    assert.equal(testRecord?.reads?.some(endsWith('dep/one.ts')), true)
+    assert.equal(testRecord?.reads?.some(endsWith('dep/two.ts')), true)
+    assert.equal(testRecord?.dirReads?.some(endsWith('relative/dir')), true)
+    assert.deepEqual(testRecord?.opaque, ['spawns a tool'])
+  } finally {
+    tree.cleanup()
+  }
+})
 
 test('each window lands in the bucket it belongs to', async () => {
   const tree = makeTree()

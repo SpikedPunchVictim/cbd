@@ -1785,3 +1785,87 @@ change and rename, config outside `--root`, version text/JSON/help precedence, a
 `--version` does not invoke it, and the `cbdVersion` field). Full workspace suite passes
 sequentially. Live verification used `/tmp/cbd-grizzly-test`, a copy of the reporting checkout with
 the recorded 360-test map rebuilt under 0.0.3.
+
+## 2026-10-20
+
+**Update — reads, unknown-file policy, and self-hosting.** Two gaps from the selection review are
+closed, and the repository now records its own suites.
+
+- **Files a test reads are touches.** A text oracle — a source grep, a dependency scan, a `tsc`
+  run — executes no code in the file it depends on, so coverage had no edge to it and a change
+  looked unrelated. The adapters wrap the test process's public `node:fs` / `node:fs/promises`
+  read, stat, existence and directory-listing calls and attribute each to the open window; named
+  ESM imports are covered through `syncBuiltinESMExports()`. The shard and map carry `reads` and
+  `dirReads`; selection adds a `read` reason, a listed directory answers for every file under it,
+  and the recorder's own projection reads are excluded. A read file is an answer even when the
+  map has never seen it as code, so the unknown-file rule does not escalate it. What it cannot
+  see — a captured reference, a native addon, a child process, a separately started service — is
+  stated in the contract; `alwaysSelect` remains for those.
+- **`unknownPolicyFor`.** A per-glob override for a changed file the map has never seen. The
+  first matching entry wins; only `all`/`ignore` are accepted; a known file is unaffected; an
+  ignored path is named in `selection.ignored` with its entry, and an entry whose globs match
+  nothing in the repository warns.
+- **Dogfooding.** `CBD_INCLUDE_SELF=1` lifts the self-root floor, which otherwise keeps the
+  tool's code out of every map. Without it a repository recording its own suite gets a map of
+  test files: the first self-recording produced 27 files and no `src`, and every source change
+  answered `all`. With it core's `src` is reached, and a line in `select.ts` answers with the
+  tests that executed it. Every package's japa runner installs the adapter only when recording
+  or selecting, and strips the recording context from the environment before the tests run, so
+  ordinary runs and CI do not depend on the adapter build and child suites cannot append to the
+  parent's shard. `pnpm dogfood:record` builds once, records one shard per package (a shard holds
+  one header and footer, and script ids are shard-local), then builds the map;
+  `pnpm dogfood:select` forwards to the CLI. The adapter packages are `alwaysAll` in the dogfood
+  config because their suites drive the real runners in child processes, which the recorder
+  cannot see.
+- **`cbd explain … | head` exits quietly.** A reader that closed the pipe early raised an
+  unhandled `EPIPE` and printed a stack trace; the bin now treats it as a normal end of output.
+
+Tests: core 309, CLI 51, japa 66, mocha 8, Vitest 6, Jest 6, node:test 9, mutate 4, probe 5,
+fixture 42+1 skipped. The dogfood map holds 501 tests and 113 files from nine shards;
+`cbd select --no-worktree` answers zero tests for zero changed files, and a dirty tree answers
+`all` with `config-changed` while this release is uncommitted.
+
+**Update — the grizzly roadmap batch.** The remaining items of the consumer roadmap landed in one
+pass, in its order.
+
+- **An adapter contract.** Tests have a runner-neutral id, `<file>::<title>`, in the map, the JSON
+  answer and the selection file, which is now v2; a v1 title-only file is still read. Test code can
+  declare what coverage cannot see: `recordRead`, `recordDirRead`, `recordDependency` and
+  `recordOpaque`, exported from the package root, attributed to the open window with no runner
+  context. The map keeps each test's status and duration. The contract is window-based, not
+  `AsyncLocalStorage`-based, because no supported runner lets a plugin wrap the test body; the
+  reasoning and the concurrency consequence are in ADR-0017.
+- **Incremental recording.** `build --incremental` carries a previous map's tests forward only when
+  every file they touched, read or listed is unchanged. A test that used a changed file and was not
+  re-recorded is dropped, and every file it used is marked `partial`; a later change to one forces
+  `mode: all`. Buckets and per-shard load attribution are not carried, so a module-scope change in a
+  load-reached file escalates too. A select-mode recording now leaves a map usable for every file it
+  did not touch.
+- **The service-shard merge needed nothing.** The japa adapter already records a service as its own
+  shard with `role: 'service'`, and the build already unions one test's windows across shards while
+  excluding tests that never touched the service. The lane half is the consumer's.
+- **Shared maps.** `mapsDir` moves per-commit maps out of `<stateDir>/maps`; an absolute path lets
+  worktrees and review sandboxes read one set while shards and the selection file stay local.
+- **Read-only what-if selection.** `select --patch <file.diff>` and `select --change
+  <path>:<start>[-<end>]` answer a prospective edit without touching the tree, through the same
+  diff reader `--since` uses.
+- **Batch reaches.** `reaches --batch <rows.json>` takes neutral `{file, lines}` or `{file, find}`
+  rows with optional `killers`, and answers the tests that reach each and whether each named killer
+  is among them. An unknown file is reported as such, not as “no tests”.
+- **One answer for a base ref.** `select --since` unions the named base's diff with the map
+  commit's, coalescing hunks by path, instead of making a consumer call twice and merge (and lose
+  the second answer's warnings).
+- **Durations and a cost estimate.** Status and duration ride the map test entry; `select` reports
+  the subset's recorded milliseconds against the whole map, and the text line says both. Ordering a
+  selection by impact was not implemented: adapters filter by identifier and do not reorder.
+- **Small outputs.** `select --format summary` is a few lines (mode, selected of total, reason
+  counts, warnings, ignored, map age, estimate). `--version --format json` carries
+  `adapterContract` and a capabilities list. `--emit-selection <path>` writes the v2 file an adapter
+  reads, and removes a stale one when the answer is all or empty.
+- **Collect and packaging.** A command that dies before recording reports “no tests ran; nothing
+  recorded” and does not name a shard that was never written; a doubled `cbd:` prefix is gone. Every
+  published package generates a `CHANGELOG.md` from the repository log at `prepack`, and the publish
+  workflow generates it once more before packing.
+
+Tests: core 325, CLI 61, japa 66, mocha 8, Vitest 6, Jest 6, node:test 9, mutate 4, probe 5,
+fixture 42+1 skipped. The full workspace suite passes sequentially.

@@ -20,6 +20,7 @@ import {
   FileSink,
   Recorder,
   inProcessSource,
+  installReadTracking,
   readSelection,
   scanFromEnv,
 } from '@spikedpunch/cbd/adapter'
@@ -76,6 +77,9 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     scan: withSelfRoot(scanFromEnv()),
   })
   recorder.runStart()
+  // The setup file runs once per test file; installs form a stack so the active
+  // file's recorder receives the reads.
+  const stopReads = installReadTracking(recorder)
 
   const selection = readSelection(process.env)
   const wanted = selection === undefined ? null : new Set(selection)
@@ -110,6 +114,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     // transformed modules before the table is finalized (`cbd-x2j`).
     await recorder.runEnd()
     source.close()
+    stopReads()
   })
 }
 

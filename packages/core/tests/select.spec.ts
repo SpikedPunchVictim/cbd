@@ -24,6 +24,10 @@ const LOADED_ONLY = '/repo/src/loaded-only.ts'
 const BETWEEN_ONLY = '/repo/src/between-only.ts'
 /** The map has evidence for it, and no test reaches it: rule 6. */
 const UNTESTED = '/repo/src/seen-untested.ts'
+/** A file a test reads as text; it executes no code, so coverage cannot place it. */
+const DATA = '/repo/data/schema.json'
+/** A directory a test lists. */
+const LISTED = '/repo/specs'
 
 function makeMap(overrides: Partial<CoverageMap> = {}): CoverageMap {
   return {
@@ -48,6 +52,8 @@ function makeMap(overrides: Partial<CoverageMap> = {}): CoverageMap {
       },
     },
     load: [[LOADED_ONLY, '<module>@0', 0, 9]],
+    reads: { [DATA]: [1] },
+    dirReads: { [LISTED]: [2] },
     between: [],
     teardown: [],
     seen: [SRC, HELPER, SPEC, TEST_HELPER, TEST_HELPER_UNTOUCHED, LOADED_ONLY, BETWEEN_ONLY, UNTESTED],
@@ -109,6 +115,38 @@ test('rule 1: alwaysAll applies outside include', () => {
   })
   assert.equal(result.mode, 'all')
   assert.deepEqual(reasonKinds(result), ['all:always-all'])
+})
+
+// --- opaque dependencies ----------------------------------------------------
+test('a test that declared an opaque dependency is selected by any in-scope change', () => {
+  const map = makeMap({ opaque: { 'spawns a tool': [2] } })
+  const result = select(map, [change(DATA, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'subset')
+  // Test 1 reads the data file; test 2's dependency is invisible, so the marker
+  // is its only answer — it cannot be narrowed to a path.
+  assert.deepEqual(result.tests, [1, 2])
+  assert.deepEqual(reasonKinds(result), ['read', 'opaque'])
+})
+
+test('an opaque dependency on a clean tree selects nothing', () => {
+  const result = select(makeMap({ opaque: { 'spawns a tool': [2] } }), [])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [])
+})
+
+// --- partial (incremental) maps ---------------------------------------------
+test('a change to a partial file forces all, and says why', () => {
+  const map = makeMap({ partial: [SRC] })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:partial'])
+})
+
+test('a partial directory covers every file under it', () => {
+  const map = makeMap({ partial: [LISTED] })
+  const result = select(map, [change(`${LISTED}/new.ts`, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:partial'])
 })
 
 // --- rule 2 -----------------------------------------------------------------
@@ -527,6 +565,27 @@ test('rule 10: a map past maxAgeCommits warns, and --strict makes it all', () =>
   assert.equal(strict.mode, 'all')
 })
 
+// --- reads ---------------------------------------------------------------
+test('a change to a read file selects the tests that read it', () => {
+  const result = select(makeMap(), [change(DATA, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [1])
+  assert.deepEqual(result.reasons, [{ kind: 'read', file: DATA, tests: [1] }])
+})
+
+test('a change under a listed directory selects the test that listed it', () => {
+  const result = select(makeMap(), [change(`${LISTED}/new.spec.ts`, [{ start: 1, end: 1 }])])
+  assert.deepEqual(result.tests, [2])
+  assert.deepEqual(reasonKinds(result), ['read'])
+})
+
+test('readers compose with the function rule', () => {
+  const map = makeMap({ reads: { [SRC]: [2] } })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.deepEqual(result.tests, [0, 2])
+  assert.deepEqual(reasonKinds(result), ['read', 'function'])
+})
+
 // --- rule 11: alwaysSelect (`cbd-0na.4`) ------------------------------------
 test('alwaysSelect adds its tests to a matching subset with its own reason', () => {
   const result = select(makeMap(), [change(HELPER, [{ start: 1, end: 1 }])], {
@@ -577,7 +636,7 @@ test('alwaysSelect can claim a change outside include', () => {
   })
   assert.equal(result.mode, 'subset')
   assert.deepEqual(result.tests, [0], 'the always entry, not the per-file rule')
-  assert.deepEqual(result.ignored, [SRC])
+  assert.deepEqual(result.ignored, [], 'claimed by the entry, not silently ignored')
 })
 
 test('an alwaysSelect entry the map cannot resolve forces all and warns', () => {
@@ -587,6 +646,49 @@ test('an alwaysSelect entry the map cannot resolve forces all and warns', () => 
   assert.equal(result.mode, 'all')
   assert.deepEqual(reasonKinds(result), ['function', 'all:always-unknown'])
   assert.ok(result.warnings.some((warning) => /alwaysSelect names .* renamed away/.test(warning)))
+})
+
+// --- rule 7 override: unknownPolicyFor -----------------------------------
+test('unknownPolicyFor ignores an unknown file, reports it, and names the entry', () => {
+  const result = select(makeMap(), [change('/repo/tools/new.ts', [{ start: 1, end: 1 }])], {
+    unknownPolicyFor: [{ paths: ['/repo/tools/**'], policy: 'ignore' }],
+  })
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [])
+  assert.deepEqual(result.ignored, ['/repo/tools/new.ts'])
+  assert.ok(
+    result.warnings.some((warning) =>
+      /unknownPolicyFor\[0\].*\/repo\/tools\/\*\*/.test(warning),
+    ),
+    `expected the entry in the warning, got: ${result.warnings.join(' | ')}`,
+  )
+})
+
+test('unknownPolicyFor all still forces mode: all', () => {
+  const result = select(makeMap(), [change('/repo/tools/new.ts', [{ start: 1, end: 1 }])], {
+    unknownPolicyFor: [{ paths: ['/repo/tools/**'], policy: 'all' }],
+  })
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:unknown-file'])
+})
+
+test('unknownPolicyFor uses the first matching entry', () => {
+  const result = select(makeMap(), [change('/repo/tools/new.ts', [{ start: 1, end: 1 }])], {
+    unknownPolicyFor: [
+      { paths: ['/repo/tools/**'], policy: 'all' },
+      { paths: ['/repo/**'], policy: 'ignore' },
+    ],
+  })
+  assert.equal(result.mode, 'all')
+})
+
+test('unknownPolicyFor does not apply to a file the map knows', () => {
+  const result = select(makeMap(), [change(HELPER, [{ start: 1, end: 1 }])], {
+    unknownPolicyFor: [{ paths: ['/repo/**'], policy: 'ignore' }],
+  })
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [2])
+  assert.deepEqual(reasonKinds(result), ['function'])
 })
 
 // --- misc -------------------------------------------------------------------

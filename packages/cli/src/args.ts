@@ -25,7 +25,7 @@ export type Command =
   | 'version'
   | 'help'
 
-export type Format = 'text' | 'json'
+export type Format = 'text' | 'json' | 'summary'
 
 export interface ParsedArgs {
   command: Command
@@ -46,10 +46,24 @@ export interface ParsedArgs {
   build: boolean
   /** `collect`: the shard to write. Defaults under the state directory. */
   shard?: string
+  /** `build`/`collect`: carry untouched tests forward from an earlier map. */
+  incremental: boolean
+  /** The map commit to carry from; defaults to the nearest map. */
+  base?: string
   /** `reaches`: disambiguates a bare test title that occurs in more than one file. */
   file?: string
   /** `gc`: newest runs kept of each kind. */
   keep?: number
+  /** `reaches`: a JSON file of batch rows, instead of one test and target. Absolute. */
+  batch?: string
+  /** `select`: write the v2 selection file here. Absolute. */
+  emitSelection?: string
+  /** `select`: answer for this diff file instead of the worktree. Absolute. */
+  patch?: string
+  /** `select`: answer for these changed lines, `path:start[-end]`. */
+  change?: string
+  /** The directory the command was invoked from; relative paths resolve here. */
+  cwd: string
   /** Everything after `--`: the test command `collect` spawns. */
   exec: string[]
   positional: string[]
@@ -78,6 +92,11 @@ const VALUE_FLAGS = new Set([
   'shard',
   'keep',
   'file',
+  'patch',
+  'change',
+  'batch',
+  'emit-selection',
+  'base',
 ])
 
 const BOOLEAN_FLAGS = new Set([
@@ -88,6 +107,7 @@ const BOOLEAN_FLAGS = new Set([
   'strict',
   'select',
   'build',
+  'incremental',
 ])
 
 /** Global flags every command accepts; the rest are per command. */
@@ -95,12 +115,12 @@ const GLOBAL = new Set(['root', 'config', 'format', 'help', 'version'])
 
 const ALLOWED: Record<Command, readonly string[]> = {
   version: [],
-  build: ['commit', 'partial'],
-  select: ['since', 'worktree', 'strict', 'commit'],
+  build: ['commit', 'partial', 'incremental', 'base'],
+  select: ['since', 'worktree', 'strict', 'commit', 'patch', 'change', 'emit-selection'],
   explain: [],
-  reaches: ['commit', 'file'],
+  reaches: ['commit', 'file', 'batch'],
   stats: ['commit'],
-  collect: ['select', 'build', 'shard'],
+  collect: ['select', 'build', 'shard', 'incremental', 'base'],
   gc: ['keep'],
   help: [],
 }
@@ -270,7 +290,12 @@ function checkAllowed(command: Command, flags: Map<string, FlagValue>): void {
   }
 }
 
-function checkPositional(command: Command, positional: string[], exec: string[]): void {
+function checkPositional(
+  command: Command,
+  positional: string[],
+  exec: string[],
+  batch: boolean,
+): void {
   if (command === 'help') return
   if (command === 'version') {
     if (positional.length > 0 || exec.length > 0) {
@@ -293,6 +318,12 @@ function checkPositional(command: Command, positional: string[], exec: string[])
     return
   }
   if (command === 'reaches') {
+    if (batch) {
+      if (positional.length > 0) {
+        throw new UsageError('reaches --batch takes no positional arguments')
+      }
+      return
+    }
     if (positional.length !== 2) {
       throw new UsageError('reaches needs a <test-title> and a <file>[:<line>] argument')
     }
@@ -301,10 +332,15 @@ function checkPositional(command: Command, positional: string[], exec: string[])
   if (positional.length > 0) throw new UsageError(`unexpected argument "${positional[0]}"`)
 }
 
-function formatOf(flags: Map<string, FlagValue>): Format {
+function formatOf(flags: Map<string, FlagValue>, command: Command): Format {
   const value = flags.get('format') ?? 'text'
-  if (value !== 'text' && value !== 'json') {
-    throw new UsageError(`--format must be "text" or "json", not "${String(value)}"`)
+  if (value !== 'text' && value !== 'json' && value !== 'summary') {
+    throw new UsageError(`--format must be "text", "json" or "summary", not "${String(value)}"`)
+  }
+  // The summary shape answers "how much of the suite is this?"; it is the select
+  // answer condensed, not a second rendering every command has to make.
+  if (value === 'summary' && command !== 'select') {
+    throw new UsageError('--format summary is only for select')
   }
   return value
 }
@@ -333,7 +369,10 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const { flags, positional, exec } = takeFlags(argv)
   const command = commandOf(flags, positional)
   checkAllowed(command, flags)
-  checkPositional(command, positional, exec)
+  const batch = stringOf(flags, 'batch')
+  const emitSelection = stringOf(flags, 'emit-selection')
+  const base = stringOf(flags, 'base')
+  checkPositional(command, positional, exec, batch !== undefined)
 
   const config = stringOf(flags, 'config')
   const commit = stringOf(flags, 'commit')
@@ -341,6 +380,8 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const shard = stringOf(flags, 'shard')
   const file = stringOf(flags, 'file')
   const keep = positiveIntOf(flags, 'keep')
+  const patch = stringOf(flags, 'patch')
+  const change = stringOf(flags, 'change')
   const explicitRoot = stringOf(flags, 'root')
   // Help and version do not read a map, so they must not spawn git or walk the
   // filesystem to choose a root: a diagnostic command cannot hang on a broken
@@ -353,7 +394,7 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
         : resolve(cwd, explicitRoot)
   return {
     command,
-    format: formatOf(flags),
+    format: formatOf(flags, command),
     root,
     ...(config === undefined ? {} : { config: resolve(cwd, config) }),
     ...(commit === undefined ? {} : { commit }),
@@ -361,6 +402,12 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
     ...(shard === undefined ? {} : { shard: resolve(cwd, shard) }),
     ...(file === undefined ? {} : { file }),
     ...(keep === undefined ? {} : { keep }),
+    ...(patch === undefined ? {} : { patch: resolve(cwd, patch) }),
+    ...(change === undefined ? {} : { change }),
+    ...(batch === undefined ? {} : { batch: resolve(cwd, batch) }),
+    ...(emitSelection === undefined ? {} : { emitSelection: resolve(cwd, emitSelection) }),
+    ...(base === undefined ? {} : { base }),
+    cwd: resolve(cwd),
     partial: flags.get('partial') === true,
     // The factory diffs the worktree by default; `--no-worktree` is the HEAD side.
     worktree: flags.get('worktree') !== false,
@@ -368,6 +415,7 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
     // Both default on: an automatic run selects, and a collecting run builds.
     select: flags.get('select') !== false,
     build: flags.get('build') !== false,
+    incremental: flags.get('incremental') === true,
     exec,
     positional,
   }

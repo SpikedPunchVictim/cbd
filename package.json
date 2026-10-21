@@ -6,5 +6,12 @@
   "packageManager": "pnpm@11.17.0",
   "engines": {
     "node": ">=20"
+  },
+  "scripts": {
+    "dogfood:record": "node scripts/dogfood.mjs record",
+    "dogfood:select": "node scripts/dogfood.mjs select"
+  },
+  "devDependencies": {
+    "@spikedpunch/cbd-japa": "workspace:*"
   }
 }

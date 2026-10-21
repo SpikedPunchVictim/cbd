@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-jest",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "Jest adapter: a test environment that records per-test coverage windows and selects with them.",
   "main": "./dist/src/index.js",
@@ -12,7 +12,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node bin/test.js"
+    "test": "node scripts/build.mjs && node bin/test.js",
+    "prepack": "node ../../scripts/sync-changelogs.mjs"
   },
   "dependencies": {
     "@spikedpunch/cbd": "workspace:*"
@@ -32,7 +33,8 @@
   },
   "files": [
     "dist/src",
-    "dist/cjs"
+    "dist/cjs",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"

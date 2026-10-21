@@ -99,6 +99,18 @@ export interface ScanOptions {
   prefilter?: (url: string) => boolean
   /** Shared across the windows of a run; see `OrdinalRegistry`. */
   ordinals?: OrdinalRegistry
+  /**
+   * Keep the tool's own code when that code is what the suite tests.
+   *
+   * The self-root floor exists so the recorder's own bookkeeping — serializing a
+   * take, normalizing, writing the shard — does not enter every window. Dogfooding
+   * inverts that: CBD records its own suites, and a map that omits
+   * `packages/core/src` answers every source change with `mode: all`. With this
+   * set, core's roots and any adapter's `selfRoots` are not applied; the recorder's
+   * work is attributed like any other code. That over-selects (its work lands in
+   * `@between` and in the window after a take), which is the safe direction.
+   */
+  includeSelf?: boolean
 }
 
 /** The module body: V8 gives it no name, and its range spans the whole script. */
@@ -138,7 +150,12 @@ function rootVariants(root: string): string[] {
  */
 export function scriptPrefilter(options: ScanOptions): (url: string) => boolean {
   const accept = options.prefilter ?? defaultPrefilter
-  const roots = [...CBD_SELF_ROOTS, ...(options.selfRoots ?? [])].flatMap(rootVariants)
+  // `includeSelf` is the dogfooding switch: the tool's implementation is the code
+  // under test, so the floor is exactly wrong. See `ScanOptions.includeSelf`.
+  const roots =
+    options.includeSelf === true
+      ? []
+      : [...CBD_SELF_ROOTS, ...(options.selfRoots ?? [])].flatMap(rootVariants)
   return (url) => accept(url) && !withinRoots(url, roots)
 }
 

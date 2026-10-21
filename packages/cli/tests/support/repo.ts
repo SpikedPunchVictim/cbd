@@ -47,7 +47,7 @@ function lineStarts(text: string): number[] {
  * fixture that only *sees* a file (a load bucket for a module no test reaches) gets
  * the file created with enough lines, because "seen" now means "resolved".
  */
-function shardText(
+export function shardText(
   commit: string,
   tests: Array<{ title: string; file: string | null; touches: TouchRef[] }>,
   buckets: Partial<Record<'load' | 'between' | 'teardown', TouchRef[]>> = {},
@@ -148,10 +148,18 @@ if (signal !== undefined) {
   process.kill(process.pid, signal)
 }
 
-const titles =
+const selection =
   process.env.CBD_SELECTION === undefined
+    ? undefined
+    : JSON.parse(readFileSync(process.env.CBD_SELECTION, 'utf8'))
+// The adapter-neutral v2 file first, the older title-only file for a caller that
+// still writes one; this stand-in runner reads what a real adapter reads.
+const titles =
+  selection === undefined
     ? ['adds', 'reads']
-    : JSON.parse(readFileSync(process.env.CBD_SELECTION, 'utf8')).titles
+    : selection.tests !== undefined
+      ? selection.tests.map((test) => test.title)
+      : selection.titles
 
 // A v2 shard records byte ranges, not resolved tuples: the fixture's three-line
 // add spans line 1 to the start of line 3, and the script table says which bytes.

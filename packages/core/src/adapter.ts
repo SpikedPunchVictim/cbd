@@ -66,7 +66,36 @@ export {
 
 export { CBD_SELF_ROOTS, packageCodeRoots, packageRoot } from './self.js'
 
-export { readSelection, scanFromEnv, SELECTION_ENV, type SelectionFile } from './env.js'
+export {
+  INCLUDE_SELF_ENV,
+  readSelection,
+  readSelectionTests,
+  scanFromEnv,
+  SELECTION_ENV,
+  writeSelection,
+  type SelectionFile,
+  type SelectionTest,
+} from './env.js'
+
+export {
+  ADAPTER_CONTRACT_VERSION,
+  testId,
+  testRef,
+  type TestRef,
+  type TestRefDetail,
+} from './contract.js'
+
+export {
+  activateRecordSink,
+  recordDependency,
+  recordDirRead,
+  recordOpaque,
+  recordRead,
+  recordSink,
+  type RecordSink,
+} from './record.js'
+
+export { installReadTracking, type ReadSink } from './read-tracker.js'
 
 export { SOCKET_DIR_ENV } from './instrument-protocol.js'
 

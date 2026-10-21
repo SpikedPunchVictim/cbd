@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
-import { changesSince, parseUnifiedDiff } from '../src/changes.js'
+import { changesSince, mergeChanges, parseUnifiedDiff, type Change } from '../src/changes.js'
 import { tempRepo } from './support/git.js'
 
 test('a modification yields a hunk on the old side', () => {
@@ -183,6 +183,38 @@ test('hunks use old-side line numbers, which do not drift as earlier hunks grow'
   }
 })
 
+/**
+ * `select --since` needs the change between a caller's base and the map's commit
+ * read on the map's side. The old side belongs to the caller's base, whose line
+ * numbers moved, so a selector comparing them with the map's function ranges
+ * names the wrong function and silently drops the tests that reach the changed
+ * one. `to` is how that second side is asked for, and untracked files are not
+ * part of a two-commit question.
+ */
+test('a two-commit diff reports hunks on the side of the commit it ends at', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\ntwo\nthree\nfour\nfive\n')
+    const base = repo.commit('base')
+    repo.write('a.ts', 'one\nnew-a\nnew-b\ntwo\nthree\nFOUR\nfive\n')
+    const end = repo.commit('end')
+    repo.write('untracked.ts', 'not part of the commit\n')
+
+    const changes = changesSince({ root: repo.root, since: base, to: end })
+    assert.deepEqual(changes.map((change) => change.path), ['a.ts'])
+
+    const [change] = changes
+    // Old side: line 4. New side: lines 2-3 (the insertion) and line 6.
+    assert.deepEqual(change?.hunks, [{ start: 4, end: 4 }])
+    assert.deepEqual(change?.newHunks, [
+      { start: 2, end: 3 },
+      { start: 6, end: 6 },
+    ])
+  } finally {
+    repo.cleanup()
+  }
+})
+
 test('parseUnifiedDiff keeps a file with no hunks, such as a pure mode change', () => {
   const diff = [
     'diff --git a/script.sh b/script.sh',
@@ -268,4 +300,63 @@ test('--no-worktree asks about a commit, so untracked files are not changes', ()
   } finally {
     repo.cleanup()
   }
+})
+
+test('a failed untracked listing refuses the selection instead of dropping new files', () => {
+  const diff =
+    'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-one\n+TWO\n'
+  const exec = (args: string[]): string => {
+    if (args[0] === 'diff') return diff
+    throw new Error('simulated failure')
+  }
+
+  // The diff was readable, but the new-file list was not. A selection that cannot
+  // see an untracked file may answer with a subset that silently omits it, so the
+  // answer is an error rather than the incomplete change set.
+  assert.throws(
+    () => changesSince({ root: '/repo', since: 'HEAD', exec }),
+    /git ls-files --others failed in \/repo/,
+  )
+})
+
+// `cbd select --since` asks about two baselines at once: the one the caller named
+// and the map's commit, which is what the recording covers. One answer is the union.
+test('mergeChanges unions hunks by path and keeps a rename', () => {
+  const fromBase: Change[] = [
+    { path: '/r/a.ts', status: 'A', hunks: [{ start: 3, end: 4 }], insertions: [2], newHunks: [{ start: 3, end: 4 }] },
+    { path: '/r/b.ts', status: 'M', hunks: [{ start: 1, end: 1 }] },
+    { path: '/r/renamed.ts', status: 'R', from: '/r/old.ts', hunks: [] },
+  ]
+  const fromMap: Change[] = [
+    { path: '/r/a.ts', status: 'M', hunks: [{ start: 1, end: 1 }, { start: 3, end: 4 }] },
+    { path: '/r/b.ts', status: 'D', hunks: [{ start: 1, end: 2 }] },
+  ]
+
+  const merged = mergeChanges(fromBase, fromMap)
+  assert.deepEqual(merged.map((change) => change.path).sort(), ['/r/a.ts', '/r/b.ts', '/r/renamed.ts'])
+
+  const a = merged.find((change) => change.path === '/r/a.ts')!
+  assert.deepEqual(a.hunks, [
+    { start: 1, end: 1 },
+    { start: 3, end: 4 },
+  ])
+  assert.deepEqual(a.insertions, [2])
+  assert.equal(a.status, 'A')
+
+  // A modification on the map side wins over a deletion on the base side: the
+  // file is not simply gone, and the function rules can still answer.
+  const b = merged.find((change) => change.path === '/r/b.ts')!
+  assert.equal(b.status, 'M')
+  assert.deepEqual(b.hunks, [
+    { start: 1, end: 2 },
+  ])
+
+  const renamed = merged.find((change) => change.path === '/r/renamed.ts')!
+  assert.equal(renamed.from, '/r/old.ts')
+})
+
+test('mergeChanges deduplicates the same hunk seen from both sides', () => {
+  const one: Change = { path: '/r/a.ts', status: 'M', hunks: [{ start: 2, end: 2 }] }
+  const merged = mergeChanges([one], [{ ...one, hunks: [{ start: 2, end: 2 }] }])
+  assert.deepEqual(merged[0]?.hunks, [{ start: 2, end: 2 }])
 })

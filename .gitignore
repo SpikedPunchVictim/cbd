@@ -6,6 +6,9 @@ out/
 # CBD's own artifacts
 .cbd/
 
+# Per-package changelogs are generated from the repository one at pack time.
+packages/*/CHANGELOG.md
+
 # generated spike corpora (.explore/spike/measure.mjs regenerates them)
 .explore/spike/corpus-*/
 .explore/spike/ordinal-corpus/

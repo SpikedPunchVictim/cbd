@@ -243,6 +243,37 @@ test('a transformed script resolves through its generated line starts', () => {
   }
 })
 
+test('a test carries its file and directory reads through the build filter', () => {
+  const tree = makeTree()
+  try {
+    const resolved = resolveShard(
+      shard([
+        header(),
+        script(tree),
+        {
+          type: 'test',
+          title: 'reads',
+          file: null,
+          status: 'passed',
+          durationMs: 1,
+          touches: {},
+          reads: [tree.file, join(tree.root, 'notes.txt')],
+          dirReads: [tree.root, join(tree.root, 'node_modules')],
+        },
+        end(1),
+      ]),
+      { scan: { include: (file) => file.endsWith('.js') } },
+    )
+    // Read files follow include; directories are kept so a change to any file
+    // under a listed directory still selects the lister.
+    assert.deepEqual(resolved.tests[0]?.reads, [tree.file])
+    // Directories are kept as recorded when no relocation rule applies.
+    assert.deepEqual(resolved.tests[0]?.dirReads, [tree.root, join(tree.root, 'node_modules')])
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('a shard whose script changed size is refused', () => {
   const tree = makeTree()
   try {

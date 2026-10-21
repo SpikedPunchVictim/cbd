@@ -285,3 +285,27 @@ test('selfRoots from an adapter are a floor under a custom prefilter too', () =>
     tree.cleanup()
   }
 })
+
+// Dogfooding records the tool's own code. The floor is lifted for that one case —
+// without the switch a self-hosting map contains only test files and every source
+// change answers `mode: all`.
+test('includeSelf lifts the self-root floor when the tool is the code under test', () => {
+  const tree = makeTree()
+  try {
+    const start = span('function alpha')
+    const beta = span('function beta')
+    const payload = payloadFor(pathToFileURL(tree.file).href, [
+      { name: 'alpha', start, end: closeBrace(start), count: 1 },
+      { name: 'beta', start: beta, end: closeBrace(beta), count: 0 },
+    ])
+    const included = scan(payload, fakeSource(), {
+      projection: [{ from: tree.outDir, to: tree.root }],
+      prefilter: () => true,
+      selfRoots: [tree.root],
+      includeSelf: true,
+    })
+    assert.deepEqual(included.map((t) => t.key), ['alpha@0', 'beta@0'])
+  } finally {
+    tree.cleanup()
+  }
+})

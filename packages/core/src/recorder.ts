@@ -50,8 +50,11 @@
 import { statSync } from 'node:fs'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { CorrelatedTest, OwnerIndex } from './correlate.js'
+import type { TestRefDetail } from './contract.js'
 import { FileCache, sameLineStarts } from './line-index.js'
 import { scriptPrefilter, type ScanOptions } from './normalize.js'
+import { withoutReadTracking } from './read-tracker.js'
+import { activateRecordSink } from './record.js'
 import { createRelocator } from './relocate.js'
 import { sourceMapUrlOf } from './source-maps.js'
 import {
@@ -314,14 +317,16 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
 
   return {
     project(capture) {
-      return {
+      // The projector's own stat/read of a script is not a test dependency; a
+      // queued source may run it after the next test's window has opened.
+      return withoutReadTracking(() => ({
         window: project(capture.coverage),
         ids: capture.ids,
         requests: capture.requests.map((request) => ({
           ids: request.ids,
           window: project(request.coverage),
         })),
-      }
+      }))
     },
     scriptIds: () => [...rows.keys()],
     finish() {
@@ -562,9 +567,18 @@ export class Recorder {
   #now: () => number
   #testCount = 0
   #loadCaptured = false
-  #open: { title: string; file: string | null; startedAt: number; ordinal?: number } | null = null
+  #open:
+    | ({ title: string; file: string | null; startedAt: number; ordinal?: number } & TestRefDetail)
+    | null = null
   /** `(file, title)` -> occurrences seen this run. The first has no ordinal. */
   #ordinals = new Map<string, number>()
+  /** Reads noted while a test window is open; cleared at each boundary. */
+  #reads = new Set<string>()
+  #dirReads = new Set<string>()
+  /** Invisible dependencies the open test declared, by reason. */
+  #opaque = new Set<string>()
+  /** Detaches the record API from this recorder when the window closes. */
+  #releaseSink: (() => void) | null = null
   #owners: OwnerIndex | undefined
 
   constructor(options: RecorderOptions) {
@@ -679,7 +693,7 @@ export class Recorder {
     })
   }
 
-  testStart(title: string, file: string | null = null): void {
+  testStart(title: string, file: string | null = null, detail: TestRefDetail = {}): void {
     // The first test's start is the moment the load phase ends: everything the
     // process executed up to here is module import, which is `@load`.
     if (!this.#loadCaptured) {
@@ -691,12 +705,28 @@ export class Recorder {
     const key = `${file ?? ''}\u0000${title}`
     const seen = this.#ordinals.get(key) ?? 0
     this.#ordinals.set(key, seen + 1)
+    this.#reads.clear()
+    this.#dirReads.clear()
+    this.#opaque.clear()
     this.#open = {
       title,
       file,
       startedAt: this.#now(),
       ...(seen === 0 ? {} : { ordinal: seen }),
+      ...detail,
     }
+    // The record API talks to whatever recorder is open, with no runner context
+    // to pass. Releasing any previous sink first keeps a crashed window from
+    // leaving the API pointed at a recorder that will never close it.
+    this.#releaseSink?.()
+    this.#releaseSink = activateRecordSink({
+      noteRead: (path) => this.noteRead(path),
+      noteReadDir: (dir) => this.noteReadDir(dir),
+      noteOpaque: (reason) => this.noteOpaque(reason),
+      noteDependency: (paths) => {
+        for (const path of paths) this.noteRead(path)
+      },
+    })
   }
 
   testEnd(title: string, status: TestStatus, durationMs?: number): void {
@@ -710,21 +740,74 @@ export class Recorder {
     const file = open?.title === title ? open.file : (open?.file ?? null)
     const elapsed = durationMs ?? (open === null ? 0 : this.#now() - open.startedAt)
     const ordinal = open?.title === title ? open.ordinal : undefined
+    // Read synchronously, like every other field: a queued source builds the
+    // record later, after the next test may already have started its own reads.
+    const reads = [...this.#reads].sort()
+    const dirReads = [...this.#dirReads].sort()
+    const opaque = [...this.#opaque].sort()
+    const titlePath = open?.title === title ? open.titlePath : undefined
+    const line = open?.title === title ? open.line : undefined
+    const column = open?.title === title ? open.column : undefined
+    this.#reads.clear()
+    this.#dirReads.clear()
+    this.#opaque.clear()
+    // The record API is bound to this window; detach it before the window closes
+    // so a helper called during projection cannot be charged to the test.
+    this.#releaseSink?.()
+    this.#releaseSink = null
+    // Close the window *before* emitting. A queued source projects the captured
+    // bytes inside the builder, and the projector reads the generated file — a
+    // read by the recorder itself, not by the test. Leaving the window open made
+    // every test that ended with an async boundary look as if it had read every
+    // source the window touched.
+    this.#open = null
 
     this.#emit((capture) => ({
       type: 'test',
       title,
       file,
       ...(ordinal === undefined ? {} : { ordinal }),
+      ...(titlePath === undefined ? {} : { titlePath }),
+      ...(line === undefined ? {} : { line }),
+      ...(column === undefined ? {} : { column }),
       status,
       durationMs: elapsed,
       touches: capture.window.touches,
+      ...(reads.length === 0 ? {} : { reads }),
+      ...(dirReads.length === 0 ? {} : { dirReads }),
+      ...(opaque.length === 0 ? {} : { opaque }),
     }))
     this.#testCount += 1
-    this.#open = null
+  }
+
+  /**
+   * Note a file read made while a test window is open.
+   *
+   * Called by `installReadTracking`, not by adapters directly. Reads before the
+   * first test, between tests, and after the last one are not attributed: there is
+   * no window to charge them to, and the load/between rules already cover startup
+   * dependencies. A text oracle that runs inside a test is the case this exists
+   * for.
+   */
+  noteRead(path: string): void {
+    if (this.#open !== null) this.#reads.add(path)
+  }
+
+  /** Note a directory listing made while a test window is open. */
+  noteReadDir(path: string): void {
+    if (this.#open !== null) this.#dirReads.add(path)
+  }
+
+  /** Note an invisible dependency of the open test. See `recordOpaque`. */
+  noteOpaque(reason: string): void {
+    if (this.#open !== null) this.#opaque.add(reason)
   }
 
   runEnd(): void {
+    // A test that never reported its end (a crash in the runner) must not leave
+    // the record API pointed at a window that is about to be torn down.
+    this.#releaseSink?.()
+    this.#releaseSink = null
     // A run with no tests never reached the first `testStart`, so the load
     // window is still outstanding.
     if (!this.#loadCaptured) {

@@ -19,17 +19,27 @@
  * to delete, and a missing state directory is an empty pool rather than an error.
  */
 import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { mapDir, nearestMapCommit } from '@spikedpunch/cbd'
 
 /** Runs kept of each kind unless `--keep` names another count. */
 export const DEFAULT_KEEP = 10
 
 export interface GcOptions {
-  /** Repository root. Every path pruned is underneath it. */
+  /** Repository root. Relative state paths, including a relative `mapsDir`, resolve here. */
   root: string
   /** Relative to `root`; `.cbd` unless the config says otherwise. */
   stateDir?: string
+  /**
+   * Where per-commit maps live instead of `<stateDir>/maps`; resolved against
+   * `root`, and absolute paths are allowed.
+   *
+   * A shared, absolute directory is pruned with the same policy as a local one, so
+   * it can remove a map another checkout would have used. Name a `--keep` large
+   * enough for every worktree sharing it, or run `gc` from one owner of the
+   * directory.
+   */
+  mapsDir?: string
   /** Newest runs kept of each kind. At least 1. */
   keep: number
 }
@@ -123,10 +133,14 @@ export function gc(options: GcOptions): GcResult {
   // `select` reads the nearest map in the commit history, which is not
   // necessarily the newest one built — a recorded commit can sit under newer
   // maps from another branch. Keep it so gc cannot strand the next selection.
-  const current = nearestMapCommit(root, stateDir)
-  const essential = current === undefined ? undefined : mapDir(root, current, stateDir)
+  const current = nearestMapCommit(root, stateDir, options.mapsDir)
+  const essential = current === undefined ? undefined : mapDir(root, current, stateDir, options.mapsDir)
+  // Resolved the same way `mapDir` resolves it: a relative `mapsDir` in the config
+  // is rooted at the repository, not at whatever directory `cbd` was invoked from.
+  const mapsRoot =
+    options.mapsDir === undefined ? join(root, stateDir, 'maps') : resolve(root, options.mapsDir)
   const maps = prune(
-    candidates(join(root, stateDir, 'maps'), 'dir'),
+    candidates(mapsRoot, 'dir'),
     options.keep,
     essential !== undefined && existsSync(essential) ? essential : undefined,
   )

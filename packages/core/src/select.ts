@@ -19,6 +19,7 @@
  *   code and always forces `all`. A file reached only by `@between` is a separate
  *   policy knob, because out-of-window activity is common and often harmless.
  */
+import { isAbsolute, relative } from 'node:path'
 import { intersects, type Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
 import type { CoverageMap, FunctionEntry } from './map.js'
@@ -34,11 +35,14 @@ export type AllWhy =
   | 'test-file'
   | 'always-unknown'
   | 'config-changed'
+  | 'partial'
 
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
   | { kind: 'file'; file: string; tests: number[] }
   | { kind: 'test-file'; file: string; tests: number[] }
+  | { kind: 'read'; file: string; tests: number[] }
+  | { kind: 'opaque'; reason: string; tests: number[] }
   | { kind: 'always'; file?: string; tests: number[] }
   | { kind: 'all'; why: AllWhy; file?: string }
 
@@ -98,6 +102,11 @@ export interface SelectConfig {
   include?: (path: string) => boolean
   alwaysAll?: string[]
   unknownPolicy?: 'all' | 'ignore'
+  /**
+   * Per-glob overrides for an unknown file. First matching entry wins; a file the
+   * map knows still follows the normal rules.
+   */
+  unknownPolicyFor?: Array<{ paths: string[]; policy: 'all' | 'ignore' }>
   betweenPolicy?: 'all' | 'ignore'
   testFiles?: string[]
   /**
@@ -177,6 +186,12 @@ export function fileDefinesTests(text: string): boolean {
 
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((a, b) => a - b)
+}
+
+/** Whether `path` is strictly below `dir`. */
+function isUnder(path: string, dir: string): boolean {
+  const rel = relative(dir, path)
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
 }
 
 /** Case-folded path equality on the platforms whose filesystems ignore case. */
@@ -403,7 +418,22 @@ export function select(
       untested.push(path)
     } else {
       unmapped.push(path)
-      if (unknownPolicy === 'all') forceAll('unknown-file', path)
+      const index =
+        config.unknownPolicyFor?.findIndex(
+          (entry) => matchesAnyGlob(path, entry.paths) !== null,
+        ) ?? -1
+      const chosen = index === -1 ? unknownPolicy : config.unknownPolicyFor![index]!.policy
+      if (chosen === 'all') {
+        forceAll('unknown-file', path)
+      } else if (index !== -1) {
+        // The user asked for this glob to be ignored, but it is still a deliberate
+        // decision and must be distinguishable from "outside include".
+        ignored.push(path)
+        warnings.push(
+          `${path} is unknown to the map; ignored by unknownPolicyFor[${String(index)}] ` +
+            `(${config.unknownPolicyFor![index]!.paths.join(', ')})`,
+        )
+      }
     }
   }
 
@@ -435,8 +465,42 @@ export function select(
     }
 
     if (!include(path)) {
-      ignored.push(path)
+      // A path an `alwaysSelect.when` claims is in scope for that entry, not
+      // ignored; the factory passes it through include for exactly this reason.
+      const claimed = (config.alwaysSelect ?? []).some(
+        (entry) => entry.when !== undefined && matchesAnyGlob(path, entry.when) !== null,
+      )
+      if (!claimed) ignored.push(path)
       continue
+    }
+
+    // An incremental map carries only the tests whose evidence is provably
+    // unchanged. For a file it could not carry, the old line ranges may have
+    // moved, so the answer is the suite rather than a plausible subset.
+    const partial = map.partial
+    if (
+      partial !== undefined &&
+      partial.some((entry) => samePath(path, entry) || isUnder(path, entry))
+    ) {
+      unmapped.push(path)
+      forceAll('partial', path)
+      continue
+    }
+
+    // A file the test read or listed. This answers an oracle that executes no
+    // code in the file it checks — a source grep, a dependency scan, a tsc run —
+    // and it composes with the function and test-file rules rather than replacing
+    // them. Any change to the file reaches a reader; a file under a
+    // listed directory reaches the lister.
+    const readTests = map.reads?.[path] ?? []
+    const dirTests = Object.entries(map.dirReads ?? {})
+      .filter(([dir]) => isUnder(path, dir))
+      .flatMap(([, tests]) => tests)
+    const answeredByRead = readTests.length > 0 || dirTests.length > 0
+    if (answeredByRead) {
+      const tests = uniqueSorted([...readTests, ...dirTests])
+      for (const index of tests) selected.add(index)
+      reasons.push({ kind: 'read', file: path, tests })
     }
 
     // Rule 3 — a test file whose tests the registry can name. Under the default
@@ -480,7 +544,7 @@ export function select(
         const tests = testsTouchingFile(path)
         for (const index of tests) selected.add(index)
         reasons.push({ kind: 'file', file: path, tests })
-      } else {
+      } else if (!answeredByRead) {
         noTouches(path)
       }
       continue
@@ -543,8 +607,10 @@ export function select(
       continue
     }
 
-    // Rules 2, 9, 7, 6 — see `noTouches`.
-    noTouches(path)
+    // Rules 2, 9, 7, 6 — see `noTouches`. A read answer is an answer: the file
+    // need not be in the map, and escalating it would throw away the precise
+    // readers.
+    if (!answeredByRead) noTouches(path)
   }
 
   // Always-select — tests that cannot appear in coverage, such as an oracle that
@@ -556,6 +622,20 @@ export function select(
   // A no-`when` entry fires on any in-scope change, not on "no change at all":
   // a clean tree must stay a zero-test selection.
   const inScope = changes.some((change) => include(change.path))
+
+  // Tests that declared an invisible dependency (`recordOpaque`) are selected by
+  // any in-scope change. The marker is the only honest answer when a test spawns
+  // a tool or drives a service: there is no path to match, and guessing from
+  // coverage is exactly the failure the API exists to avoid.
+  if (inScope) {
+    for (const [reason, tests] of Object.entries(map.opaque ?? {})) {
+      const indices = uniqueSorted(tests ?? [])
+      if (indices.length === 0) continue
+      for (const index of indices) selected.add(index)
+      reasons.push({ kind: 'opaque', reason, tests: indices })
+    }
+  }
+
   for (const entry of config.alwaysSelect ?? []) {
     const triggered =
       entry.when === undefined

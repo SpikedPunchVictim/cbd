@@ -29,7 +29,7 @@ import { test } from '@japa/runner'
 import { defaultRoot } from '../src/args.js'
 import { EXIT } from '../src/cli.js'
 import { tempRepo } from './support/git.js'
-import { invoke, prepared } from './support/repo.js'
+import { invoke, prepared, shardText } from './support/repo.js'
 
 test.group('cbd --version', () => {
   test('prints the CLI and core versions, in text and JSON', () => {
@@ -48,16 +48,41 @@ test.group('cbd --version', () => {
 
       const json = invoke(repo.root, '--version', '--format', 'json')
       assert.equal(json.code, EXIT.ok)
-      assert.deepEqual(JSON.parse(json.out.join('\n')), {
-        cli: cli.version,
-        core: core.version,
-      })
+      const parsed = JSON.parse(json.out.join('\n')) as {
+        cli: string
+        core: string
+        adapterContract: number
+        capabilities: string[]
+      }
+      assert.equal(parsed.cli, cli.version)
+      assert.equal(parsed.core, core.version)
+      // A consumer refuses select mode when a guard it relies on is missing; the
+      // list is the contract, not a parse of the version.
+      assert.equal(parsed.adapterContract, 1)
+      assert.ok(parsed.capabilities.includes('configChanged'))
+      assert.ok(parsed.capabilities.includes('unknownPolicyFor'))
 
       // `help` wins when both are present, and a positional help is not an error.
       assert.match(invoke(repo.root, '--version', '--help').out[0]!, /^cbd —/)
       assert.match(invoke(repo.root, 'help', '--version').out[0]!, /^cbd —/)
     } finally {
       repo.cleanup()
+    }
+  })
+
+  test('the shipped bin gives help precedence over --version', () => {
+    // The bin answers `--version` before importing the CLI, so its precedence is
+    // its own and `run()`'s tests cannot cover it.
+    // Compiled, this file lives in `dist/tests`, so the bin is two levels up —
+    // the same depth it is from the source `tests` directory.
+    const bin = fileURLToPath(new URL('../../bin/cbd.js', import.meta.url))
+    for (const argv of [
+      ['help', '--version'],
+      ['--version', '--help'],
+    ]) {
+      const result = spawnSync(process.execPath, [bin, ...argv], { encoding: 'utf8' })
+      assert.equal(result.status, 0)
+      assert.match(result.stdout, /^cbd —/)
     }
   })
 
@@ -210,7 +235,169 @@ test.group('cbd select', () => {
       assert.equal(result.code, EXIT.ok)
       assert.ok(result.out.includes('tests/a.spec.ts > adds'))
       assert.ok(result.out.includes('tests/a.spec.ts > reads'))
-      assert.match(result.out.at(-1)!, /^2 tests for 1 changed file \(map [0-9a-f]{7}, up to date\)$/)
+      assert.match(
+        result.out.at(-1)!,
+        /^2 tests for 1 changed file \(map [0-9a-f]{7}, up to date\)(; ~\d+ ms of \d+ ms recorded)?$/,
+      )
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('--change answers a what-if without touching the tree', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const before = readFileSync(join(root, 'src/a.ts'), 'utf8')
+
+      const result = invoke(root, 'select', '--change', 'src/a.ts:2')
+      assert.equal(result.code, EXIT.ok)
+      assert.match(result.out.at(-1)!, /^2 tests for 1 changed file/)
+      assert.ok(result.out.includes('tests/a.spec.ts > adds'))
+      // A what-if is read-only: the file it asks about was never applied.
+      assert.equal(readFileSync(join(root, 'src/a.ts'), 'utf8'), before)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('--patch reads a diff with the same reader as --since', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const patch = join(root, 'what-if.diff')
+      writeFileSync(
+        patch,
+        [
+          'diff --git a/src/a.ts b/src/a.ts',
+          '--- a/src/a.ts',
+          '+++ b/src/a.ts',
+          '@@ -2 +2 @@',
+          '-  return a + b;',
+          '+  return b + a;',
+          '',
+        ].join('\n'),
+      )
+
+      const result = invoke(root, 'select', '--patch', patch)
+      assert.equal(result.code, EXIT.ok)
+      assert.match(result.out.at(-1)!, /^2 tests for 1 changed file/)
+      assert.ok(result.out.includes('tests/a.spec.ts > reads'))
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('--patch and --since are exclusive; a malformed --change is a usage error', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      for (const argv of [
+        ['select', '--since', 'HEAD', '--change', 'src/a.ts:1'],
+        ['select', '--change', 'src/a.ts'],
+        ['select', '--change', 'src/a.ts:9-3'],
+        ['select', '--change', 'src/a.ts:x'],
+      ]) {
+        const result = invoke(root, ...argv)
+        assert.equal(result.code, EXIT.usage, argv.join(' '))
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('--format summary answers in a few lines', () => {
+    const { repo, root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const result = invoke(root, 'select', '--format', 'summary')
+      assert.equal(result.code, EXIT.ok)
+      assert.deepEqual(result.out.slice(0, 2), ['mode: subset', 'selected: 2 of 2'])
+      assert.match(result.out[2]!, /^reasons: function 1/)
+      assert.match(result.out.at(-1)!, /^estimate: ~\d+ ms of \d+ ms recorded$/)
+      // Short enough that a consumer does not need a jq recipe, and it still
+      // carries the map's age.
+      assert.ok(result.out.some((line) => /^map: [0-9a-f]{7}, up to date/.test(line)))
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('--emit-selection writes the adapter file, and removes a stale one', () => {
+    const { repo, root, cleanup } = prepared()
+    // Outside the repository: an untracked file inside it is itself a change, and
+    // would make this selection `all` for the wrong reason.
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-emit-'))
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const file = join(dir, 'selection.json')
+      writeFileSync(file, JSON.stringify({ version: 2, tests: [{ id: 'stale', file: null, title: 'x' }] }))
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const written = invoke(root, 'select', '--emit-selection', file)
+      assert.equal(written.code, EXIT.ok)
+      const selection = JSON.parse(readFileSync(file, 'utf8')) as {
+        version: number
+        tests: Array<{ id: string; title: string }>
+      }
+      assert.equal(selection.version, 2)
+      assert.deepEqual(selection.tests.map((test) => test.title), ['adds', 'reads'])
+      assert.match(selection.tests[0]!.id, /tests\/a\.spec\.ts::adds$/)
+
+      // An unanswerable selection leaves no file behind: a runner handed the
+      // previous run's subset would silently run a fraction of the suite.
+      writeFileSync(join(root, 'cbd.config.json'), JSON.stringify({ include: ['src/**'] }))
+      const all = invoke(root, 'select', '--emit-selection', file)
+      assert.equal(all.code, EXIT.all)
+      assert.equal(existsSync(file), false)
+      assert.match(all.err.join('\n'), /selection is all; removed the stale/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
+  test('--format summary is only for select', () => {
+    const { root, cleanup } = prepared()
+    try {
+      const result = invoke(root, 'build', '--format', 'summary')
+      assert.equal(result.code, EXIT.usage)
+      assert.match(result.err.join('\n'), /summary is only for select/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('build --incremental carries untouched tests and marks the rest partial', () => {
+    const { repo, root, a, spec, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const base = repo.head()
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+      const next = repo.commit('second')
+      // A select-mode recording: only the test that reached the change ran.
+      writeFileSync(
+        join(root, '.cbd', 'shards', 'run.ndjson'),
+        shardText(next, [{ title: 'adds', file: spec, touches: [[a, 'add@0', 1, 3]] }]),
+      )
+
+      const built = invoke(root, 'build', '--incremental', '--format', 'json')
+      assert.equal(built.code, EXIT.ok)
+      const parsed = JSON.parse(built.out.join('\n')) as {
+        tests: number
+        incremental?: { base: string; carried: number; partial: number }
+      }
+      assert.equal(parsed.incremental?.base, base)
+      // `reads` used the changed file and was not re-run: it is not guessed at,
+      // and the file it used is marked partial.
+      assert.equal(parsed.incremental?.carried, 0)
+      assert.ok((parsed.incremental?.partial ?? 0) > 0)
+
+      const selected = invoke(root, 'select', '--change', 'src/a.ts:2')
+      assert.equal(selected.code, EXIT.all)
+      assert.match(selected.out.join('\n'), /partial/)
     } finally {
       cleanup()
     }
@@ -302,6 +489,44 @@ test.group('cbd select', () => {
         rmSync(configDir, { recursive: true, force: true })
       }
     } finally {
+      cleanup()
+    }
+  })
+
+  test('unknownPolicyFor ignores an unknown path and warns about a stale glob', () => {
+    const { repo, root, cleanup } = prepared()
+    const configDir = mkdtempSync(join(tmpdir(), 'cbd-config-'))
+    try {
+      const config = join(configDir, 'cbd.config.json')
+      writeFileSync(
+        config,
+        JSON.stringify({
+          unknownPolicyFor: [
+            { paths: ['tools/**'], policy: 'ignore' },
+            { paths: ['gone/**'], policy: 'ignore' },
+          ],
+        }),
+      )
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('tools/new.ts', 'export const x = 1\n')
+
+      const result = invoke(root, 'select', '--config', config, '--format', 'json')
+      assert.equal(result.code, EXIT.ok, result.err.join('\n'))
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { mode: string; ignored: string[]; warnings: string[] }
+      }
+      assert.equal(parsed.selection.mode, 'subset')
+      assert.ok(parsed.selection.ignored.some((path) => path.endsWith('/tools/new.ts')))
+      assert.ok(
+        parsed.selection.warnings.some((warning) =>
+          /unknownPolicyFor\[0\].*tools\/\*\*/.test(warning),
+        ),
+      )
+      assert.ok(
+        parsed.selection.warnings.some((warning) => /unknownPolicyFor\[1\].*stale/.test(warning)),
+      )
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
       cleanup()
     }
   })
@@ -482,6 +707,72 @@ test.group('cbd explain and stats', () => {
     }
   })
 
+  test('reaches --batch answers mutant rows and checks the named killers', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const rows = join(root, 'rows.json')
+      writeFileSync(
+        rows,
+        JSON.stringify([
+          { file: 'src/a.ts', lines: [2, 2], killers: ['adds', 'not-a-test'] },
+          { file: 'src/a.ts', find: 'return a + b' },
+          { file: 'src/nope.ts', lines: [1, 1] },
+        ]),
+      )
+
+      const result = invoke(root, 'reaches', '--batch', rows, '--format', 'json')
+      assert.equal(result.code, EXIT.ok)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        results: Array<{
+          file: string
+          start: number
+          end: number
+          seen: boolean
+          tests: Array<{ title: string }>
+          killers: Array<{ title: string; reaches: boolean }>
+        }>
+      }
+      assert.equal(parsed.results.length, 3)
+      assert.deepEqual(
+        parsed.results[0]!.tests.map((test) => test.title),
+        ['adds', 'reads'],
+      )
+      assert.deepEqual(parsed.results[0]!.killers, [
+        { title: 'adds', reaches: true },
+        { title: 'not-a-test', reaches: false },
+      ])
+      // `find` resolves to the same line as the explicit range.
+      assert.equal(parsed.results[1]!.start, 2)
+      assert.equal(parsed.results[1]!.killers.length, 0)
+      // An unknown file is not "no tests": selection would run everything.
+      assert.equal(parsed.results[2]!.seen, false)
+      assert.deepEqual(parsed.results[2]!.tests, [])
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('reaches --batch validates the rows and takes no positional arguments', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const bad = join(root, 'bad.json')
+      writeFileSync(bad, JSON.stringify([{ file: 'src/a.ts', lines: [3, 1] }]))
+      assert.equal(invoke(root, 'reaches', '--batch', bad).code, EXIT.usage)
+      assert.equal(
+        invoke(root, 'reaches', 'adds', 'src/a.ts', '--batch', bad).code,
+        EXIT.usage,
+      )
+      writeFileSync(bad, JSON.stringify([{ file: 'src/a.ts', find: 'not there' }]))
+      const missing = invoke(root, 'reaches', '--batch', bad)
+      assert.equal(missing.code, EXIT.usage)
+      assert.match(missing.err.join('\n'), /find text is not in/)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('reaches needs both a title and a target', () => {
     const { root, cleanup } = prepared()
     try {
@@ -626,6 +917,34 @@ test.group('cbd gc', () => {
       })
       assert.deepEqual(readdirSync(shards).sort(), ['four.ndjson', 'three.ndjson'])
       assert.deepEqual(readdirSync(maps).sort(), ['m3', 'm4'])
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('resolves a relative mapsDir against the root, not the invoking directory', () => {
+    const repo = tempRepo()
+    try {
+      repo.write('src/a.ts', 'export const a = 1\n')
+      repo.commit('base')
+      const root = realpathSync(repo.root)
+      const shared = join(root, 'shared-maps')
+      for (const name of ['m1', 'm2', 'm3']) {
+        const dir = join(shared, name)
+        mkdirSync(dir, { recursive: true })
+        writeFileSync(join(dir, 'map.json'), '{}')
+      }
+      writeFileSync(join(root, 'cbd.config.json'), JSON.stringify({ mapsDir: 'shared-maps' }))
+
+      // The config's path is relative; `mapDir` and `gc` must resolve it against
+      // the repository even when the command runs from a subdirectory.
+      const result = invoke(join(root, 'src'), 'gc', '--root', root, '--keep', '1', '--format', 'json')
+      assert.equal(result.code, EXIT.ok)
+      assert.equal(
+        (JSON.parse(result.out.join('\n')) as { maps: { removed: number } }).maps.removed,
+        2,
+      )
+      assert.deepEqual(readdirSync(shared).sort(), ['m3'])
     } finally {
       repo.cleanup()
     }

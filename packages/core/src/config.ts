@@ -38,11 +38,18 @@ export interface CbdConfigFile {
    */
   alwaysSelect?: Array<{ tests: string[]; when?: string[] }>
   unknownPolicy?: 'all' | 'ignore'
+  /**
+   * Per-glob overrides for a file the map has never seen. First matching entry
+   * wins; a known file is unaffected.
+   */
+  unknownPolicyFor?: Array<{ paths: string[]; policy: 'all' | 'ignore' }>
   betweenPolicy?: 'all' | 'ignore'
   testFiles?: string[]
   maxAgeCommits?: number
   strict?: boolean
   stateDir?: string
+  /** Directory holding per-commit maps; absolute paths let worktrees share one set. */
+  mapsDir?: string
   /** Only `"test"` is implemented; the key is accepted for the documented config. */
   granularity?: 'test' | 'group'
 }
@@ -59,12 +66,14 @@ const KEYS = new Set([
   'alwaysAll',
   'alwaysSelect',
   'unknownPolicy',
+  'unknownPolicyFor',
   'betweenPolicy',
   'testFiles',
   'testFilePolicy',
   'maxAgeCommits',
   'strict',
   'stateDir',
+  'mapsDir',
   'granularity',
 ])
 
@@ -147,6 +156,7 @@ export function parseConfig(raw: unknown, root: string): CbdConfig {
   return {
     root: canonical,
     ...(file.stateDir === undefined ? {} : { stateDir: file.stateDir as string }),
+    ...(file.mapsDir === undefined ? {} : { mapsDir: file.mapsDir as string }),
     ...(Object.keys(select).length === 0 ? {} : { select }),
   }
 }
@@ -173,6 +183,11 @@ function checkScalars(file: Record<string, unknown>, path: string): void {
   }
   if (file.stateDir !== undefined && typeof file.stateDir !== 'string') {
     throw new Error(`cbd: ${path} "stateDir" must be a string`)
+  }
+  if (file.mapsDir !== undefined) {
+    if (typeof file.mapsDir !== 'string' || file.mapsDir === '') {
+      throw new Error(`cbd: ${path} "mapsDir" must be a non-empty string`)
+    }
   }
   if (file.maxAgeCommits !== undefined) {
     if (
@@ -237,11 +252,50 @@ function alwaysSelect(raw: unknown, root: string, path: string): AlwaysSelectEnt
   })
 }
 
+/**
+ * Per-glob overrides for an unknown file.
+ *
+ * First matching entry wins, so a narrow `all` can precede a broad `ignore`. Only
+ * `all` and `ignore` are values: a "warn" policy would be useless to a consumer
+ * that turns every warning into a full run.
+ */
+function unknownPolicyFor(
+  raw: unknown,
+  root: string,
+  path: string,
+): SelectConfig['unknownPolicyFor'] | undefined {
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) {
+    throw new Error(`cbd: ${path} "unknownPolicyFor" must be an array`)
+  }
+  return raw.map((entry, index) => {
+    const where = `unknownPolicyFor[${String(index)}]`
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`cbd: ${path} ${where} must be an object with "paths" and "policy"`)
+    }
+    const record = entry as Record<string, unknown>
+    for (const key of Object.keys(record)) {
+      if (key !== 'paths' && key !== 'policy') {
+        throw new Error(`cbd: ${path} ${where} has an unknown key "${key}"`)
+      }
+    }
+    const paths = strings(record.paths, `${where}.paths`, path)
+    if (paths === undefined || paths.length === 0) {
+      throw new Error(`cbd: ${path} ${where}.paths must be a non-empty array of strings`)
+    }
+    if (record.policy !== 'all' && record.policy !== 'ignore') {
+      throw new Error(`cbd: ${path} ${where}.policy must be "all" or "ignore"`)
+    }
+    return { paths: absoluteGlobs(root, paths), policy: record.policy }
+  })
+}
+
 function selectFrom(file: Record<string, unknown>, root: string, path: string): SelectConfig {
   const include = strings(file.include, 'include', path)
   const exclude = strings(file.exclude, 'exclude', path)
   const alwaysAll = strings(file.alwaysAll, 'alwaysAll', path)
   const alwaysSelected = alwaysSelect(file.alwaysSelect, root, path)
+  const unknownPolicyOverrides = unknownPolicyFor(file.unknownPolicyFor, root, path)
   const testFiles = strings(file.testFiles, 'testFiles', path)
   const testFilePolicy = file.testFilePolicy
   if (
@@ -267,6 +321,7 @@ function selectFrom(file: Record<string, unknown>, root: string, path: string): 
   if (include !== undefined || exclude !== undefined) select.include = predicate
   if (alwaysAll !== undefined) select.alwaysAll = absoluteGlobs(root, alwaysAll)
   if (alwaysSelected !== undefined) select.alwaysSelect = alwaysSelected
+  if (unknownPolicyOverrides !== undefined) select.unknownPolicyFor = unknownPolicyOverrides
   if (testFiles !== undefined) select.testFiles = absoluteGlobs(root, testFiles)
   if (testFilePolicy !== undefined) select.testFilePolicy = testFilePolicy
   if (unknownPolicy !== undefined) select.unknownPolicy = unknownPolicy

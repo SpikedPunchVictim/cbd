@@ -24,6 +24,8 @@ reason. It never silently skips a test.
 - **In-process and out-of-process code.** The same mechanism can instrument a server the suite talks
   to, not just the test process.
 - **Consumable by anything.** A CLI with JSON output, a library API, and per-runner adapters.
+- **Stable ids and declared facts.** Every test is named `file::title` in the map and the selection
+  file, and a helper can declare a read or an opaque dependency that coverage cannot see.
 
 ## Packages
 
@@ -102,6 +104,17 @@ pnpm exec cbd select
 `select` exits **0** for a subset, **3** for "run everything", **1** for a failure and **2** for bad
 arguments, so scripts can branch without parsing output. Use `cbd explain <file>:<line>` to see which
 tests reach a line, and `cbd reaches <test> <file>` for the inverse.
+
+`--patch` and `--change` answer what a prospective edit would select without applying it — no
+checkout to restore, no `dist` to rebuild. Patch paths are read relative to `--root` (the coordinate
+`--since` prints), so a diff made at a nested `--root` is the one that resolves. `--emit-selection`
+writes the same v2 file adapters read, and removes a stale one when the answer is "all" or empty;
+write it outside the repository or under the state directory, or the next `select` will see it as an
+untracked change. `--format summary` prints the answer in a
+few lines for an agent. `reaches --batch` takes a JSON array of `{file, lines}` or `{file, find}` rows
+with optional `killers`, and answers what reaches each row — the query a mutation tool asks before a
+slow run. `build --incremental` carries the tests a select-mode recording did not run forward from
+the previous map, and marks any file it could not carry so a later change there runs everything.
 
 ### Library use
 
@@ -183,6 +196,7 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
     { "tests": ["tests/schema.spec.ts > the source names no unknown column"],
       "when": ["src/schema/**"] }
   ],
+  "unknownPolicyFor": [{ "paths": ["tools/**"], "policy": "ignore" }],
   "maxAgeCommits": 50
 }
 ```
@@ -193,12 +207,14 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
 | `alwaysAll` | Globs whose changes always force a full run (schema-only or generated files, for example). |
 | `alwaysSelect` | Tests every matching subset must also run, for oracles that read sources as text. Each entry is `{ "tests": ["file" or "file > title"], "when": ["glob"] }`; `when` is optional. An entry the map cannot resolve forces a full run and warns. |
 | `unknownPolicy` | `"all"` (default) or `"ignore"`: what a changed file the map has never seen means. |
+| `unknownPolicyFor` | Per-glob overrides for an unknown file: `[{ "paths": ["tools/**"], "policy": "ignore" }]`. First match wins; a known file is unaffected; an ignored path is named in `selection.ignored`. |
 | `betweenPolicy` | `"all"` (default) or `"ignore"`: what code executed outside any test window means. |
 | `testFiles` | Globs that identify test files. |
 | `testFilePolicy` | `"known"` (default) selects the tests the map knows a changed test file defines and warns; `"all"` forces the suite. |
 | `maxAgeCommits` | How old a map may be before it is stale. Default 50. |
 | `strict` | `true` makes a stale or dirty map force a full run instead of warning. |
 | `stateDir` | Where shards and maps live. Default `.cbd`. |
+| `mapsDir` | Where per-commit maps live, instead of `<stateDir>/maps`. An absolute path (for example the git common directory) lets worktrees and review sandboxes share one set. |
 | `granularity` | Only `"test"` is implemented. |
 
 ## Environment variables
@@ -210,6 +226,7 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
 | `CBD_SELECTION` | adapters | A JSON file `{ "titles": string[] }`; the run is narrowed to those tests. |
 | `CBD_SOCKET_DIR` | instrument, japa | Directory of the instrumented service's socket; declares that a service should be recorded. |
 | `CBD_RELOCATE_FROM` / `CBD_RELOCATE_TO` | build | Map a deployed copy's paths back to the checkout. |
+| `CBD_INCLUDE_SELF` | adapters | `1` keeps CBD's own code in the map when CBD records its own suites (dogfooding). Off by default. |
 | `CBD_SNAPSHOT_MS` | instrument | Periodic snapshot interval in milliseconds; `0` disables it. |
 
 `cbd collect` sets `CBD_SHARD`, `CBD_COMMIT` and (for a subset) `CBD_SELECTION` for the command it
@@ -219,12 +236,15 @@ spawns, then builds the map.
 
 ```sh
 cbd --version
-cbd build   [--commit <sha>] [--partial] [--format json]
+cbd build   [--commit <sha>] [--partial] [--incremental [--base <sha>]]
 cbd select  [--since <ref>] [--no-worktree] [--strict] [--commit <sha>]
+            [--patch <file.diff> | --change <path>:<start>[-<end>]]
+            [--emit-selection <path>] [--format text|json|summary]
 cbd explain <file>[:<line>] [--format json]
 cbd reaches <test-title> <file>[:<line>] [--file <test-file>] [--format json]
+cbd reaches --batch <rows.json> [--format json]
 cbd stats   [--commit <sha>] [--format json]
-cbd collect [--no-select] [--no-build] [--shard <path>] -- <test command>
+cbd collect [--no-select] [--no-build] [--shard <path>] [--incremental] -- <test command>
 cbd gc      [--keep <n>]
 ```
 
@@ -243,10 +263,39 @@ overrides it; `--config` selects the config file.
 - A window whose test failed is not trusted as a passing window and does not enter the map.
 - A change to `cbd.config.json` runs all tests: the map was built under the old include, policies and
   `alwaysSelect` list.
+- A file a test **read or listed** is selected when it changes, even if the test executed no code in
+  it — the case of a source grep, a dependency scan or a `tsc` run. Read tracking sees the test
+  process's public `node:fs` APIs; it cannot see a captured reference, a native addon, a child
+  process or a separately started service, so `alwaysSelect` remains the escape hatch for those.
 - A shard whose source bytes changed since recording is refused (`StaleShardError`) rather than
   mapped to the wrong offsets.
 - A map that is dirty or older than `maxAgeCommits` warns, and with `strict` escalates to all.
+- An **incremental** map carries a test only when every file it touched, read or listed is unchanged;
+  a file whose evidence could not be carried is marked partial, and any change to it runs everything.
 - Every answer carries its reasons; `cbd explain` turns them into named tests and functions.
+
+## Dogfooding
+
+This repository records and selects against its own suites. `cbd.config.json` at the root scopes
+the map to `packages/*/src`, the packages' tests and the fixture.
+
+```sh
+pnpm dogfood:record     # record every workspace suite, then build the map for HEAD
+pnpm dogfood:select     # what a change reaches — same flags as `cbd select`
+```
+
+Each package's japa runner installs the adapter only when `CBD_SHARD` or `CBD_SELECTION` is set, so
+an ordinary `pnpm -r test` — and CI — does not depend on the adapter being built. Recording sets
+`CBD_INCLUDE_SELF=1`, because the suite is CBD's own code: the default self-root floor would
+otherwise keep every `packages/*/src` script out of the map.
+
+One shard per package is deliberate. A shard has exactly one header and footer, and its script ids
+are local to it, so several test processes writing to one file would produce a map that parses and
+is wrong. `cbd build` merges the per-package files by commit.
+
+The adapter packages are in `alwaysAll`: their suites drive mocha, Vitest, Jest and `node:test` in
+child processes, which the recorder cannot see, so a function-body change there has no truthful
+subset answer.
 
 ## Documentation
 

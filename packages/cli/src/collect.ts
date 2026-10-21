@@ -23,7 +23,7 @@
  * is complete".
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -31,9 +31,9 @@ import {
   StaleShardError,
   mapPath,
   nearestMapCommit,
+  writeSelection,
   type Cbd,
   type CbdConfig,
-  type SelectionFile,
 } from '@spikedpunch/cbd'
 import { EXIT } from './exit.js'
 import { plural, shown } from './render.js'
@@ -50,6 +50,10 @@ export interface CollectOptions {
   select: boolean
   build: boolean
   shard?: string
+  /** Carry untouched tests forward from the nearest map instead of a full one. */
+  incremental: boolean
+  /** The map commit to carry from. */
+  base?: string
   out(line: string): void
   err(line: string): void
 }
@@ -73,7 +77,7 @@ interface SelectionPlan {
 function planSelection(options: CollectOptions, selectionPath: string): SelectionPlan {
   const stateDir = options.config.stateDir ?? '.cbd'
 
-  if (nearestMapCommit(options.root, stateDir) === undefined) {
+  if (nearestMapCommit(options.root, stateDir, options.config.mapsDir) === undefined) {
     options.err(
       'cbd: warning: no map yet; running the full suite so the first map covers everything',
     )
@@ -88,20 +92,16 @@ function planSelection(options: CollectOptions, selectionPath: string): Selectio
   }
 
   // A title can name more than one test when two files use the same name; the
-  // runner filters by title, so the list is a set.
+  // runner filters by title, so the list is a set. The file itself carries the
+  // ids as well, so a v2-aware adapter need not fall back to titles.
   const titles = [...new Set(result.selected.map((entry) => entry.title))]
   if (titles.length > 0) {
-    writeSelection(selectionPath, titles)
+    writeSelection(selectionPath, result.selected)
     options.out(`selected ${plural(titles.length, 'test')} for ${files}`)
   }
   return { titles, changed: result.changes.length }
 }
 
-function writeSelection(path: string, titles: string[]): void {
-  mkdirSync(dirname(path), { recursive: true })
-  const file: SelectionFile = { titles }
-  writeFileSync(path, JSON.stringify(file))
-}
 
 function childEnv(
   options: CollectOptions,
@@ -138,14 +138,18 @@ function buildAfterRun(
   err: (line: string) => void,
 ): number | null {
   try {
-    const built = options.cbd.build({ commit: options.commit })
+    const built = options.cbd.build({
+      commit: options.commit,
+      ...(options.incremental ? { incremental: true } : {}),
+      ...(options.base === undefined ? {} : { base: options.base }),
+    })
     out(
       `map ${shown(options.root, built.path)}: ${plural(built.tests, 'test')}, ` +
         `${plural(built.files, 'file')} from ${plural(built.shards.length, 'shard')}`,
     )
     return null
   } catch (error) {
-    const map = mapPath(options.root, options.commit, stateDir)
+    const map = mapPath(options.root, options.commit, stateDir, options.config.mapsDir)
     if (error instanceof StaleShardError && existsSync(map)) {
       err(
         `cbd: left the map at ${shown(options.root, map)} unchanged — this run's shard is ` +
@@ -153,7 +157,10 @@ function buildAfterRun(
       )
       return null
     }
-    err(`cbd: ${error instanceof Error ? error.message : String(error)}`)
+    const message = error instanceof Error ? error.message : String(error)
+    // Core's errors already carry the prefix; adding a second one read as
+    // `cbd: cbd: no shards under …`.
+    err(message.startsWith('cbd:') ? message : `cbd: ${message}`)
     return EXIT.error
   }
 }
@@ -173,6 +180,8 @@ export function collect(options: CollectOptions): number {
   }
 
   mkdirSync(dirname(shard), { recursive: true })
+  const existedBefore = existsSync(shard)
+  const sizeBefore = existedBefore ? statSync(shard).size : 0
   const started = performance.now()
   const result = spawnSync(options.exec[0]!, options.exec.slice(1), {
     cwd: options.cwd,
@@ -187,7 +196,17 @@ export function collect(options: CollectOptions): number {
     err(`cbd: could not run ${options.exec[0]}: ${result.error.message}`)
     return EXIT.error
   }
-  out(`recorded to ${shown(options.root, shard)} in ${elapsedMs} ms`)
+
+  // A shard is created by the adapter's first record, so a command that died
+  // before the runner started leaves no file at all. Printing "recorded to" for
+  // a path that does not exist, and then failing to build it, told the user two
+  // contradictory things in a row.
+  const wroteShard = existsSync(shard) && (!existedBefore || statSync(shard).size > sizeBefore)
+  out(
+    wroteShard
+      ? `recorded to ${shown(options.root, shard)} in ${elapsedMs} ms`
+      : 'no tests ran; nothing recorded',
+  )
 
   if (result.signal !== null) {
     err(
@@ -197,7 +216,7 @@ export function collect(options: CollectOptions): number {
     return EXIT.error
   }
 
-  if (options.build) {
+  if (options.build && wroteShard) {
     const failure = buildAfterRun(options, stateDir, out, err)
     if (failure !== null) return failure
   }

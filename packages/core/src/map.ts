@@ -9,8 +9,9 @@
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
+import { testId } from './contract.js'
 import { FileCache } from './line-index.js'
-import { resolveShard, type ResolvedShard } from './resolve.js'
+import { resolveShard, type ResolvedShard, type ResolvedTest } from './resolve.js'
 import type { ScanOptions } from './normalize.js'
 import type { ShardInput, TouchRef } from './shard.js'
 
@@ -24,6 +25,13 @@ export interface FunctionEntry {
 }
 
 export interface TestEntry {
+  /**
+   * Canonical, runner-neutral id: `<file>::<title>`.
+   *
+   * Optional only for maps written before the id existed; `buildMap` always
+   * writes it, and readers derive it from `(file, title)` when it is absent.
+   */
+  id?: string
   title: string
   file: string | null
   /**
@@ -31,9 +39,20 @@ export interface TestEntry {
    *
    * Absent for the first occurrence, then 1, 2, … for later ones in recording
    * order. Selection still filters by title — duplicates run together, safely
-   * over-selecting — but their coverage and failures no longer merge (`cbd-gkj`).
+   * over-selecting — but their coverage and failures no longer merge.
    */
   ordinal?: number
+  /**
+   * The title path, when the adapter supplied one. The id is `file::title`, so a
+   * path does not change identity; it makes `explain` readable.
+   */
+  titlePath?: string[]
+  /** Definition site, when the runner exposed it. Not part of the id. */
+  line?: number
+  column?: number
+  /** The last recorded outcome and duration, for the subset's cost estimate. */
+  status?: 'passed' | 'failed' | 'skipped'
+  durationMs?: number
 }
 
 export interface CoverageMap {
@@ -43,6 +62,35 @@ export interface CoverageMap {
   tests: TestEntry[]
   /** file -> key -> entry. */
   files: Record<string, Record<string, FunctionEntry>>
+  /**
+   * Files read by tests, and the tests that read them.
+   *
+   * A text oracle executes no code in the file it reads, so the function index
+   * cannot connect them. Optional: maps written before read tracking have no
+   * field, and selection behaves exactly as it did.
+   */
+  reads?: Record<string, number[]>
+  /** Directories listed by tests; a change to any file under one selects the lister. */
+  dirReads?: Record<string, number[]>
+  /**
+   * Tests that declared an invisible dependency, by the reason they gave.
+   *
+   * `recordOpaque` is the honest fallback for a test that spawns a tool or drives
+   * a service: there is no path to name, so any in-scope change selects it.
+   */
+  opaque?: Record<string, number[]>
+  /**
+   * Files whose evidence an incremental build could not carry.
+   *
+   * A map written by carrying untouched tests forward from an earlier commit is
+   * complete only for the files nothing changed. For every other file, the tests
+   * that used to reach it were not re-recorded and their old line ranges may have
+   * moved, so a change to it must run everything. An entry may be a directory (a
+   * dropped directory listing), and then anything under it is partial.
+   */
+  partial?: string[]
+  /** Present on a map assembled by `carryMap`: what it was carried from. */
+  carried?: { base: string; tests: number }
   /** Executed before the first test. Reaching it means the module was imported. */
   load: TouchRef[]
   /** Executed outside any window. Unattributable, so it reaches every test. */
@@ -145,15 +193,35 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   const teardown = new Map<string, TouchRef>()
   const loadShards = new Map<string, Set<number>>()
   const shardTests: number[][] = []
+  const reads = new Map<string, Set<number>>()
+  const dirReads = new Map<string, Set<number>>()
+  const opaque = new Map<string, Set<number>>()
   const included: string[] = []
 
-  const indexOfTest = (title: string, file: string | null, ordinal?: number): number => {
-    const id = `${title}\u0000${file ?? ''}\u0000${String(ordinal ?? 0)}`
-    const existing = testIndex.get(id)
-    if (existing !== undefined) return existing
+  const indexOfTest = (test: ResolvedTest): number => {
+    const key = `${test.title}\u0000${test.file ?? ''}\u0000${String(test.ordinal ?? 0)}`
+    const existing = testIndex.get(key)
+    if (existing !== undefined) {
+      // The same test can be recorded twice — the runner's window and a service's
+      // — and the service's duration is a duplicate of the same span. Keep the
+      // longer observation rather than summing two views of one test.
+      const entry = tests[existing]!
+      if ((test.durationMs ?? 0) > (entry.durationMs ?? 0)) entry.durationMs = test.durationMs
+      return existing
+    }
     const index = tests.length
-    tests.push({ title, file, ...(ordinal === undefined ? {} : { ordinal }) })
-    testIndex.set(id, index)
+    tests.push({
+      id: testId(test.file, test.title),
+      title: test.title,
+      file: test.file,
+      ...(test.ordinal === undefined ? {} : { ordinal: test.ordinal }),
+      ...(test.titlePath === undefined ? {} : { titlePath: test.titlePath }),
+      ...(test.line === undefined ? {} : { line: test.line }),
+      ...(test.column === undefined ? {} : { column: test.column }),
+      status: test.status,
+      durationMs: test.durationMs,
+    })
+    testIndex.set(key, index)
     return index
   }
 
@@ -168,9 +236,33 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     const touchedTests: number[] = []
     for (const test of resolved.tests) {
       if (!options.includeNonGreen && test.status !== 'passed') continue
-      const index = indexOfTest(test.title, test.file, test.ordinal)
+      const index = indexOfTest(test)
       allTests.push(index)
       if (test.touches.length > 0) touchedTests.push(index)
+      for (const reason of test.opaque ?? []) {
+        let set = opaque.get(reason)
+        if (set === undefined) {
+          set = new Set()
+          opaque.set(reason, set)
+        }
+        set.add(index)
+      }
+      for (const file of test.reads ?? []) {
+        let set = reads.get(file)
+        if (set === undefined) {
+          set = new Set()
+          reads.set(file, set)
+        }
+        set.add(index)
+      }
+      for (const dir of test.dirReads ?? []) {
+        let set = dirReads.get(dir)
+        if (set === undefined) {
+          set = new Set()
+          dirReads.set(dir, set)
+        }
+        set.add(index)
+      }
       for (const ref of test.touches) {
         let byKey = files.get(ref[0])
         if (byKey === undefined) {
@@ -231,6 +323,13 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   for (const file of [...loadShards.keys()].sort()) {
     shardsForFile[file] = [...loadShards.get(file)!].sort((a, b) => a - b)
   }
+  const indexed = (byFile: Map<string, Set<number>> | undefined): Record<string, number[]> => {
+    const out: Record<string, number[]> = {}
+    for (const file of [...(byFile?.keys() ?? [])].sort()) {
+      out[file] = [...byFile!.get(file)!].sort((a, b) => a - b)
+    }
+    return out
+  }
 
   return {
     version: MAP_VERSION,
@@ -243,9 +342,227 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     teardown: teardownRefs,
     loadShards: shardsForFile,
     shardTests,
+    reads: indexed(reads),
+    dirReads: indexed(dirReads),
+    ...(opaque.size === 0 ? {} : { opaque: indexed(opaque) }),
     seen: [...seen].sort(),
     shards: included,
     dirty: options.dirty === true,
+  }
+}
+
+/**
+ * Carries the tests an incremental build did not re-run into the new map.
+ *
+ * **Only evidence that is provably still true is carried.** A test is carried when
+ * every file it touched, read or listed is unchanged between the base commit and
+ * the new one — then its line ranges still describe the same bytes. A test that
+ * used a changed file is not carried, because its old ranges may have moved; it
+ * must have been selected by that change and therefore re-recorded, and if it was
+ * not, the map says so instead of guessing.
+ *
+ * **A dropped test poisons what it used.** Every file it touched or read, and every
+ * directory it listed, is added to `partial`; a later change to any of them forces
+ * `mode: all`. That is deliberately coarse — one dropped test can widen several
+ * files — because the alternative is an incremental map that answers a moved line
+ * with the wrong tests.
+ *
+ * **A poisoned file stays poisoned.** If `base` is itself incremental, the tests it
+ * could not carry are absent from `base.tests` and cannot be re-recorded here, so
+ * this run cannot heal what `base` already admitted it did not know. Its `partial`
+ * entries are carried forward; only a non-incremental build resets them.
+ *
+ * **A dropped opaque test keeps its declaration.** `recordOpaque` says the map
+ * cannot name what the test depends on, so it must run on any change. No `partial`
+ * entry can express that ("some other file changed"), so the entry survives with no
+ * evidence at all: its line ranges and reads are dropped like any other dropped
+ * test's, and the files it used are still poisoned.
+ *
+ * **Buckets are the new run's.** The base map's `@load`/`@between`/`@teardown`
+ * refs and its `shardTests`/`loadShards` describe processes that no longer exist at
+ * the new commit. Dropping them makes a module-scope change in a load-reached file
+ * escalate to `all`, which is the safe direction and the price of not re-running
+ * the suite.
+ */
+export function carryMap(
+  base: CoverageMap,
+  next: CoverageMap,
+  changed: ReadonlySet<string>,
+): CoverageMap {
+  const keyOf = (test: TestEntry): string =>
+    `${test.file ?? ''}\u0000${test.title}\u0000${String(test.ordinal ?? 0)}`
+  const nextKeys = new Set(next.tests.map(keyOf))
+
+  const addTo = (map: Map<number, Set<string>>, index: number, value: string): void => {
+    let set = map.get(index)
+    if (set === undefined) {
+      set = new Set()
+      map.set(index, set)
+    }
+    set.add(value)
+  }
+
+  // Evidence, indexed by base test. Built once, from the inverted map.
+  const touchedByTest = new Map<number, Set<string>>()
+  for (const [file, functions] of Object.entries(base.files)) {
+    for (const entry of Object.values(functions)) {
+      for (const index of entry.tests) addTo(touchedByTest, index, file)
+    }
+  }
+  const readByTest = new Map<number, Set<string>>()
+  for (const [file, indices] of Object.entries(base.reads ?? {})) {
+    for (const index of indices) addTo(readByTest, index, file)
+  }
+  const dirByTest = new Map<number, Set<string>>()
+  for (const [dir, indices] of Object.entries(base.dirReads ?? {})) {
+    for (const index of indices) addTo(dirByTest, index, dir)
+  }
+
+  const changedList = [...changed]
+  const under = (path: string, dir: string): boolean =>
+    path === dir || path.startsWith(dir.endsWith('/') ? dir : `${dir}/`)
+
+  const isChanged = (test: TestEntry, index: number): boolean => {
+    if (test.file !== null && changed.has(test.file)) return true
+    for (const file of touchedByTest.get(index) ?? []) if (changed.has(file)) return true
+    for (const file of readByTest.get(index) ?? []) if (changed.has(file)) return true
+    for (const dir of dirByTest.get(index) ?? []) {
+      if (changedList.some((path) => under(path, dir))) return true
+    }
+    return false
+  }
+
+  const carried: number[] = []
+  /**
+   * Dropped tests that declared an invisible dependency (`recordOpaque`).
+   *
+   * Their evidence is stale and is not carried, but the declaration is the whole
+   * answer for a test the map cannot see: dropping it would make the test vanish
+   * from every future selection that is not about one of the files it happened to
+   * touch. A `TestEntry` holds no evidence of its own, so re-adding the entry
+   * carries the marker and nothing else.
+   */
+  const opaqueKept: number[] = []
+  const opaqueByTest = new Map<number, string[]>()
+  for (const [reason, indices] of Object.entries(base.opaque ?? {})) {
+    for (const index of indices) {
+      const reasons = opaqueByTest.get(index)
+      if (reasons === undefined) opaqueByTest.set(index, [reason])
+      else reasons.push(reason)
+    }
+  }
+
+  // A base map can itself be incremental, and this run cannot heal what it could
+  // not carry: a test missing from `base.tests` has no window to re-record. So its
+  // `partial` markers survive. Dropping them let a chain of incremental builds
+  // forget that a file's evidence was incomplete and answer a change to it with a
+  // subset — the silent under-selection the whole design forbids.
+  const partial = new Set([...(base.partial ?? []), ...(next.partial ?? [])])
+  for (const [index, test] of base.tests.entries()) {
+    if (nextKeys.has(keyOf(test))) continue
+    if (!isChanged(test, index)) {
+      carried.push(index)
+      continue
+    }
+    if (test.file !== null) partial.add(test.file)
+    for (const file of touchedByTest.get(index) ?? []) partial.add(file)
+    for (const file of readByTest.get(index) ?? []) partial.add(file)
+    for (const dir of dirByTest.get(index) ?? []) partial.add(dir)
+    if (opaqueByTest.has(index)) opaqueKept.push(index)
+  }
+
+  const tests: TestEntry[] = [...next.tests]
+  const newIndex = new Map<number, number>()
+  for (const index of carried) {
+    newIndex.set(index, tests.length)
+    tests.push(base.tests[index]!)
+  }
+  const keptIndex = new Map<number, number>()
+  for (const index of opaqueKept) {
+    keptIndex.set(index, tests.length)
+    tests.push(base.tests[index]!)
+  }
+
+  const cloneFunctions = (
+    functions: Record<string, FunctionEntry>,
+  ): Record<string, FunctionEntry> =>
+    Object.fromEntries(
+      Object.entries(functions).map(([key, entry]) => [
+        key,
+        { ...entry, tests: [...entry.tests] },
+      ]),
+    )
+  const files: Record<string, Record<string, FunctionEntry>> = {}
+  for (const [file, functions] of Object.entries(next.files)) files[file] = cloneFunctions(functions)
+
+  for (const [index, at] of newIndex) {
+    for (const file of touchedByTest.get(index) ?? []) {
+      // A carried test never touches a changed file; the check is the guard that
+      // keeps a future change to `isChanged` from silently mixing coordinates.
+      if (changed.has(file)) continue
+      const functions = base.files[file]
+      if (functions === undefined) continue
+      for (const [key, entry] of Object.entries(functions)) {
+        if (!entry.tests.includes(index)) continue
+        const target = (files[file] ??= {})
+        const existing = target[key]
+        if (existing === undefined) {
+          target[key] = { startLine: entry.startLine, endLine: entry.endLine, tests: [at] }
+        } else if (!existing.tests.includes(at)) {
+          existing.tests.push(at)
+        }
+      }
+    }
+  }
+
+  const merge = (
+    from: Record<string, number[]> | undefined,
+    byTest: Map<number, Set<string>>,
+  ): Record<string, number[]> => {
+    const out: Record<string, number[]> = {}
+    for (const [path, indices] of Object.entries(from ?? {})) out[path] = [...indices]
+    for (const [index, at] of newIndex) {
+      for (const path of byTest.get(index) ?? []) {
+        // A read path is a changed file exactly when the test would have been
+        // dropped, so this only guards the same invariant as above.
+        if (changed.has(path)) continue
+        ;(out[path] ??= []).push(at)
+      }
+    }
+    for (const path of Object.keys(out)) out[path] = [...new Set(out[path]!)].sort((a, b) => a - b)
+    return out
+  }
+
+  const opaque: Record<string, number[]> = {}
+  for (const [reason, indices] of Object.entries(next.opaque ?? {})) opaque[reason] = [...indices]
+  for (const [reason, indices] of Object.entries(base.opaque ?? {})) {
+    for (const index of indices) {
+      const at = newIndex.get(index) ?? keptIndex.get(index)
+      if (at === undefined) continue
+      ;(opaque[reason] ??= []).push(at)
+    }
+  }
+  for (const reason of Object.keys(opaque)) {
+    opaque[reason] = [...new Set(opaque[reason]!)].sort((a, b) => a - b)
+  }
+
+  return {
+    version: next.version,
+    commit: next.commit,
+    builtAt: next.builtAt,
+    ...(next.dirty === true ? { dirty: true } : {}),
+    tests,
+    files,
+    ...(Object.keys(opaque).length === 0 ? {} : { opaque }),
+    reads: merge(next.reads, readByTest),
+    dirReads: merge(next.dirReads, dirByTest),
+    load: next.load,
+    between: next.between,
+    teardown: next.teardown,
+    seen: [...new Set([...base.seen, ...next.seen])].sort(),
+    shards: [...next.shards, `carried:${base.commit}`],
+    ...(partial.size === 0 ? {} : { partial: [...partial].sort() }),
+    carried: { base: base.commit, tests: carried.length },
   }
 }
 
@@ -271,12 +588,26 @@ export function buildMap(shards: ShardInput[], options: MapBuildOptions): Covera
  * Where a commit's map lives. `stateDir` is the config's state directory, rooted
  * at the repository; `.cbd` is the default.
  */
-export function mapDir(root: string, commit: string, stateDir = '.cbd'): string {
-  return join(root, stateDir, 'maps', commit)
+export function mapDir(
+  root: string,
+  commit: string,
+  stateDir = '.cbd',
+  mapsDir?: string,
+): string {
+  // `mapsDir` is the directory holding one subdirectory per commit. It may be
+  // absolute — the case it exists for is a checkout shared by several worktrees —
+  // and it replaces `<stateDir>/maps` rather than nesting under it.
+  const base = mapsDir === undefined ? join(root, stateDir, 'maps') : resolve(root, mapsDir)
+  return join(base, commit)
 }
 
-export function mapPath(root: string, commit: string, stateDir = '.cbd'): string {
-  return join(mapDir(root, commit, stateDir), 'map.json')
+export function mapPath(
+  root: string,
+  commit: string,
+  stateDir = '.cbd',
+  mapsDir?: string,
+): string {
+  return join(mapDir(root, commit, stateDir, mapsDir), 'map.json')
 }
 
 /**
@@ -332,6 +663,7 @@ function mapPaths(
     files: Object.fromEntries(
       Object.entries(map.files).map(([file, functions]) => [to(root, file), functions]),
     ),
+    ...(map.partial === undefined ? {} : { partial: map.partial.map((path) => to(root, path)) }),
     load: map.load.map((ref) => mapRef(root, ref, to)),
     between: map.between.map((ref) => mapRef(root, ref, to)),
     teardown: map.teardown.map((ref) => mapRef(root, ref, to)),
@@ -342,6 +674,20 @@ function mapPaths(
             Object.entries(map.loadShards).map(([file, shards]) => [to(root, file), shards]),
           ),
         }),
+    ...(map.reads === undefined
+      ? {}
+      : {
+          reads: Object.fromEntries(
+            Object.entries(map.reads).map(([file, tests]) => [to(root, file), tests]),
+          ),
+        }),
+    ...(map.dirReads === undefined
+      ? {}
+      : {
+          dirReads: Object.fromEntries(
+            Object.entries(map.dirReads).map(([dir, tests]) => [to(root, dir), tests]),
+          ),
+        }),
     seen: map.seen.map((file) => to(root, file)),
   }
 }
@@ -350,8 +696,9 @@ export function saveMap(
   root: string,
   map: CoverageMap,
   stateDir = '.cbd',
+  mapsDir?: string,
 ): { path: string; bytes: number } {
-  const dir = mapDir(root, map.commit, stateDir)
+  const dir = mapDir(root, map.commit, stateDir, mapsDir)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'map.json')
   const json = JSON.stringify(mapPaths(map, canonicalRoot(root), storePath))
@@ -367,8 +714,13 @@ export interface LoadedMap {
   parseMs: number
 }
 
-export function loadMap(root: string, commit: string, stateDir = '.cbd'): LoadedMap {
-  const path = mapPath(root, commit, stateDir)
+export function loadMap(
+  root: string,
+  commit: string,
+  stateDir = '.cbd',
+  mapsDir?: string,
+): LoadedMap {
+  const path = mapPath(root, commit, stateDir, mapsDir)
   const raw = readFileSync(path, 'utf8')
   const started = performance.now()
   const stored = JSON.parse(raw) as CoverageMap

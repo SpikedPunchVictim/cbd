@@ -18,12 +18,13 @@
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
-import { changesSince, commitsSince, headCommit, type Change } from './changes.js'
+import { changesSince, commitsSince, headCommit, mergeChanges, type Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
 import {
   buildMap,
   functionsForTest,
   functionsInFile,
+  carryMap,
   loadMap,
   saveMap,
   testsForFunction,
@@ -50,6 +51,15 @@ export interface CbdConfig {
   root: string
   /** Where shards and maps live, relative to `root`. Default `.cbd`. */
   stateDir?: string
+  /**
+   * Where per-commit map directories live, instead of `<stateDir>/maps`.
+   *
+   * Absolute paths are allowed and are the reason this exists: worktrees and
+   * review sandboxes can share one recorded map by pointing at the git common
+   * directory, while shards and the selection file stay local to each checkout.
+   * A relative path is resolved against `root`.
+   */
+  mapsDir?: string
   /**
    * The config file the selection was loaded from, absolute. Set by the loaders;
    * a change to it forces `mode: all` because it changes what selection means.
@@ -79,6 +89,13 @@ export interface BuildOptions {
    * (ADR-0002).
    */
   scan?: ScanOptions
+  /**
+   * Carry untouched tests forward from an earlier map instead of requiring a full
+   * re-record. Default false; `base` chooses the map, otherwise the nearest one.
+   */
+  incremental?: boolean
+  /** The map commit to carry from. Only meaningful with `incremental`. */
+  base?: string
 }
 
 export interface BuildResult {
@@ -88,6 +105,8 @@ export interface BuildResult {
   tests: number
   files: number
   shards: string[]
+  /** Present when the map carried tests forward; `partial` is how many files it could not. */
+  incremental?: { base: string; carried: number; partial: number }
 }
 
 export interface SelectOptions {
@@ -99,6 +118,15 @@ export interface SelectOptions {
   strict?: boolean
   /** Map commit to load. Defaults to HEAD. */
   commit?: string
+  /**
+   * Answer for these changes instead of diffing the tree.
+   *
+   * Paths are absolute, as the map's are; `hunks` are old-side. This is what a
+   * read-only what-if needs: no edit, no checkout, no clean tree to restore. The
+   * map and its staleness checks still apply — a what-if is not a second way to
+   * skip them.
+   */
+  changes?: Change[]
 }
 
 export interface MapSummary {
@@ -110,6 +138,8 @@ export interface MapSummary {
   /** Commits between the map's commit and HEAD, the number `maxAgeCommits` reads. */
   distance: number
   shards: string[]
+  /** Tests the map holds, so a subset can be stated as "N of M" without the map. */
+  tests: number
 }
 
 export interface SelectResult {
@@ -132,6 +162,21 @@ export interface SelectResult {
    * data this call had in hand. Empty when the mode is `all`, matching `tests`.
    */
   selected: TestEntry[]
+  /**
+   * What the answer costs, from the durations the recording kept.
+   *
+   * `known` is false for a map recorded before durations were stored, and for a
+   * test whose duration the runner did not report: zero would otherwise read as
+   * "free". `totalMilliseconds` is the whole map, so the saving is the difference
+   * and a consumer does not have to re-read the map to compute it.
+   */
+  estimate: {
+    /** Sum of the selected tests' recorded durations. */
+    milliseconds: number
+    /** Sum over every test the map knows. */
+    totalMilliseconds: number
+    known: boolean
+  }
 }
 
 export interface ExplainTarget {
@@ -220,6 +265,26 @@ export interface Quantiles {
   max: number
 }
 
+/** One row of a batch reaches query: a file and the mutated line range. */
+export interface ReachRow {
+  /** Repository-relative or absolute. */
+  file: string
+  /** 1-based, inclusive, in the map's coordinates. */
+  start: number
+  /** Inclusive; defaults to `start`. */
+  end?: number
+}
+
+export interface ReachRowResult {
+  file: string
+  start: number
+  end: number
+  /** Whether the map has any evidence for the file; false means select answers `all`. */
+  seen: boolean
+  /** The tests that executed a line in the range, in map order. */
+  tests: TestEntry[]
+}
+
 export interface Cbd {
   build(options?: BuildOptions): BuildResult
   select(options?: SelectOptions): SelectResult
@@ -236,6 +301,9 @@ export interface Cbd {
     target: ExplainTarget | string,
     options?: { commit?: string; file?: string },
   ): ReachesResult
+  /** The tests that reach any line of each row, for a mutation tool's batch query. */
+  reachesRows(rows: readonly ReachRow[], options?: { commit?: string }): ReachRowResult[]
+
   stats(options?: { commit?: string }): StatsResult
   /** Pure: no suite is run, the outcomes are supplied. */
   verify(selection: Selection, changes: Change[], outcomes: Map<string, TouchRef[]>): Verification
@@ -256,7 +324,12 @@ function git(root: string, args: string[]): string {
  * Bounded to the recent history a map could still answer for; an older one is stale
  * past any sensible `maxAgeCommits`.
  */
-export function nearestMapCommit(root: string, stateDir = '.cbd'): string | undefined {
+export function nearestMapCommit(
+  root: string,
+  stateDir = '.cbd',
+  mapsDir?: string,
+  exclude?: string,
+): string | undefined {
   const canonical = realpathSync(resolve(root))
   const head = headCommit(canonical)
   let candidates: string[]
@@ -266,7 +339,13 @@ export function nearestMapCommit(root: string, stateDir = '.cbd'): string | unde
     candidates = [head]
   }
   for (const candidate of candidates) {
-    if (candidate !== '' && existsSync(mapPath(canonical, candidate, stateDir))) return candidate
+    if (
+      candidate !== '' &&
+      candidate !== exclude &&
+      existsSync(mapPath(canonical, candidate, stateDir, mapsDir))
+    ) {
+      return candidate
+    }
   }
   return undefined
 }
@@ -308,19 +387,52 @@ function inside(path: string, dir: string): boolean {
 }
 
 /**
+ * Warn when an `unknownPolicyFor` entry's globs match no file in the repository.
+ *
+ * The list has the same drift problem `alwaysSelect` does: a renamed directory
+ * leaves a rule that never fires. This checks the tree, not the map, because the
+ * entry exists precisely for files no recording has seen.
+ */
+function stalePolicyWarnings(
+  root: string,
+  entries: SelectConfig['unknownPolicyFor'],
+): string[] {
+  if (entries === undefined || entries.length === 0) return []
+  let files: string[]
+  try {
+    const tracked = git(root, ['ls-files', '-z']).split('\u0000')
+    const untracked = git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split(
+      '\u0000',
+    )
+    files = [...tracked, ...untracked]
+      .filter((path) => path !== '')
+      .map((path) => resolve(root, path))
+  } catch {
+    return []
+  }
+  return entries.flatMap((entry, index) =>
+    files.some((file) => matchesAnyGlob(file, entry.paths) !== null)
+      ? []
+      : [`unknownPolicyFor[${String(index)}] matches no file in the repository; the globs may be stale`],
+  )
+}
+
+/**
  * Whether a config outside `root` changed.
  *
  * `changesSince --relative` cannot see a path outside the project root, so a
  * `--config` in a monorepo parent (or above `--root`) was invisible to rule 0.
- * Ask git directly for that one path, from the top level. A config outside the
+ * Ask git directly for that one path, from the top level. Compare against the
+ * map's commit rather than a caller's base: the map was built under the config of
+ * its own commit, so that is the config it can answer for. A config outside the
  * git repository cannot be compared and is left to the caller.
  */
-function configChangedOutside(root: string, configFile: string, since: string): boolean {
+function configChangedOutside(root: string, configFile: string, base: string): boolean {
   try {
     const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
     const rel = relative(top, configFile)
     if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
-    const changed = git(top, ['diff', '--name-only', since, '--', rel]).replace(/\r?\n$/, '')
+    const changed = git(top, ['diff', '--name-only', base, '--', rel]).replace(/\r?\n$/, '')
     if (changed !== '') return true
     const untracked = git(top, [
       'ls-files',
@@ -369,13 +481,47 @@ export function createCbd(config: CbdConfig): Cbd {
   // URLs through symlinks; canonicalize the root the same way (`/tmp` -> `/private/tmp`).
   const root = realpathSync(resolve(config.root))
   const stateDir = config.stateDir ?? '.cbd'
+  const mapsDir = config.mapsDir
   const shardsDir = join(root, stateDir, 'shards')
+
+  /** git speaks repository-relative paths; the map is keyed absolutely. */
+  const toAbsolute = (changes: readonly Change[]): Change[] =>
+    changes.map((change) => ({
+      ...change,
+      path: resolve(root, change.path),
+      ...(change.from === undefined ? {} : { from: resolve(root, change.from) }),
+    }))
+
+  /**
+   * Re-read a diff in the line numbers of the commit it ends at.
+   *
+   * `select --since <base>` may be handed a base older than the map's commit.
+   * Everything between the two is already recorded in the map, but the diff's
+   * old side belongs to the base, and those lines have moved since. Matching
+   * them against the map's function ranges names the wrong function and drops
+   * the tests that reach the one that changed — the case where the map is a few
+   * commits behind the base the caller named. The new side is the map's own
+   * commit, so `newHunks` are the ranges the map can answer for; the old-side
+   * insertions are dropped with them, and new-side insertions already appear as
+   * new hunks.
+   *
+   * A deletion between the two commits removes a file the map's tree no longer
+   * has, so there is nothing in the map to select for it.
+   */
+  const inMapCoordinates = (changes: readonly Change[]): Change[] =>
+    changes
+      .filter((change) => change.status !== 'D')
+      .map((change) => ({
+        ...change,
+        hunks: change.newHunks ?? [],
+        insertions: [],
+      }))
 
   const readMap = (commit: string): LoadedMap => {
     try {
-      return loadMap(root, commit, stateDir)
+      return loadMap(root, commit, stateDir, mapsDir)
     } catch (error) {
-      const expected = mapPath(root, commit, stateDir)
+      const expected = mapPath(root, commit, stateDir, mapsDir)
       throw new Error(
         `cbd: no map for ${commit} (looked for ${expected}). Record a run and build the map first.` +
           `\n  ${String(error)}`,
@@ -392,11 +538,11 @@ export function createCbd(config: CbdConfig): Cbd {
    * uses to decide whether this is a first recording.
    */
   const mapCommitForHead = (): string => {
-    const found = nearestMapCommit(root, stateDir)
+    const found = nearestMapCommit(root, stateDir, mapsDir)
     if (found !== undefined) return found
     const head = headCommit(root)
     throw new Error(
-      `cbd: no map in the last 200 commits of ${head} (looked under ${join(root, stateDir, 'maps')}).` +
+      `cbd: no map in the last 200 commits of ${head} (looked under ${mapsDir === undefined ? join(root, stateDir, 'maps') : resolve(root, mapsDir)}).` +
         ' Record a run and build the map first.',
     )
   }
@@ -409,6 +555,7 @@ export function createCbd(config: CbdConfig): Cbd {
     bytes: loaded.bytes,
     distance: commitsSince(root, loaded.map.commit),
     shards: loaded.map.shards,
+    tests: loaded.map.tests.length,
   })
 
   return {
@@ -446,14 +593,45 @@ export function createCbd(config: CbdConfig): Cbd {
         includeNonGreen: options.includeNonGreen === true,
         scan: options.scan ?? scanFromEnv(),
       })
-      const saved = saveMap(root, map, stateDir)
+      let out = map
+      let incremental: BuildResult['incremental']
+      if (options.incremental === true) {
+        const base =
+          options.base ??
+          nearestMapCommit(root, stateDir, mapsDir, commit)
+        if (base !== undefined && base !== commit) {
+          const earlier = readMap(base)
+          // The shards describe the worktree, so the worktree is the right side of
+          // the comparison even when `commit` names a commit: an uncommitted edit is
+          // exactly what the recording just covered.
+          const stateRoot = resolve(root, stateDir)
+          const changed = new Set<string>()
+          for (const change of toAbsolute(changesSince({ root, since: base }))) {
+            if (inside(change.path, stateRoot)) continue
+            changed.add(change.path)
+            // A rename reports only its new path, which never existed at the base
+            // commit. The old path is gone, so a test carried with evidence for it
+            // would describe a file that no longer exists; treating it as changed
+            // drops that evidence instead of resurrecting it.
+            if (change.from !== undefined) changed.add(change.from)
+          }
+          out = carryMap(earlier.map, map, changed)
+          incremental = {
+            base,
+            carried: out.carried?.tests ?? 0,
+            partial: out.partial?.length ?? 0,
+          }
+        }
+      }
+      const saved = saveMap(root, out, stateDir, mapsDir)
       return {
         commit,
         path: saved.path,
         bytes: saved.bytes,
-        tests: map.tests.length,
-        files: Object.keys(map.files).length,
-        shards: map.shards,
+        tests: out.tests.length,
+        files: Object.keys(out.files).length,
+        shards: out.shards,
+        ...(incremental === undefined ? {} : { incremental }),
       }
     },
 
@@ -471,29 +649,41 @@ export function createCbd(config: CbdConfig): Cbd {
         (entry) => entry.when ?? [],
       )
       const stateRoot = resolve(root, stateDir)
-      const allChanges = changesSince({
-        root,
-        since,
-        worktree: options.worktree !== false,
-      })
-        .map((change) => ({
-          ...change,
-          // git speaks repository-relative paths; the map is keyed absolutely.
-          path: resolve(root, change.path),
-          ...(change.from === undefined ? {} : { from: resolve(root, change.from) }),
-        }))
-        // Shards and maps are build artifacts. If the state directory is not
-        // gitignored, its files would otherwise read as untracked source changes
-        // and force a full run on every selection.
-        .filter((change) => !inside(change.path, stateRoot))
+      const allChanges =
+        options.changes !== undefined
+          ? [...options.changes]
+          : mergeChanges(
+              // A caller's base may predate the map's commit. Everything between
+              // the two is already recorded in the map, but the diff's old side
+              // is in the base's line numbers, which may have moved; project it
+              // onto the side the map measured (its own commit) before matching
+              // function ranges, or a moved function is named by its old lines
+              // and its tests are dropped.
+              toAbsolute(inMapCoordinates(changesSince({ root, since, to: loaded.map.commit }))),
+              // The map's commit is the recording's own baseline. This leg is
+              // always needed: it is the one that compares the map with the
+              // worktree (or HEAD), whatever base the caller asked about.
+              toAbsolute(
+                changesSince({
+                  root,
+                  since: loaded.map.commit,
+                  worktree: options.worktree !== false,
+                }),
+              ),
+            )
+              // Shards and maps are build artifacts. If the state directory is not
+              // gitignored, its files would otherwise read as untracked source changes
+              // and force a full run on every selection.
+              .filter((change) => !inside(change.path, stateRoot))
 
       // A config above `--root` is outside the relative diff; ask git about it
       // directly, and add it as a change so rule 0 can fire.
       const configFile = config.configFile
       if (
+        options.changes === undefined &&
         configFile !== undefined &&
         !inside(configFile, root) &&
-        configChangedOutside(root, configFile, since)
+        configChangedOutside(root, configFile, loaded.map.commit)
       ) {
         allChanges.push({ path: configFile, status: 'M', hunks: [], insertions: [] })
       }
@@ -551,25 +741,42 @@ export function createCbd(config: CbdConfig): Cbd {
       }
 
       const info = summarize(loaded)
+      const base = selectCore(loaded.map, changes, {
+        ...config.select,
+        definesTests,
+        ...(config.configFile === undefined ? {} : { configFile: config.configFile }),
+        ...(configChanged ? { configChanged: true } : {}),
+        ...(options.strict === undefined ? {} : { strict: options.strict }),
+      }, {
+        commit: info.commit,
+        distance: info.distance,
+        dirty: info.dirty,
+        builtAt: info.builtAt,
+      })
+      const stale = stalePolicyWarnings(root, config.select?.unknownPolicyFor)
       const selection: Selection = {
-        ...selectCore(loaded.map, changes, {
-          ...config.select,
-          definesTests,
-          ...(config.configFile === undefined ? {} : { configFile: config.configFile }),
-          ...(configChanged ? { configChanged: true } : {}),
-          ...(options.strict === undefined ? {} : { strict: options.strict }),
-        }, {
-          commit: info.commit,
-          distance: info.distance,
-          dirty: info.dirty,
-          builtAt: info.builtAt,
-        }),
-        ignored: [...new Set(ignored)].sort(),
+        ...base,
+        // The factory's list is what the scope filter dropped; `select` adds the
+        // paths an `unknownPolicyFor` entry deliberately ignored. Merge both.
+        ignored: [...new Set([...ignored, ...base.ignored])].sort(),
+        ...(stale.length === 0 ? {} : { warnings: [...base.warnings, ...stale] }),
       }
       const selected = selection.tests
         .map((index) => loaded.map.tests[index])
         .filter((entry): entry is TestEntry => entry !== undefined)
-      return { selection, changes, map: info, selected }
+      const duration = (entry: TestEntry): number => entry.durationMs ?? 0
+      const chosen = selection.mode === 'all' ? loaded.map.tests : selected
+      return {
+        selection,
+        changes,
+        map: info,
+        selected,
+        estimate: {
+          milliseconds: chosen.reduce((sum, entry) => sum + duration(entry), 0),
+          totalMilliseconds: loaded.map.tests.reduce((sum, entry) => sum + duration(entry), 0),
+          known: chosen.length > 0 && chosen.every((entry) => entry.durationMs !== undefined),
+        },
+      }
     },
 
     explain(target: ExplainTarget | string): ExplainResult {
@@ -666,6 +873,33 @@ export function createCbd(config: CbdConfig): Cbd {
         functions,
         files: [...new Set(reached.map((fn) => fn.file))].sort(),
       }
+    },
+
+    reachesRows(rows: readonly ReachRow[], options: { commit?: string } = {}): ReachRowResult[] {
+      const loaded = readMap(options.commit ?? mapCommitForHead())
+      const map = loaded.map
+      return rows.map((row) => {
+        const file = isAbsolute(row.file) ? row.file : resolve(root, row.file)
+        const end = row.end ?? row.start
+        // A test that executes the function containing any line of the range can
+        // observe the mutation. A line outside every function is module scope, and
+        // `testsForLine` answers it with the whole file's tests (§8.3 rule 5) —
+        // every test that touched the file can observe the module's state. That is
+        // wider than "reaches" for a module-scope row, but a mutation oracle is
+        // asking what could kill the mutant, and missing a killer is the costly
+        // direction.
+        const reached = new Set<TestEntry>()
+        for (let line = row.start; line <= end; line += 1) {
+          for (const entry of testsForLine(map, file, line)) reached.add(entry)
+        }
+        return {
+          file,
+          start: row.start,
+          end,
+          seen: map.seen.includes(file),
+          tests: map.tests.filter((entry) => reached.has(entry)),
+        }
+      })
     },
 
     stats(options: { commit?: string } = {}): StatsResult {

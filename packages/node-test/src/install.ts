@@ -27,6 +27,7 @@ import {
   FileSink,
   Recorder,
   inProcessSource,
+  installReadTracking,
   scanFromEnv,
 } from '@spikedpunch/cbd/adapter'
 import {
@@ -68,6 +69,7 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     scan: withSelfRoot(scanFromEnv()),
   })
   recorder.runStart()
+  const stopReads = installReadTracking(recorder)
 
   const opened = new WeakSet<object>()
   const skipped = new WeakSet<object>()
@@ -105,6 +107,7 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     // Outside every test window: transformed-script coordinates are fetched here.
     await recorder.runEnd()
     source.close()
+    stopReads()
   })
 
   function remember(context: NodeTestContextLike, method: 'skip' | 'todo'): void {

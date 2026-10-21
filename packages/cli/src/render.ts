@@ -14,6 +14,7 @@ import { relative } from 'node:path'
 import type {
   BuildResult,
   ExplainResult,
+  ReachRowResult,
   Reason,
   ReachesResult,
   SelectResult,
@@ -29,6 +30,10 @@ export const shown = (root: string, path: string): string => {
 
 export const plural = (count: number, one: string, many = `${one}s`): string =>
   `${count} ${count === 1 ? one : many}`
+
+/** A recorded duration, short enough for a summary line. */
+const seconds = (milliseconds: number): string =>
+  milliseconds < 1000 ? `${Math.round(milliseconds)} ms` : `${(milliseconds / 1000).toFixed(1)} s`
 
 const short = (commit: string): string => commit.slice(0, 7)
 
@@ -56,6 +61,10 @@ function reasonLine(root: string, reason: Reason): string {
       return `${shown(root, reason.file)} (${plural(reason.tests.length, 'test')})`
     case 'test-file':
       return `${shown(root, reason.file)} (test file, ${plural(reason.tests.length, 'test')})`
+    case 'read':
+      return `${shown(root, reason.file)} (read by ${plural(reason.tests.length, 'test')})`
+    case 'opaque':
+      return `${reason.reason} (opaque dependency, ${plural(reason.tests.length, 'test')})`
     case 'always':
       return `alwaysSelect (${plural(reason.tests.length, 'test')})`
     case 'all':
@@ -63,6 +72,32 @@ function reasonLine(root: string, reason: Reason): string {
         ? reason.why
         : `${reason.why} (${shown(root, reason.file)})`
   }
+}
+
+export function summaryLines(result: SelectResult): string[] {
+  const counts = new Map<string, number>()
+  for (const reason of result.selection.reasons) {
+    counts.set(reason.kind, (counts.get(reason.kind) ?? 0) + 1)
+  }
+  const reasons =
+    [...counts.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([kind, count]) => `${kind} ${String(count)}`)
+      .join(', ') || 'none'
+  const map = `${short(result.map.commit)}, ${behind(result.map.distance)}${result.map.dirty ? ', dirty' : ''}`
+  return [
+    `mode: ${result.selection.mode}`,
+    result.selection.mode === 'all'
+      ? `selected: all ${String(result.map.tests)}`
+      : `selected: ${String(result.selected.length)} of ${String(result.map.tests)}`,
+    `reasons: ${reasons}`,
+    `warnings: ${String(result.selection.warnings.length)}`,
+    `ignored: ${String(result.selection.ignored.length)}`,
+    `map: ${map}`,
+    ...(result.estimate.known
+      ? [`estimate: ~${seconds(result.estimate.milliseconds)} of ${seconds(result.estimate.totalMilliseconds)} recorded`]
+      : []),
+  ]
 }
 
 export function selectLines(result: SelectResult, root: string): string[] {
@@ -74,10 +109,13 @@ export function selectLines(result: SelectResult, root: string): string[] {
   }
   const files = plural(result.changes.length, 'changed file')
   const summary = `${short(result.map.commit)}, ${behind(result.map.distance)}`
+  const estimate = result.estimate.known
+    ? `; ~${seconds(result.estimate.milliseconds)} of ${seconds(result.estimate.totalMilliseconds)} recorded`
+    : ''
   lines.push(
     result.selection.mode === 'all'
-      ? `all tests for ${files} (map ${summary})`
-      : `${plural(result.selected.length, 'test')} for ${files} (map ${summary})`,
+      ? `all tests for ${files} (map ${summary})${estimate}`
+      : `${plural(result.selected.length, 'test')} for ${files} (map ${summary})${estimate}`,
   )
   if (result.selection.ignored.length > 0) {
     lines.push(
@@ -174,6 +212,39 @@ export function reachesLines(result: ReachesResult, root: string): string[] {
   ) {
     // The answer came from the file-level rule, not from a function this test ran.
     lines.push('  (the line is outside this test\'s functions; the file-level rule answers)')
+  }
+  return lines
+}
+
+/**
+ * One line per batch row: where the mutation is, what reaches it, and which of
+ * the expected killers do.
+ *
+ * A row whose file the map has never seen is not "no tests": selection would run
+ * the whole suite for it, and a mutation run that treated it as safe to skip would
+ * be wrong in the expensive direction.
+ */
+export function batchLines(
+  results: Array<ReachRowResult & { killers: Array<{ title: string; reaches: boolean }> }>,
+  root: string,
+): string[] {
+  const lines: string[] = []
+  for (const row of results) {
+    const range = row.start === row.end ? String(row.start) : `${row.start}-${row.end}`
+    const where = `${shown(root, row.file)}:${range}`
+    const reached =
+      row.tests.length > 0
+        ? `${plural(row.tests.length, 'test')}: ${row.tests.map((test) => test.title).join(', ')}`
+        : row.seen
+          ? 'no test reaches it'
+          : 'not in the map (select runs all)'
+    const killers =
+      row.killers.length === 0
+        ? ''
+        : `; killers: ${row.killers
+            .map((killer) => `${killer.title} ${killer.reaches ? 'yes' : 'no'}`)
+            .join(', ')}`
+    lines.push(`${where} — ${reached}${killers}`)
   }
   return lines
 }

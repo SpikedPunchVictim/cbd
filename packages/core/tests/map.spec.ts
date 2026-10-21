@@ -22,6 +22,7 @@ import {
   functionsInFile,
   loadMap,
   mapDir,
+  carryMap,
   mergeShards,
   saveMap,
   testsForFunction,
@@ -29,6 +30,7 @@ import {
 } from '../src/map.js'
 import type { ResolvedShard, ResolvedTest } from '../src/resolve.js'
 import type { ShardHeader, TouchRef } from '../src/shard.js'
+import { select } from '../src/select.js'
 
 const A = '/repo/src/a.ts'
 const B = '/repo/src/b.ts'
@@ -232,6 +234,20 @@ test('a test shard attributes load to every test in the process', () => {
   assert.deepEqual(map.loadShards?.[B], [0])
 })
 
+test('reads and directory reads merge per file', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('reads', []), reads: [A, '/repo/data.json'], dirReads: ['/repo/specs'] },
+      ]),
+      shard('s2', [{ ...testRecord('lists', []), reads: [A] }]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.reads, { [A]: [0, 1], '/repo/data.json': [0] })
+  assert.deepEqual(map.dirReads, { '/repo/specs': [0] })
+})
+
 test('the map records which shards produced it', () => {
   const map = mergeShards([shard('one.jsonl', [])], { commit: 'c0ffee' })
   assert.deepEqual(map.shards, ['one.jsonl'])
@@ -265,6 +281,140 @@ test('saving and loading round-trips, reporting bytes and parse time', () => {
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
+})
+
+test('mapsDir puts the map where a shared checkout can find it', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-root-')))
+  const shared = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-shared-')))
+  try {
+    const built = mergeShards([shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)])])], {
+      commit: 'c0ffee',
+      builtAt: 'T2',
+    })
+    const { path } = saveMap(root, built, '.cbd', shared)
+    assert.equal(path, join(shared, 'c0ffee', 'map.json'))
+    // The default layout is untouched when mapsDir is absent.
+    assert.equal(mapDir(root, 'c0ffee'), join(root, '.cbd', 'maps', 'c0ffee'))
+
+    const loaded = loadMap(root, 'c0ffee', '.cbd', shared)
+    assert.deepEqual(loaded.map, built)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(shared, { recursive: true, force: true })
+  }
+})
+
+test('carryMap carries untouched tests and marks what it could not', () => {
+  const DATA = '/repo/data/schema.json'
+  const DATA2 = '/repo/data/other.json'
+  const base = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('adds', [ref(A, 'add@0', 1, 3)]), file: '/repo/tests/a.spec.ts' },
+        {
+          ...testRecord('reads', [ref(A, 'add@0', 1, 3)]),
+          file: '/repo/tests/a.spec.ts',
+          reads: [DATA],
+        },
+        {
+          ...testRecord('other', [ref(B, 'b@0', 1, 2)]),
+          file: '/repo/tests/b.spec.ts',
+          reads: [DATA2],
+        },
+      ]),
+    ],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  // The incremental run recorded only `adds`; `reads` used a changed file and was
+  // not re-run, `other` used only unchanged files.
+  const next = mergeShards(
+    [shard('s2', [{ ...testRecord('adds', [ref(A, 'add@0', 1, 3)]), file: '/repo/tests/a.spec.ts' }])],
+    { commit: 'beef', builtAt: 'T2' },
+  )
+
+  const carried = carryMap(base, next, new Set([A]))
+  assert.deepEqual(carried.tests.map((test) => test.title), ['adds', 'other'])
+  assert.deepEqual(carried.carried, { base: 'c0ffee', tests: 1 })
+  // The dropped test's evidence is poisoned, not guessed at: the file it used,
+  // the data it read, and the spec it lived in.
+  assert.deepEqual(carried.partial, [A, DATA, '/repo/tests/a.spec.ts'].sort())
+  // The carried test keeps its evidence on the unchanged file, re-indexed.
+  assert.deepEqual(carried.files[B]?.['b@0']?.tests, [1])
+  assert.deepEqual(carried.reads, { [DATA2]: [1] })
+  assert.ok(carried.shards.includes('carried:c0ffee'))
+  // Buckets belong to the new run only; the old process is gone.
+  assert.deepEqual(carried.load, [])
+})
+
+test('a later incremental build keeps the partial files an earlier one admitted', () => {
+  const DATA = '/repo/data/schema.json'
+  const SPEC = '/repo/tests/a.spec.ts'
+  const base = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('reads', [ref(A, 'add@0', 1, 3)]), file: SPEC, reads: [DATA] },
+        { ...testRecord('other', [ref(B, 'b@0', 1, 2)]), file: '/repo/tests/b.spec.ts' },
+      ]),
+    ],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  // The first incremental run dropped `reads` because its data file changed. The
+  // second recorded nothing, so it cannot heal what the first one admitted it did
+  // not know — the marker has to survive the chain, or a change to the data file
+  // would answer with a subset that silently omits the test.
+  const second = carryMap(
+    base,
+    mergeShards([shard('s2', [])], { commit: 'beef', builtAt: 'T2' }),
+    new Set([DATA]),
+  )
+  assert.deepEqual(second.partial, [A, DATA, SPEC].sort())
+
+  const third = carryMap(
+    second,
+    mergeShards([shard('s3', [])], { commit: 'f00d', builtAt: 'T3' }),
+    new Set(),
+  )
+  assert.deepEqual(third.partial, [A, DATA, SPEC].sort())
+
+  const answer = select(third, [{ path: DATA, status: 'M', hunks: [] }])
+  assert.equal(answer.mode, 'all')
+  assert.ok(answer.reasons.some((reason) => reason.kind === 'all' && reason.why === 'partial'))
+})
+
+test('a dropped opaque test keeps its marker instead of vanishing', () => {
+  const SPEC = '/repo/tests/a.spec.ts'
+  const base = mergeShards(
+    [
+      shard('s1', [
+        {
+          ...testRecord('drives a cli', [ref(A, 'add@0', 1, 3)]),
+          file: SPEC,
+          opaque: ['spawns the tool'],
+        },
+        { ...testRecord('other', [ref(B, 'b@0', 1, 2)]), file: '/repo/tests/b.spec.ts' },
+      ]),
+    ],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  // The recording changed A without re-running the opaque test: its window is
+  // stale, but the declaration that it depends on something invisible is not.
+  const carried = carryMap(
+    base,
+    mergeShards([shard('s2', [])], { commit: 'beef', builtAt: 'T2' }),
+    new Set([A]),
+  )
+  assert.deepEqual(carried.tests.map((test) => test.title), ['other', 'drives a cli'])
+  assert.equal(carried.files[A], undefined, 'stale coverage is not carried')
+  assert.deepEqual(carried.opaque, { 'spawns the tool': [1] })
+  assert.ok(carried.partial?.includes(A))
+
+  // Any in-scope change still selects it, including one it never touched.
+  const answer = select(carried, [{ path: B, status: 'M', hunks: [{ start: 1, end: 2 }] }])
+  assert.equal(answer.mode, 'subset')
+  assert.deepEqual(
+    answer.tests.map((index) => carried.tests[index]!.title).sort(),
+    ['drives a cli', 'other'],
+  )
 })
 
 // `cbd-0na.5`: absolute paths made a recording work only in the worktree that

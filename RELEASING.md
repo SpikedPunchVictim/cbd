@@ -40,8 +40,8 @@ for a public package from a public repository. No `--provenance` flag and no
 Every package shares one version:
 
 ```sh
-git tag v0.0.3
-git push origin v0.0.3
+git tag v0.0.4
+git push origin v0.0.4
 ```
 
 The tag is the release. The workflow:
@@ -66,8 +66,8 @@ version, dist-tag and whether to dry-run.
 
 - `pnpm -r test` is green locally (CI runs it again).
 - `npm pack --dry-run` in a package lists only `dist/src` (and the CLI's
-  `bin/cbd.js`, the core's schema, the Jest adapter's `dist/cjs`) — the `files`
-  field is what keeps compiled tests out of the tarball.
+  `bin/cbd.js`, the core's schema, the Jest adapter's `dist/cjs`, and the generated
+  `CHANGELOG.md`) — the `files` field is what keeps compiled tests out of the tarball.
 - The version has not been published before; npm rejects a republished version,
   and the workflow does not overwrite one.
 

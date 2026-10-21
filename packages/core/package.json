@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "Framework-neutral core: coverage sources, normalization, and the coverage map.",
   "main": "./dist/src/index.js",
@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && pnpm --filter @spikedpunch/cbd-fixture run build && node bin/test.js"
+    "test": "node scripts/build.mjs && pnpm --filter @spikedpunch/cbd-fixture run build && node bin/test.js",
+    "prepack": "node ../../scripts/sync-changelogs.mjs"
   },
   "dependencies": {
     "@jridgewell/trace-mapping": "^0.3.31"
@@ -25,7 +26,8 @@
   },
   "files": [
     "dist/src",
-    "cbd.config.schema.json"
+    "cbd.config.schema.json",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"

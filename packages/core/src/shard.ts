@@ -134,7 +134,38 @@ export interface ShardTest {
   /** A non-green test's window is not trustworthy; the map builder drops these. */
   status: 'passed' | 'failed' | 'skipped'
   durationMs: number
+  /**
+   * The test's title path, when the adapter exposes one. Optional because the
+   * contract defaults it to `[title]`; the map keeps the array when it is real.
+   */
+  titlePath?: string[]
+  /** Definition site, when the runner exposes it. Not part of the test id. */
+  line?: number
+  column?: number
   touches: ShardTouch
+  /**
+   * Files the test read during its window.
+   *
+   * A text oracle executes no code from the file it reads, so V8 coverage cannot
+   * connect them. The adapter's read tracker records the path instead; a change
+   * to it then selects this test. Paths are absolute when recorded and filtered /
+   * relocated at build time like every other path.
+   */
+  reads?: string[]
+  /**
+   * Directories the test listed. A file added to, removed from, or changed under
+   * one of these selects the test — the dependency-direction check is a directory
+   * listing, not a read of any one file.
+   */
+  dirReads?: string[]
+  /**
+   * Reasons the test declared an invisible dependency (`recordOpaque`).
+   *
+   * A test that spawns a tool or a service has no path to name. The marker makes
+   * it selected by any in-scope change rather than by a guess; the reasons are
+   * kept so `explain` can say why.
+   */
+  opaque?: string[]
 }
 
 /**

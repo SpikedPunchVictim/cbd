@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-cli",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "type": "module",
   "description": "The cbd binary: build, select, explain and stats over a coverage map.",
   "bin": {
@@ -13,7 +13,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node scripts/build.mjs && node bin/test.js"
+    "test": "node scripts/build.mjs && node bin/test.js",
+    "prepack": "node ../../scripts/sync-changelogs.mjs"
   },
   "dependencies": {
     "@spikedpunch/cbd": "workspace:*"
@@ -25,7 +26,8 @@
   },
   "files": [
     "dist/src",
-    "bin/cbd.js"
+    "bin/cbd.js",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public"

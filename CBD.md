@@ -405,6 +405,33 @@ An adapter's whole job: compute a test identity, call the Recorder at the right 
 every per-test handler synchronous — in a framework that does not await its events, a handler that
 awaits would take coverage after the next test has started. Target size: 100–200 lines each.
 
+**The contract (version 1).** Every adapter reports the same three things, and the rest of the
+toolchain consumes only those:
+
+- **Identity.** `testId(file, title)` is `<file>::<title>`. An adapter may also report a
+  `titlePath` and a definition site; neither changes the id, because a line number moves when
+  unrelated code above the test does. Where two tests genuinely share a title in one file,
+  selection runs both — over-selection is the safe direction.
+- **A window.** `testStart` before the test body, `testEnd` after it, synchronously.
+- **Results.** The outcome and the duration, on that same `testEnd`.
+
+Test code — or a helper it calls — can add what the recorder cannot observe:
+`recordRead(path)`, `recordDirRead(dir)`, `recordDependency(paths)` and `recordOpaque(reason)`,
+exported from `@spikedpunch/cbd`. They take no test id; the open window receives them, and a call
+outside every window is ignored, which leaves the file unknown and escalates to `all`.
+`recordOpaque` marks a test as selected by any in-scope change — the honest fallback for a test that
+spawns a tool or drives a service.
+
+`cbd collect` writes the v2 selection file `{ "version": 2, "tests": [{ id, file, title, … }] }`;
+a v1 `{ "titles": [...] }` file is still read, so an adapter and a CLI do not have to upgrade
+together. `ADAPTER_CONTRACT_VERSION` is exported from the package root and the adapter entry, and
+`cbd --version --format json` reports it.
+
+The contract is window-based, deliberately not `AsyncLocalStorage`-based: no supported runner lets
+a *plugin* wrap the test body, and a context established in a `beforeEach` does not reliably survive
+into the runner's own invocation. A runner that overlaps tests by default must serialize windows or
+decline to record. See [ADR-0017](arch/decisions/0017-adapter-contract.md).
+
 ### 7.1 japa (`@spikedpunch/cbd-japa`)
 
 Facts read from the installed `@japa/runner` 5.0.0 and `@japa/core` 10.4.0:
@@ -450,7 +477,9 @@ Wiring facts the implementation rests on, all measured (`.explore/A0-japa-hooks.
   `configure` is the integration.
 - **The adapter's own files are excluded from the scan.** So are core's. `NODE_OPTIONS` reaches the
   test runner too (ADR-0005), and a workspace link resolves outside `node_modules`, where the
-  default prefilter cannot hide the tool (`cbd-qly`).
+  default prefilter cannot hide the tool. `CBD_INCLUDE_SELF=1` lifts that floor for the
+  one case where the tool is the subject: recording CBD's own suites (dogfooding), where a map
+  without core's `src` would answer every source change with `mode: all`.
 
 **Selection with japa.** The plugin computes the titles and sets `config.filters.tests` inside
 `run()`; it does **not** emit `--tests` CLI args. `configure()` snapshots `processCLIArgs` at call
@@ -628,8 +657,11 @@ source changes.
 | a changed file is a test file (it defines tests the map knows, or is a helper that statically contains a registration call) | select the tests the map knows in that file and **warn that an added test cannot be named** (`testFilePolicy: 'known'`, the default); `'all'` forces the suite; a new test file the map has never seen → all |
 | a changed file is in the map, and a hunk intersects a mapped function's line range | the tests that touched that function |
 | a changed file is in the map, and a hunk has **any line** outside every function (imports, top-level constants, class field initializers) | every test that touched the file, **plus every test in the process that evaluated the module body** (`@load`/`@teardown`); `mode: all` when the map has no such attribution |
+| a changed file a test **read**, or a file under a directory a test **listed** | the tests that read or listed it, with reason `read`; composes with the function and test-file rules |
+| a test declared an **opaque** dependency (`recordOpaque`) and any in-scope file changed | that test is selected, with reason `opaque` |
+| a changed file — or anything under a changed directory — is marked `partial` by an incremental map | `mode: all`, reason `partial` — the evidence could not be carried |
 | a changed file is in the map but no test touched it | nothing selected; reported as `untested` |
-| a changed file was **never seen** by the map and matches `include` | `mode: all` by default (`unknownPolicy: 'all' \| 'ignore' \| 'file-importers'`) |
+| a changed file was **never seen** by the map and matches `include` | `mode: all` by default (`unknownPolicy: 'all' \| 'ignore' \| 'file-importers'`); `unknownPolicyFor` can override per glob |
 | a deleted file in the map | every test that touched it |
 | a file touched by `@between` only | its tests cannot be known; `mode: all` by default (`betweenPolicy`) |
 | a change matches an `alwaysSelect` entry's `when`, or the entry has no `when` | the named tests are added, with reason `always`; an entry the map cannot resolve forces `mode: all` and warns |
@@ -664,6 +696,41 @@ whose rules have changed; the file is often outside `include`, and reporting it 
 was wrong (`cbd-73r.3`). The comparison follows real paths (a symlinked or differently-cased config
 is the same file), and a config outside `--root` is checked with a targeted git query because the
 relative diff cannot see it.
+
+**Reads are a dependency without execution.** A test that greps a source file, lists a directory or
+runs `tsc` over a declaration executes none of it, so coverage has no edge to draw. The adapters
+install a read tracker in the test process: the public `node:fs` and `node:fs/promises` read, stat,
+existence and directory-listing calls are wrapped, `syncBuiltinESMExports()` makes named ESM imports
+see the wrappers, and each path is charged to the test window open at **call time**. The shard and
+map carry `reads` (file) and `dirReads` (directory); a change to a read file, or to any file under a
+listed directory, selects the readers. Directories are kept even when they do not match `include`,
+because a file under them might.
+
+The boundary is stated rather than implied: a reference captured before install, a native addon, a
+child process, or a separately started service is not seen, and reads during test-file import or
+between tests have no window to charge. `alwaysSelect` remains for those cases.
+
+**`unknownPolicyFor` is a per-glob unknown-file policy.** The first matching entry wins, so a narrow
+`all` can precede a broad `ignore`; a file the map knows still follows the normal rules, which is why
+this is safer than narrowing `include` (a recorded file outside `include` would stop selecting
+anything). Only `all` and `ignore` are values. An ignored unknown file is named in
+`selection.ignored` and a warning names the entry; an entry whose globs match no file in the
+repository warns, because the list drifts the same way `alwaysSelect` does.
+
+**An incremental map carries evidence, not guesses.** `cbd build --incremental` (and
+`cbd collect --incremental`) merges a run with the previous map. A test from that map is carried only
+when every file it touched, read or listed is unchanged, so its line ranges still describe the same
+bytes. A test that used a changed file and was not re-recorded is dropped, and every file it used —
+its own spec included — is marked `partial`; a later change to a partial file, or to anything under a
+partial directory, forces `mode: all` with reason `partial`. The marker survives a chain of
+incremental builds: a later run cannot heal a test that is absent from the map, because there is no
+window to re-record. A dropped test that declared an opaque dependency keeps that declaration with no
+evidence attached — its stale ranges and reads still go — so any in-scope change continues to select
+it. The map's `@load`/`@between`/`@teardown`
+buckets and its per-shard load attribution are not carried: they describe processes that no longer
+exist at the new commit, so a module-scope change in a load-reached file also escalates. The trade is
+explicit: a select-mode recording keeps the map usable for every file it could not touch, and never
+answers a moved line with the old tests.
 
 A **changed test file** can *add* a test the map cannot name, so the selection says what it cannot
 answer: it selects the tests the map knows in that file and **warns** that a newly added one will not
@@ -741,6 +808,7 @@ export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
   | { kind: 'file'; file: string; tests: number[] }
   | { kind: 'test-file'; file: string; tests: number[] }
+  | { kind: 'read'; file: string; tests: number[] }
   | { kind: 'always'; tests: number[] }
   | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map' | 'test-file' | 'always-unknown' | 'config-changed'; file?: string }
 ```
@@ -748,10 +816,15 @@ export type Reason =
 ### 8.5 Other queries
 
 `cbd`'s verbs and the exported API answer the map's two directions. The map on disk is
-`<stateDir>/maps/<commit>/map.json`; its shape (`CoverageMap`: `tests`, `files`, buckets, `seen`,
-`shardTests` and `loadShards`) is the supported export for another tool, and every query below is derived from it.
+`<stateDir>/maps/<commit>/map.json` (or `<mapsDir>/<commit>/map.json` when `mapsDir` is set); its
+shape (`CoverageMap`: `tests`, `files`, buckets, `seen`, `shardTests`, `loadShards`, `reads`,
+`dirReads`, `opaque`, `partial` and `carried`) is the supported export for another tool, and every
+query below is derived from it.
 Paths are stored relative to the map's root and resolved when it is loaded, so a map recorded in one
-worktree answers the same in another checkout of the same commit (`cbd-0na.5`).
+worktree answers the same in another checkout of the same commit.
+`mapsDir` exists for the case where the worktrees should not even carry their own copy: point it at
+an absolute path (the git common directory, a CI cache) and every checkout of the commit reads the
+same map, while shards and the selection file stay local.
 
 - `reaches(title, file[:line], { file? })` — `cbd reaches` — does this one test reach the file or
   line? Returns the resolved test, the target, whether the map has seen the file, the functions of
@@ -759,6 +832,10 @@ worktree answers the same in another checkout of the same commit (`cbd-0na.5`).
   is answered by the file-level rule (§8.3 rule 5). A bare title that names tests in more than one
   file is **refused with the candidate files**, never guessed at; `--file` disambiguates. A mutation
   testing tool uses the same relation to check that a mutant's killer can reach it at all.
+- `reachesRows(rows)` — `cbd reaches --batch` — the same relation over a list of line ranges, for a
+  mutation tool: per row, the tests that executed a line in the range and whether each named killer
+  is among them. A row may name a line range or a `find` string, which the CLI resolves to a line;
+  an unknown file is reported as such rather than as "no tests".
 - `functionsForTest(map, index)`: every function one test reached — the inverse of
   `testsForFunction`, and the data behind `cbd reaches`.
 - `testsForFunction(map, file, key)`, `functionsInFile(map, file)`: the other direction.
@@ -843,11 +920,13 @@ which is safe over-selection rather than a miss.
       "when": ["edge/pipeline/src/**"] }
   ],
   "unknownPolicy": "all",
+  "unknownPolicyFor": [{ "paths": ["typescript/tools/**"], "policy": "ignore" }],
   "betweenPolicy": "all",
   "testFilePolicy": "known",
   "granularity": "test",
   "maxAgeCommits": 50,
-  "stateDir": ".cbd"
+  "stateDir": ".cbd",
+  "mapsDir": "../shared/cbd-maps"
 }
 ```
 

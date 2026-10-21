@@ -15,7 +15,35 @@ import { fileURLToPath } from 'node:url'
 export interface Versions {
   cli: string
   core: string
+  /** The adapter contract this CLI's selection files target. */
+  adapterContract: number
+  /**
+   * Guards a consumer can rely on without comparing version numbers.
+   *
+   * A consumer decides from this list whether a guard it needs is present — an
+   * `alwaysSelect` rule, a config-change escalation, read tracking — instead of
+   * parsing a semver and guessing which side of a release it is on. Adding a
+   * capability is additive; removing or changing one bumps the contract.
+   */
+  capabilities: string[]
 }
+
+export const ADAPTER_CONTRACT = 1
+
+export const CAPABILITIES = [
+  'alwaysSelect',
+  'configChanged',
+  'unknownPolicyFor',
+  'reads',
+  'dirReads',
+  'opaque',
+  'durations',
+  'selectionV2',
+  'emitSelection',
+  'whatIfSelection',
+  'batchReaches',
+  'sharedMaps',
+] as const
 
 const require = createRequire(import.meta.url)
 
@@ -49,5 +77,5 @@ export function versions(): Versions {
     // A broken or partial install still has to answer `--version`; the core's
     // absence is reported rather than thrown from a diagnostic command.
   }
-  return { cli, core }
+  return { cli, core, adapterContract: ADAPTER_CONTRACT, capabilities: [...CAPABILITIES] }
 }

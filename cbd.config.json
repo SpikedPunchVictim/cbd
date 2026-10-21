@@ -1,0 +1,30 @@
+{
+  "$schema": "./packages/core/cbd.config.schema.json",
+  "include": [
+    "packages/*/src/**",
+    "packages/*/tests/**",
+    "fixture/src/**",
+    "fixture/tests/**"
+  ],
+  "alwaysAll": [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "package.json",
+    "packages/*/package.json",
+    "packages/*/tsconfig*.json",
+    "packages/*/scripts/**",
+    "packages/*/bin/**",
+    "fixture/package.json",
+    "fixture/tsconfig*.json",
+    "fixture/scripts/**",
+    "fixture/bin/**",
+    "packages/japa/src/**",
+    "packages/mocha/src/**",
+    "packages/vitest/src/**",
+    "packages/jest/src/**",
+    "packages/node-test/src/**",
+    "packages/core/src/self.ts",
+    "fixture/src/index.ts"
+  ],
+  "maxAgeCommits": 50
+}

@@ -6,7 +6,11 @@ settings:
 
 importers:
 
-  .: {}
+  .:
+    devDependencies:
+      '@spikedpunch/cbd-japa':
+        specifier: workspace:*
+        version: link:packages/japa
 
   fixture:
     dependencies:

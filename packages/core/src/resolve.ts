@@ -50,7 +50,17 @@ export interface ResolvedTest {
   ordinal?: number
   status: ShardTest['status']
   durationMs: number
+  /** Title path and definition site, when the adapter supplied them. */
+  titlePath?: string[]
+  line?: number
+  column?: number
   touches: TouchRef[]
+  /** Files this test read, relocated and filtered by the build's scan rules. */
+  reads?: string[]
+  /** Directories this test listed. */
+  dirReads?: string[]
+  /** Reasons the test declared an invisible dependency. */
+  opaque?: string[]
 }
 
 export interface ResolvedShard {
@@ -379,6 +389,28 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
   )
 
   const relocate = createRelocator(options.scan?.relocate ?? [])
+  const include = options.scan?.include
+  const exclude = options.scan?.exclude
+  /**
+   * Read paths follow the same build-side rules as resolved source paths:
+   * relocate a deployed copy back to the checkout, then apply include/exclude.
+   * Directories are kept unfiltered by `include` — a directory itself never
+   * matches `src/**`, but a changed file under it must still select the listing
+   * test.
+   */
+  const readPaths = (paths: readonly string[] | undefined): string[] => {
+    if (paths === undefined) return []
+    const out = new Set<string>()
+    for (const path of paths) {
+      const moved = relocate(path)
+      if (include !== undefined && !include(moved)) continue
+      if (exclude !== undefined && exclude(moved)) continue
+      out.add(moved)
+    }
+    return [...out].sort()
+  }
+  const dirPaths = (paths: readonly string[] | undefined): string[] =>
+    paths === undefined ? [] : [...new Set(paths.map((path) => relocate(path)))].sort()
   const cache = options.cache ?? new FileCache()
   const identities = new Map<string, Map<string, Identity>>()
   for (const [scriptId, script] of scriptRows) {
@@ -422,7 +454,13 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
       ...(test.ordinal === undefined ? {} : { ordinal: test.ordinal }),
       status: test.status,
       durationMs: test.durationMs,
+      ...(test.titlePath === undefined ? {} : { titlePath: test.titlePath }),
+      ...(test.line === undefined ? {} : { line: test.line }),
+      ...(test.column === undefined ? {} : { column: test.column }),
       touches: touchesOf(test.touches),
+      ...(test.reads === undefined ? {} : { reads: readPaths(test.reads) }),
+      ...(test.dirReads === undefined ? {} : { dirReads: dirPaths(test.dirReads) }),
+      ...(test.opaque === undefined ? {} : { opaque: test.opaque }),
     })),
     load: load.flatMap(touchesOf),
     between: between.flatMap(touchesOf),

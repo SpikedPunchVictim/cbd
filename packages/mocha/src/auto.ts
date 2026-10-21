@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 import {
   FileSink,
   inProcessSource,
+  installReadTracking,
   readSelection,
   scanFromEnv,
   type Recorder,
@@ -77,6 +78,7 @@ const shardPath = process.env.CBD_SHARD
 const only = readSelection(process.env)
 
 let recorder: Recorder | null = null
+let stopReads: (() => void) | null = null
 if (shardPath !== undefined) {
   const source = await inProcessSource()
   const scan = scanFromEnv()
@@ -86,6 +88,7 @@ if (shardPath !== undefined) {
     commit: process.env.CBD_COMMIT ?? 'unknown',
     ...(scan === undefined ? {} : { scan }),
   })
+  stopReads = installReadTracking(recorder)
 }
 
 if (recorder !== null || only !== undefined) {
@@ -132,6 +135,7 @@ if (recorder !== null || only !== undefined) {
       // Mocha's CLI exits from this callback, so the footer and the generated
       // coordinates must be written before it is called.
       await first.finish()
+      stopReads?.()
       return callback?.(failures)
     })
   }
