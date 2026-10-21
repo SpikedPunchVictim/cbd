@@ -55,6 +55,12 @@ until a tag is pushed and the publish workflow runs.
   reports "no tests ran; nothing recorded" instead of naming a shard that was
   never written, skips the build, and no longer prints a doubled `cbd: cbd:`
   prefix.
+- **Stale shards are diagnosed, not guessed.** Each script row carries a SHA-256
+  of the bytes it was recorded against. When a suite rebuilds its own output, a
+  changed mtime with identical content is accepted; a real byte change is still
+  refused. `cbd collect` builds only the shards this run wrote — including the
+  per-test-file and service shards — so an older shard for the same commit cannot
+  poison the rebuild.
 - **Changelogs ship.** Every published package generates `CHANGELOG.md` from the
   repository changelog in a `prepack` step and includes it in its tarball.
 - **`cbd explain … | head` exits quietly.** A reader that closes the pipe early

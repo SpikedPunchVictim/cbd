@@ -31,11 +31,6 @@ test.group('cbd collect', () => {
     try {
       assert.equal(invoke(root, 'build').code, EXIT.ok)
       repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
-      // A v2 shard records each script's size and mtime; editing a recorded file
-      // makes the old shard stale and the rebuild refuses it (the map already
-      // built for the base commit is untouched — see the next test). This test is
-      // about the successful rebuild, so the old shard is dropped.
-      rmSync(join(root, '.cbd', 'shards', 'run.ndjson'))
       const log = join(root, 'log.ndjson')
 
       const result = invoke(
@@ -76,20 +71,21 @@ test.group('cbd collect', () => {
     }
   })
 
-  test('a stale earlier shard leaves the existing map untouched rather than failing the run', () => {
+  test('an older shard for the same commit is not merged into the rebuild', () => {
     const { repo, root, a, spec, runner, cleanup } = prepared()
     try {
       assert.equal(invoke(root, 'build').code, EXIT.ok)
       // The base shard was recorded against the committed bytes; this edit makes
-      // it stale. The map for the base commit is already built and is what
-      // selection uses, so the rebuild is refused without failing the suite.
+      // it stale. It belongs to an earlier run, so the rebuild must use this run's
+      // shard and succeed instead of refusing on the older one.
       repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
       const log = join(root, 'log.ndjson')
 
       const result = invoke(root, 'collect', '--', process.execPath, runner, log, a, spec)
 
       assert.equal(result.code, EXIT.ok, 'a stale shard must not fail the test command')
-      assert.match(result.err.join('\n'), /left the map .* unchanged/)
+      assert.doesNotMatch(result.err.join('\n'), /left the map .* unchanged/)
+      assert.match(result.out.join('\n'), /^map .*: 2 tests/m)
       const stats = invoke(root, 'stats')
       assert.equal(stats.code, EXIT.ok)
       assert.match(stats.out[1]!, /^2 tests, 1 file reached/)

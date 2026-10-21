@@ -23,7 +23,7 @@
  * is complete".
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
@@ -134,12 +134,17 @@ function childEnv(
 function buildAfterRun(
   options: CollectOptions,
   stateDir: string,
+  shards: string[],
   out: (line: string) => void,
   err: (line: string) => void,
 ): number | null {
   try {
     const built = options.cbd.build({
       commit: options.commit,
+      // This run's shards, not every shard ever written for this commit. An
+      // older run's shard is stale the moment the tree moved on, and merging it
+      // would refuse a rebuild the current run can answer for.
+      shards,
       ...(options.incremental ? { incremental: true } : {}),
       ...(options.base === undefined ? {} : { base: options.base }),
     })
@@ -165,6 +170,43 @@ function buildAfterRun(
   }
 }
 
+/**
+ * Sizes of the shards present before a run, by file name.
+ *
+ * The names are unique per run for the base shard, but an older run's files must
+ * still be distinguishable from this one's when the build picks its inputs.
+ */
+function shardSizes(dir: string): Map<string, number> {
+  const sizes = new Map<string, number>()
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.ndjson')) continue
+    try {
+      sizes.set(entry.name, statSync(join(dir, entry.name)).size)
+    } catch {
+      // A file that disappeared between the listing and the stat is simply not a
+      // pre-existing shard.
+    }
+  }
+  return sizes
+}
+
+/** The shard files this run created or appended to, sorted for stable provenance. */
+function shardsWrittenSince(dir: string, before: ReadonlyMap<string, number>): string[] {
+  const written: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith('.ndjson')) continue
+    const path = join(dir, entry.name)
+    let size: number
+    try {
+      size = statSync(path).size
+    } catch {
+      continue
+    }
+    if (!before.has(entry.name) || before.get(entry.name) !== size) written.push(path)
+  }
+  return written.sort()
+}
+
 export function collect(options: CollectOptions): number {
   const { out, err } = options
   const stateDir = options.config.stateDir ?? '.cbd'
@@ -179,7 +221,12 @@ export function collect(options: CollectOptions): number {
     return EXIT.ok
   }
 
-  mkdirSync(dirname(shard), { recursive: true })
+  const shardDir = dirname(shard)
+  mkdirSync(shardDir, { recursive: true })
+  // A run can write several shards: one per test file (Jest, Vitest, node:test),
+  // a service shard (japa), or one at the base path (mocha, japa). Snapshot the
+  // directory so the build takes the ones this run touched, not an older run's.
+  const shardsBefore = shardSizes(shardDir)
   const existedBefore = existsSync(shard)
   const sizeBefore = existedBefore ? statSync(shard).size : 0
   const started = performance.now()
@@ -217,7 +264,7 @@ export function collect(options: CollectOptions): number {
   }
 
   if (options.build && wroteShard) {
-    const failure = buildAfterRun(options, stateDir, out, err)
+    const failure = buildAfterRun(options, stateDir, shardsWrittenSince(shardDir, shardsBefore), out, err)
     if (failure !== null) return failure
   }
 
