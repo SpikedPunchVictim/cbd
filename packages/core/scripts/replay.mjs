@@ -40,7 +40,7 @@
  *     --full-cmd "<cmd>" [--subset-cmd "<cmd>"] [--commits <n>] [--head <ref>] \
  *     [--prepare-cmd "<cmd>"] [--teardown-cmd "<cmd>"] [--patch <file>] \
  *     [--include <prefix,...>] [--always-all <glob,...>] [--json <out>] \
- *     [--env KEY=VALUE ...] [--dry-run]
+ *     [--selector-map base|commit] [--env KEY=VALUE ...] [--dry-run]
  *
  * The repository must be clean: the harness checks commits out in place. A
  * `--patch` is applied after each checkout, for a worktree whose recording
@@ -48,6 +48,13 @@
  *
  * `--full-cmd` must write a shard to `$CBD_SHARD`; `<shard>.service.ndjson` is
  * merged when the run wrote one. `--subset-cmd` defaults to `--full-cmd`.
+ *
+ * `--selector-map base` (the default) asks `select` against the map recorded at
+ * the base commit, which is the one-map replay the miss count was built for.
+ * `--selector-map commit` selects since the base against the **commit's own** map
+ * instead: the base is older than the map, so the diff's new side is projected
+ * onto the map's line numbers, exactly as `cbd select --since` does. That mode
+ * measures the projection rather than the base map.
  */
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
@@ -89,6 +96,10 @@ function parseArgs(argv) {
 const options = parseArgs(process.argv.slice(2))
 for (const required of ['repo', 'base', 'state', 'full-cmd']) {
   if (options[required] === undefined) throw new Error(`replay: --${required} is required`)
+}
+const selectorMode = options['selector-map'] ?? 'base'
+if (selectorMode !== 'base' && selectorMode !== 'commit') {
+  throw new Error(`replay: --selector-map must be "base" or "commit", got ${selectorMode}`)
 }
 
 /**
@@ -316,6 +327,25 @@ function changesBetween(commit) {
     }))
 }
 
+/**
+ * A base-to-commit diff read on the commit's side.
+ *
+ * `--selector-map commit` selects against the commit's own map, whose line
+ * numbers are the NEW side of `base..commit`. A pure deletion has no new-side
+ * hunk, so it is carried as a new-side insertion point; a deletion that predates
+ * the map is not a change to the tree the map describes. This mirrors the
+ * projection `createCbd.select` applies to a base older than the map's commit.
+ */
+function inMapCoordinates(changes) {
+  return changes
+    .filter((change) => change.status !== 'D')
+    .map((change) => ({
+      ...change,
+      hunks: change.newHunks ?? [],
+      insertions: change.newInsertions ?? [],
+    }))
+}
+
 /** Tests the map knows are defined in a test file, by title. */
 function testsDefinedIn(map, absolutePath) {
   return map.tests.filter((entry) => entry.file === absolutePath).map((entry) => entry.title)
@@ -385,7 +415,9 @@ for (const [index, step] of plan.entries()) {
     continue
   }
 
-  const changes = changesBetween(step.commit)
+  const mapForSelection = selectorMode === 'commit' ? map : baseMap
+  const rawChanges = changesBetween(step.commit)
+  const changes = selectorMode === 'commit' ? inMapCoordinates(rawChanges) : rawChanges
   if (changes.length === 0) {
     process.stdout.write('replay:   no in-scope changes; nothing to select\n')
     if (teardownCommand !== undefined) run(teardownCommand, {}, resolve(dir, 'teardown.log'))
@@ -393,7 +425,7 @@ for (const [index, step] of plan.entries()) {
   }
 
   const selection = select(
-    baseMap,
+    mapForSelection,
     changes,
     {
       include: (path) => isIncluded(path),
@@ -402,7 +434,11 @@ for (const [index, step] of plan.entries()) {
       betweenPolicy: 'all',
       testFiles,
     },
-    { commit: base, distance: index, dirty: false },
+    {
+      commit: mapForSelection.commit,
+      distance: selectorMode === 'commit' ? 0 : index,
+      dirty: false,
+    },
   )
 
   const fullSummary = summarizeShard(parseShard(readFileSync(shardPath, 'utf8'), shardPath))
@@ -415,7 +451,7 @@ for (const [index, step] of plan.entries()) {
   if (selection.mode === 'all') {
     selected = universe
   } else {
-    selected = [...new Set(selection.tests.map((testIndex) => baseMap.tests[testIndex].title))]
+    selected = [...new Set(selection.tests.map((testIndex) => mapForSelection.tests[testIndex].title))]
     const selectionPath = resolve(dir, 'selection.json')
     writeFileSync(selectionPath, JSON.stringify({ titles: selected }, null, 2))
     const subsetShardPath = resolve(dir, 'subset.ndjson')
@@ -437,24 +473,22 @@ for (const [index, step] of plan.entries()) {
     }
   }
 
-  // A title the BASE map does not know cannot be selected at all — a test added
-  // to an existing spec file inside the replay window. That is a property of a
-  // one-map replay rather than a selection failure, so it is reported apart
-  // from the miss count rather than allowed to inflate it (`cbd-2jx`).
-  const knownAtBase = new Set(baseMap.tests.map((entry) => entry.title))
-  const newTests = [...required].filter(([title]) => !knownAtBase.has(title))
+  // A title the selector's map does not know cannot be selected at all — a test
+  // added inside the replay window. That is a property of a one-map replay rather
+  // than a selection failure, so it is reported apart from the miss count rather
+  // than allowed to inflate it (`cbd-2jx`).
+  const knownAtSelector = new Set(mapForSelection.tests.map((entry) => entry.title))
+  const newTests = [...required].filter(([title]) => !knownAtSelector.has(title))
   const miss = [...required].filter(
-    ([title]) => knownAtBase.has(title) && !selectedSet.has(title),
+    ([title]) => knownAtSelector.has(title) && !selectedSet.has(title),
   )
 
   // --- outcome oracle ------------------------------------------------------
   // A failure in a test the base map never knew is unselectable for the same
   // reason as a new test; report it apart.
-  const newFailures = fullFailed.filter(
-    (title) => !baseMap.tests.some((entry) => entry.title === title),
-  )
+  const newFailures = fullFailed.filter((title) => !knownAtSelector.has(title))
   const missedFailures = fullFailed.filter(
-    (title) => baseMap.tests.some((entry) => entry.title === title) && !selectedSet.has(title),
+    (title) => knownAtSelector.has(title) && !selectedSet.has(title),
   )
 
   let subsetOnlyFailures = []
