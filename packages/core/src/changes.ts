@@ -53,6 +53,20 @@ export interface Change {
    * Optional so a caller-built `Change` from before this field stays valid.
    */
   insertions?: number[]
+  /**
+   * New-side insertion points: the line after which content was deleted, `0` for
+   * the start of the file.
+   *
+   * The mirror of `insertions`. A pure deletion is `@@ -N,M +P,0 @@`: it has no
+   * new-side lines, so it cannot appear in `newHunks`, and a selector matching it
+   * against a map taken on the new side would see a change with no lines at all.
+   * That is only safe when the deletion is the file's entire change; when the same
+   * file also has an ordinary hunk, the deletion vanished and the tests that reach
+   * the deleted function were silently dropped.
+   *
+   * Optional so a caller-built `Change` from before this field stays valid.
+   */
+  newInsertions?: number[]
 }
 
 export interface ChangesOptions {
@@ -98,6 +112,9 @@ export function mergeChanges(
         hunks: [...change.hunks],
         ...(change.newHunks === undefined ? {} : { newHunks: [...change.newHunks] }),
         ...(change.insertions === undefined ? {} : { insertions: [...change.insertions] }),
+        ...(change.newInsertions === undefined
+          ? {}
+          : { newInsertions: [...change.newInsertions] }),
       })
       return
     }
@@ -106,6 +123,10 @@ export function mergeChanges(
     if (newHunks.length > 0) existing.newHunks = uniqueRanges(newHunks)
     const insertions = [...(existing.insertions ?? []), ...(change.insertions ?? [])]
     if (insertions.length > 0) existing.insertions = [...new Set(insertions)].sort((x, y) => x - y)
+    const newInsertions = [...(existing.newInsertions ?? []), ...(change.newInsertions ?? [])]
+    if (newInsertions.length > 0) {
+      existing.newInsertions = [...new Set(newInsertions)].sort((x, y) => x - y)
+    }
     // A deletion on one side and a modification on the other means the file is
     // not simply gone; keeping the modification lets the function rules answer.
     if (existing.status === 'D' && change.status !== 'D') existing.status = change.status
@@ -183,6 +204,8 @@ function applyHunk(change: Change, hunk: RegExpExecArray): void {
   const newLines = hunk[4] === undefined ? 1 : Number(hunk[4])
   if (newLines > 0) {
     change.newHunks?.push({ start: newStart, end: newStart + newLines - 1 })
+  } else {
+    change.newInsertions?.push(newStart)
   }
 }
 
@@ -212,7 +235,14 @@ export function parseUnifiedDiff(diff: string): Change[] {
     if (line.startsWith('diff --git ')) {
       finish()
       const { oldPath, path } = pathsFromHeader(line)
-      current = { path: path ?? '', status: 'M', hunks: [], newHunks: [], insertions: [] }
+      current = {
+        path: path ?? '',
+        status: 'M',
+        hunks: [],
+        newHunks: [],
+        insertions: [],
+        newInsertions: [],
+      }
       if (oldPath !== undefined) current.from = oldPath
       continue
     }

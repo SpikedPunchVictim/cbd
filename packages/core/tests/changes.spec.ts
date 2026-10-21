@@ -56,6 +56,7 @@ test('a deletion keeps its old-side range, which is all it has', () => {
     assert.equal(change?.status, 'D')
     assert.deepEqual(change?.hunks, [{ start: 1, end: 4 }])
     assert.deepEqual(change?.newHunks, [], 'a deletion has no new-side range')
+    assert.deepEqual(change?.newInsertions, [0], 'the hole is at the start of the new side')
   } finally {
     repo.cleanup()
   }
@@ -210,6 +211,22 @@ test('a two-commit diff reports hunks on the side of the commit it ends at', () 
       { start: 2, end: 3 },
       { start: 6, end: 6 },
     ])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('an in-file deletion reports a new-side insertion point', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\ntwo\nthree\n')
+    const base = repo.commit('base')
+    repo.write('a.ts', 'one\nthree\n')
+
+    const [change] = changesSince({ root: repo.root, since: base })
+    assert.deepEqual(change?.hunks, [{ start: 2, end: 2 }])
+    assert.deepEqual(change?.newHunks, [], 'there are no new-side lines to range over')
+    assert.deepEqual(change?.newInsertions, [1], 'the deleted line left a hole after line 1')
   } finally {
     repo.cleanup()
   }

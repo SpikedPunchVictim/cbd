@@ -501,9 +501,11 @@ export function createCbd(config: CbdConfig): Cbd {
    * them against the map's function ranges names the wrong function and drops
    * the tests that reach the one that changed — the case where the map is a few
    * commits behind the base the caller named. The new side is the map's own
-   * commit, so `newHunks` are the ranges the map can answer for; the old-side
-   * insertions are dropped with them, and new-side insertions already appear as
-   * new hunks.
+   * commit, so `newHunks` are the ranges the map can answer for. The old-side
+   * insertion points are dropped with them, but a pure deletion's new-side point
+   * is kept: `newHunks` cannot carry it, and without it a deletion sharing a file
+   * with an ordinary hunk disappears, dropping the tests that reach the deleted
+   * function. New-side insertions already appear as new hunks.
    *
    * A deletion between the two commits removes a file the map's tree no longer
    * has, so there is nothing in the map to select for it.
@@ -514,7 +516,7 @@ export function createCbd(config: CbdConfig): Cbd {
       .map((change) => ({
         ...change,
         hunks: change.newHunks ?? [],
-        insertions: [],
+        insertions: change.newInsertions ?? [],
       }))
 
   const readMap = (commit: string): LoadedMap => {
