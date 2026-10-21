@@ -288,6 +288,37 @@ test.group('cbd select', () => {
     }
   })
 
+  test('--patch warns when no path it names is inside include', () => {
+    const { root, cleanup } = prepared({ config: { include: ['src/**'] } })
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const patch = join(root, 'what-if.diff')
+      writeFileSync(
+        patch,
+        [
+          'diff --git a/packages/app/src/a.ts b/packages/app/src/a.ts',
+          '--- a/packages/app/src/a.ts',
+          '+++ b/packages/app/src/a.ts',
+          '@@ -2 +2 @@',
+          '-  return a + b;',
+          '+  return b + a;',
+          '',
+        ].join('\n'),
+      )
+
+      // This is the shape a diff made at the repository top level has under a
+      // nested --root: every resolved path sits one level too deep and is ignored.
+      const result = invoke(root, 'select', '--patch', patch)
+      assert.equal(result.code, EXIT.ok)
+      assert.match(result.err.join('\n'), /none of the paths in .* is inside this project's include/)
+      assert.match(result.err.join('\n'), /--patch paths are read relative to /)
+      assert.match(result.out.join('\n'), /^0 tests for 0 changed files/m)
+      assert.ok(result.out.some((line) => line.startsWith('ignored 1 changed file:')))
+    } finally {
+      cleanup()
+    }
+  })
+
   test('--patch and --since are exclusive; a malformed --change is a usage error', () => {
     const { root, cleanup } = prepared()
     try {

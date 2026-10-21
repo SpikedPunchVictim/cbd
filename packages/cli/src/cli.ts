@@ -149,6 +149,19 @@ function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
     strict: parsed.strict,
   })
   for (const warning of result.selection.warnings) io.err(`cbd: warning: ${warning}`)
+  // A patch made at the repository top level has top-level paths; under a nested
+  // `--root` they resolve one level too deep and match no include glob. The answer
+  // is then "no tests", which is easy to misread as "there is nothing to run".
+  if (
+    parsed.patch !== undefined &&
+    result.changes.length === 0 &&
+    result.selection.ignored.length > 0
+  ) {
+    io.err(
+      `cbd: warning: none of the paths in ${parsed.patch} is inside this project's ` +
+        `include; --patch paths are read relative to ${parsed.root}`,
+    )
+  }
   if (parsed.emitSelection !== undefined) emitSelection(parsed, result, io)
   if (parsed.format === 'summary') {
     for (const line of summaryLines(result)) io.out(line)

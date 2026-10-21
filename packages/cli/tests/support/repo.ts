@@ -207,6 +207,8 @@ export interface PreparedOptions {
    * `cbd stats` reports as untested.
    */
   buckets?: Partial<Record<'load' | 'between' | 'teardown', Array<[string, string, number, number]>>>
+  /** Written as `cbd.config.json` before the base commit, so it is part of it. */
+  config?: Record<string, unknown>
 }
 
 /** A repository with one commit, one spec, a shard for that commit, and the runner. */
@@ -219,6 +221,9 @@ export function prepared(options: PreparedOptions = {}): PreparedRepo {
   // shard and map files would themselves be changed files in every selection, and
   // the untracked runner would make every map "built from a dirty tree".
   repo.write('.gitignore', '.cbd/\nrunner.mjs\n')
+  if (options.config !== undefined) {
+    repo.write('cbd.config.json', `${JSON.stringify(options.config, null, 2)}\n`)
+  }
   repo.write('src/a.ts', 'export function add(a, b) {\n  return a + b;\n}\n')
   repo.write('tests/a.spec.ts', "import { add } from '../src/a.js'\n")
   const commit = repo.commit('base')

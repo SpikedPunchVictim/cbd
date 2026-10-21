@@ -56,15 +56,19 @@ until a tag is pushed and the publish workflow runs.
   set while shards and the selection file stay local.
 - **Read-only what-if selection.** `select --patch <file.diff>` and
   `select --change <path>:<start>[-<end>]` answer a prospective edit without
-  touching the tree, through the same diff reader `--since` uses.
+  touching the tree, through the same diff reader `--since` uses. A patch whose
+  paths all fall outside `include` warns and names the path base: a diff made at
+  the repository top level resolves one level too deep under a nested `--root`.
 - **Batch reaches.** `reaches --batch <rows.json>` answers neutral mutant rows
   (`{file, lines}` or `{file, find}`, optional `killers`) with the tests that reach
   each and whether each named killer is among them.
 - **One answer for a base ref.** `select --since <base>` now unions the named base's
   diff with the map commit's, instead of asking a consumer to call twice and merge.
   A base older than the map is read at the map commit's line numbers, so a function
-  whose lines moved in between is not named by its old position — which would drop
-  the tests that reach it.
+  whose lines moved in between is found where the map recorded it. Answers can
+  therefore differ from 0.0.3: tests that old-line matching missed are now selected,
+  and a test selected only because a base line number happened to land on some
+  function is not.
 - **Cost, in one place.** Test status and duration are kept on the map; `select`
   reports the subset's recorded milliseconds against the whole map.
 - **`--format summary`.** Mode, selected of total, reason counts, warnings, ignored
