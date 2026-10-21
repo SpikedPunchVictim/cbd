@@ -190,7 +190,7 @@ test.group('instrument module', () => {
     try {
       const result = spawnSync(
         process.execPath,
-        ['--import', INSTRUMENT_SPECIFIER, '-e', 'setTimeout(() => console.log("host ran"), 100)'],
+        ['--import', INSTRUMENT_SPECIFIER, '-e', 'setTimeout(() => console.log("host ran"), 1000)'],
         {
           cwd: PACKAGE_ROOT,
           env: { ...process.env, CBD_SOCKET_DIR: dir },
@@ -199,7 +199,9 @@ test.group('instrument module', () => {
       )
       assert.equal(result.status, 0, result.stderr)
       assert.match(result.stdout, /host ran/, 'the host must still run')
-      assert.match(result.stderr, /cannot serve its socket/)
+      // Linux can throw from `listen` (the open path) where macOS emits the
+      // server's error event (the serve path); both must be loud.
+      assert.match(result.stderr, /cannot (serve|open) its socket/)
       assert.match(result.stderr, /records no coverage/)
     } finally {
       rmSync(dir, { recursive: true, force: true })

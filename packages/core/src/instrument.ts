@@ -889,6 +889,19 @@ async function start(dir: string): Promise<void> {
     // only way to bind the path again.
     removeSocket()
     server.listen(socketPath, () => {
+      // Node 22 can report a successful bind for a path past the platform's
+      // unix-socket limit and create the socket somewhere else (measured: the
+      // callback ran, no error event fired, and no file existed at this path).
+      // The collector looks for this exact name, so a phantom bind is a silent
+      // missing-coverage failure. Check the file the collector will open.
+      if (!fs.existsSync(socketPath)) {
+        warn(
+          `cannot serve its socket at ${socketPath} (the platform did not create it there); ` +
+            'this process records no coverage',
+        )
+        server.close()
+        return
+      }
       try {
         // Owner-only. Coverage is a description of everything this process ran,
         // and a permissive socket in a shared directory would hand that to anyone

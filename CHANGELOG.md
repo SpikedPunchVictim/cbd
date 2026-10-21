@@ -27,9 +27,11 @@ until a tag is pushed and the publish workflow runs.
 - **A failed instrument says so.** The injected instrument used to swallow a failed inspector attach,
   a failed profiler start, or a socket it could not bind or open. A lane server then started normally,
   the tests passed, and the map looked complete while carrying no server-side coverage — measured with
-  a 116-byte socket path past macOS's 104-byte limit. The instrument now writes a warning naming the
-  socket or the error and says the process records no coverage. It still does not keep the host alive
-  or stop it from starting, and a successful instrument writes nothing.
+  a 116-byte socket path past macOS's 104-byte limit. Node 22 can even report a successful bind for
+  such a path and create the socket somewhere else, so the instrument now also checks that the file
+  the collector will open exists. The failure is a warning naming the socket or the error and saying
+  the process records no coverage. It still does not keep the host alive or stop it from starting, and
+  a successful instrument writes nothing.
 
 ## 0.0.4 — 2026-10-20
 
