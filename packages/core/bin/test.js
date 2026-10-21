@@ -3,9 +3,9 @@ import { configure, processCLIArgs, run } from '@japa/runner'
 // Dogfooding: this repository records and narrows its own suite too. The adapter
 // is imported only when a recording or a selection asks for it, so an ordinary
 // run does not depend on the japa package being built.
-const shard = process.env.CBD_SHARD
-const commit = process.env.CBD_COMMIT
-const enabled = shard !== undefined || process.env.CBD_SELECTION !== undefined
+const shard = process.env.CBD_SHARD || undefined
+const commit = process.env.CBD_COMMIT || undefined
+const enabled = shard !== undefined || (process.env.CBD_SELECTION ?? '') !== ''
 const scan = enabled ? (await import('@spikedpunch/cbd/adapter')).scanFromEnv() : undefined
 const plugins = enabled
   ? [

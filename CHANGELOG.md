@@ -32,6 +32,10 @@ until a tag is pushed and the publish workflow runs.
   the collector will open exists. The failure is a warning naming the socket or the error and saying
   the process records no coverage. It still does not keep the host alive or stop it from starting, and
   a successful instrument writes nothing.
+- **Empty CBD variables mean unset.** `CBD_SHARD=""` is no longer opened as a path by the japa
+  plugin, the mocha adapter, or this repository's test entries; an empty `CBD_COMMIT` records
+  `unknown`, and an empty `CBD_SELECTION` is no selection. A consumer can pass the variables
+  through without the 0.0.1-era workaround of unsetting them.
 
 ## 0.0.4 — 2026-10-20
 

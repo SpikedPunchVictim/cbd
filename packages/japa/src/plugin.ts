@@ -212,6 +212,16 @@ export async function recordersFor(
   return recorders
 }
 
+/**
+ * An empty environment value is unset.
+ *
+ * The 0.0.1-era plugin opened `CBD_SHARD=""` as a path, and consumers had to
+ * unset the variable rather than empty it. An empty value now means the same as
+ * an absent one.
+ */
+const envValue = (value: string | undefined): string | undefined =>
+  value === undefined || value === '' ? undefined : value
+
 export function cbd(options: CbdOptions = {}): JapaPlugin {
   return async function cbdPlugin(japa): Promise<void> {
     // The parameter is japa's own PluginFn shape; the cast is the two fields this
@@ -220,10 +230,10 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
     const { config, emitter } = japa as unknown as JapaPluginApi
     if (options.enabled === false) return
 
-    const shard = options.shard ?? process.env.CBD_SHARD
+    const shard = envValue(options.shard) ?? envValue(process.env.CBD_SHARD)
     if (shard !== undefined) {
       const scan = options.scan ?? scanFromEnv()
-      const commit = options.commit ?? process.env.CBD_COMMIT ?? 'unknown'
+      const commit = envValue(options.commit) ?? envValue(process.env.CBD_COMMIT) ?? 'unknown'
       // A service is what correlation is for. With none, an id on every request
       // would buy nothing, and patching the process's HTTP client for nothing is
       // exactly the kind of side effect this module exists not to have.

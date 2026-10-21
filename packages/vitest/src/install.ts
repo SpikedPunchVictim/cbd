@@ -74,7 +74,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
   const recorder = new Recorder({
     source,
     sink: new FileSink(shardPathFor(base, file ?? `${String(process.pid)}-${String(threadId)}`)),
-    commit: process.env.CBD_COMMIT ?? 'unknown',
+    commit: process.env.CBD_COMMIT || 'unknown',
     scan: withSelfRoot(scanFromEnv()),
   })
   recorder.runStart()

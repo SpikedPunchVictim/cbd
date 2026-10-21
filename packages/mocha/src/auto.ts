@@ -72,7 +72,7 @@ function resolveMocha(): typeof import('mocha') {
   throw new Error(`@spikedpunch/cbd-mocha/auto could not resolve "mocha":\n${failures.join('\n')}`)
 }
 
-const shardPath = process.env.CBD_SHARD
+const shardPath = process.env.CBD_SHARD || undefined
 // Read before the suite is imported: a malformed or empty selection must fail
 // here, while the message can still say which file is wrong, rather than after
 // mocha has already loaded every test file.
@@ -87,7 +87,7 @@ if (shardPath !== undefined) {
   recorder = beginShard({
     source,
     sink: new FileSink(shardPath),
-    commit: process.env.CBD_COMMIT ?? 'unknown',
+    commit: process.env.CBD_COMMIT || 'unknown',
     ...(scan === undefined ? {} : { scan }),
   })
   stopReads = installReadTracking(recorder)

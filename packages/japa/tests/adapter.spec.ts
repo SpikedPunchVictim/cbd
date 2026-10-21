@@ -417,6 +417,40 @@ test.group('cbd plugin', () => {
     assert.deepEqual(config.filters, {})
   })
 
+  test('an empty CBD_SHARD is unset, not a path', async () => {
+    const previous = process.env.CBD_SHARD
+    process.env.CBD_SHARD = ''
+    try {
+      const config = { filters: {} }
+      const { emitter } = fakeEmitter()
+      // 0.0.1 opened the empty value as a file path and failed the run.
+      await runPlugin({}, { config, emitter })
+      assert.deepEqual(config.filters, {})
+    } finally {
+      if (previous === undefined) delete process.env.CBD_SHARD
+      else process.env.CBD_SHARD = previous
+    }
+  })
+
+  test('an empty CBD_COMMIT is unset, and the shard says unknown', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-empty-commit-'))
+    const previous = process.env.CBD_COMMIT
+    process.env.CBD_COMMIT = ''
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      const config = { filters: {} }
+      const { emitter, emit } = fakeEmitter()
+      await runPlugin({ shard }, { config, emitter })
+      const header = JSON.parse(readFileSync(shard, 'utf8').split('\n')[0]!) as { commit: string }
+      assert.equal(header.commit, 'unknown')
+      emit('runner:end')
+    } finally {
+      if (previous === undefined) delete process.env.CBD_COMMIT
+      else process.env.CBD_COMMIT = previous
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('enabled: false is inert, selection included', async () => {
     const config = { filters: {} }
     const { emitter } = fakeEmitter()

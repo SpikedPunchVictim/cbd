@@ -69,7 +69,7 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
   const recorder = new Recorder({
     source,
     sink: new FileSink(shardPathFor(base, file)),
-    commit: process.env.CBD_COMMIT ?? 'unknown',
+    commit: process.env.CBD_COMMIT || 'unknown',
     scan: withSelfRoot(scanFromEnv()),
   })
   recorder.runStart()

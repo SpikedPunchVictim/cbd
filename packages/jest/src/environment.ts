@@ -82,7 +82,7 @@ class CbdEnvironment extends TestEnvironment {
       sink: new core.FileSink(
         shardPathFor(base, this.#file ?? `pid-${String(process.pid)}-${String(process.ppid)}`),
       ),
-      commit: process.env.CBD_COMMIT ?? 'unknown',
+      commit: process.env.CBD_COMMIT || 'unknown',
       scan: {
         ...scan,
         selfRoots: [...((scan.selfRoots as string[] | undefined) ?? []), ...roots],
