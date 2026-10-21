@@ -182,6 +182,30 @@ test.group('instrument module', () => {
     }
   })
 
+  // A failure to bind must be said out loud: a silent instrument produces a map
+  // that looks complete while missing this process's work. The host still runs.
+  test('warns when it cannot serve its socket', () => {
+    // Past the platform's unix-socket path limit (104 on macOS, 108 on Linux).
+    const dir = join(tmpdir(), `cbd-long-${'x'.repeat(200)}`)
+    try {
+      const result = spawnSync(
+        process.execPath,
+        ['--import', INSTRUMENT_SPECIFIER, '-e', 'setTimeout(() => console.log("host ran"), 100)'],
+        {
+          cwd: PACKAGE_ROOT,
+          env: { ...process.env, CBD_SOCKET_DIR: dir },
+          encoding: 'utf8',
+        },
+      )
+      assert.equal(result.status, 0, result.stderr)
+      assert.match(result.stdout, /host ran/, 'the host must still run')
+      assert.match(result.stderr, /cannot serve its socket/)
+      assert.match(result.stderr, /records no coverage/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('announces its pid, protocol and role over hello', async () => {
     await withService({}, async (service) => {
       await service.ready

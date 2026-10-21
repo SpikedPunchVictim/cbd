@@ -24,6 +24,12 @@ until a tag is pushed and the publish workflow runs.
   test vanished from the shard. The adapter closes that window at the next
   `beforeEach` or at the file's `after`, and refuses the shard if a non-skipped
   window is still open when the file ends. Node 24 was unaffected.
+- **A failed instrument says so.** The injected instrument used to swallow a failed inspector attach,
+  a failed profiler start, or a socket it could not bind or open. A lane server then started normally,
+  the tests passed, and the map looked complete while carrying no server-side coverage — measured with
+  a 116-byte socket path past macOS's 104-byte limit. The instrument now writes a warning naming the
+  socket or the error and says the process records no coverage. It still does not keep the host alive
+  or stop it from starting, and a successful instrument writes nothing.
 
 ## 0.0.4 — 2026-10-20
 

@@ -106,12 +106,32 @@ if (socketDir !== undefined && socketDir !== '' && scope.__cbdInstrumented !== t
   await start(socketDir)
 }
 
+/**
+ * Say that coverage will be missing, without taking the host down.
+ *
+ * ADR-0005 makes the instrument a guest: it must not change whether its host
+ * starts or exits. A warning on stderr is the loudest honest answer. Silently
+ * serving nothing produces a map that looks complete while missing every
+ * server-side function, and a lane log with no clue why (measured: a socket path
+ * past the platform's unix-socket limit failed to bind and said nothing).
+ */
+function warn(message: string): void {
+  try {
+    process.stderr.write(`cbd: instrument: ${message}\n`)
+  } catch {
+    // A host with no usable stderr is not worth failing over.
+  }
+}
+
 async function start(dir: string): Promise<void> {
   const session = new inspector.Session()
   try {
     session.connect()
-  } catch {
-    // No inspector available. Nothing to serve, and the host must not care.
+  } catch (error) {
+    // No inspector available: nothing to serve, and the host must not care. The
+    // failure is still said out loud, because the map will be missing this
+    // process's work.
+    warn(`cannot attach to the inspector (${String(error)}); this process records no coverage`)
     return
   }
 
@@ -546,7 +566,8 @@ async function start(dir: string): Promise<void> {
     // starting from whatever happened to load afterwards.
     await call('Debugger.enable')
     await call('Profiler.startPreciseCoverage', { callCount: true, detailed: false })
-  } catch {
+  } catch (error) {
+    warn(`cannot start precise coverage (${String(error)}); this process records no coverage`)
     disconnect()
     return
   }
@@ -584,9 +605,14 @@ async function start(dir: string): Promise<void> {
     })
   })
 
-  server.on('error', () => {
+  server.on('error', (error) => {
     // A stale socket, a permissions problem, an unlucky race with another
-    // process reusing the pid. None of it is the host's problem.
+    // process reusing the pid, or a path past the platform's unix-socket limit.
+    // None of it is the host's problem, but it is the map's: say so, or the run
+    // looks complete without this process.
+    warn(
+      `cannot serve its socket at ${socketPath} (${error.message}); this process records no coverage`,
+    )
   })
 
   /** One take: accumulate, hand over, keep until acknowledged, leave evidence. */
@@ -905,7 +931,10 @@ async function start(dir: string): Promise<void> {
       }, SNAPSHOT_INTERVAL_MS)
       snapshotTimer.unref()
     }
-  } catch {
+  } catch (error) {
+    warn(
+      `cannot open its socket at ${socketPath} (${String(error)}); this process records no coverage`,
+    )
     disconnect()
     return
   }
