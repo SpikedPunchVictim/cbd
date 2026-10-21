@@ -36,6 +36,10 @@ until a tag is pushed and the publish workflow runs.
   plugin, the mocha adapter, or this repository's test entries; an empty `CBD_COMMIT` records
   `unknown`, and an empty `CBD_SELECTION` is no selection. A consumer can pass the variables
   through without the 0.0.1-era workaround of unsetting them.
+- **`cbd stats` says how fresh the map is.** It lists the test directories the map covers with their
+  test counts, counts the in-scope files changed since the map's commit, and names the changed files
+  the map has never seen — the ones a selection must answer with `all`. The JSON result carries the
+  same fields as `suites` and `changed`.
 
 ## 0.0.4 — 2026-10-20
 

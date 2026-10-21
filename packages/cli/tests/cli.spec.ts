@@ -835,9 +835,30 @@ test.group('cbd explain and stats', () => {
         'code: 1 function in 1 file (per file median 1, p90 1, max 1); ' +
           'tests per function median 2, p90 2, max 2',
       )
-      assert.equal(result.out[5], 'most-tested files:')
-      assert.equal(result.out[6], '  src/a.ts: 2 tests, 1 function')
-      assert.equal(result.out.length, 7, 'no untested section when there is nothing to name')
+      assert.equal(result.out[5], 'suites: tests (2)')
+      assert.equal(result.out[6], 'since the map: no in-scope changes')
+      assert.equal(result.out[7], 'most-tested files:')
+      assert.equal(result.out[8], '  src/a.ts: 2 tests, 1 function')
+      assert.equal(result.out.length, 9, 'no untested section when there is nothing to name')
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('stats names in-scope changes since the map, and the unknown ones', () => {
+    const { repo, root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+      repo.write('src/new.ts', 'export const x = 1\n')
+
+      const result = invoke(root, 'stats')
+      assert.equal(result.code, EXIT.ok)
+      const line = result.out.find((entry) => entry.startsWith('since the map:'))
+      assert.ok(line !== undefined, `expected a change line, got:\n${result.out.join('\n')}`)
+      assert.match(line, /2 in-scope files changed/)
+      assert.match(line, /1 file unknown to the map/)
+      assert.match(line, /src\/new\.ts/)
     } finally {
       cleanup()
     }
@@ -854,7 +875,7 @@ test.group('cbd explain and stats', () => {
       const result = invoke(root, 'stats')
       assert.equal(result.code, EXIT.ok)
       assert.equal(result.out[1], '2 tests, 1 file reached, 2 files seen, 1 file untested')
-      assert.deepEqual(result.out.slice(7), [
+      assert.deepEqual(result.out.slice(9), [
         'untested (seen, no test reaches):',
         '  src/seen-only.ts',
         '  a file no run loaded is unknown, not untested: select runs all for it',

@@ -17,7 +17,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { changesSince, commitsSince, headCommit, mergeChanges, type Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
 import {
@@ -260,6 +260,21 @@ export interface StatsResult {
    * the list is part of reading a map (`cbd-gkj`).
    */
   duplicateTests: Array<{ title: string; file: string | null; count: number }>
+  /**
+   * The directories the map's test files live in, with how many tests each holds.
+   *
+   * A runner calls these suites; cbd has no registry of them, so the directory is
+   * the honest name. Widest first.
+   */
+  suites: Array<{ dir: string; tests: number }>
+  /**
+   * In-scope changes since the map's commit, and the ones the map has never seen.
+   *
+   * A change to an unseen file is §8.3's unknown-file rule: the selection runs
+   * everything. Naming those files is what lets a caller say "the recording
+   * cannot answer for these" instead of wondering why every answer is `all`.
+   */
+  changed: { files: number; unknown: string[] }
 }
 
 export interface Quantiles {
@@ -959,6 +974,40 @@ export function createCbd(config: CbdConfig): Cbd {
       const duplicateTests = [...byTitle.values()]
         .filter((group) => group.count > 1)
         .sort((a, b) => b.count - a.count || a.title.localeCompare(b.title))
+
+      const suiteCounts = new Map<string, number>()
+      for (const [file, count] of perFile) {
+        const dir = relative(root, dirname(file))
+        suiteCounts.set(dir, (suiteCounts.get(dir) ?? 0) + count)
+      }
+      const suites = [...suiteCounts]
+        .map(([dir, tests]) => ({ dir, tests }))
+        .sort((a, b) => b.tests - a.tests || a.dir.localeCompare(b.dir))
+
+      const seenFiles = new Set(map.seen)
+      const stateRoot = resolve(root, config.stateDir ?? '.cbd')
+      const include = config.select?.include ?? ((): boolean => true)
+      let changed = { files: 0, unknown: [] as string[] }
+      try {
+        const relevant = toAbsolute(changesSince({ root, since: map.commit })).filter(
+          (change) =>
+            !inside(change.path, stateRoot) &&
+            (include(change.path) || (change.from !== undefined && include(change.from))),
+        )
+        const unknown = relevant.filter(
+          (change) =>
+            !seenFiles.has(change.path) &&
+            !(change.from !== undefined && seenFiles.has(change.from)),
+        )
+        changed = {
+          files: relevant.length,
+          unknown: unknown.map((change) => relative(root, change.path)).sort(),
+        }
+      } catch {
+        // A map can be read without git. The counts are then unknown; the map
+        // itself is still summarized.
+      }
+
       return {
         map: summarize(loaded),
         tests: map.tests.length,
@@ -982,6 +1031,8 @@ export function createCbd(config: CbdConfig): Cbd {
         testsPerFunction: quantilesOf(perFunctionTests),
         topFiles: fileStats.slice(0, 10),
         duplicateTests,
+        suites,
+        changed,
       }
     },
 

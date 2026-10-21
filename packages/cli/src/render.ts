@@ -268,6 +268,26 @@ export function statsLines(result: StatsResult, root: string): string[] {
       `${result.testsPerFunction.median}, p90 ${result.testsPerFunction.p90}, ` +
       `max ${result.testsPerFunction.max}`,
   )
+  if (result.suites.length > 0) {
+    const shown = result.suites.slice(0, 8).map((suite) => `${suite.dir} (${String(suite.tests)})`)
+    const more = result.suites.length - shown.length
+    lines.push(`suites: ${shown.join(', ')}${more > 0 ? ` (+${String(more)} more)` : ''}`)
+  }
+  if (result.changed.files === 0) {
+    lines.push('since the map: no in-scope changes')
+  } else {
+    const unknown = result.changed.unknown
+    const named = unknown.slice(0, 10)
+    const more = unknown.length - named.length
+    lines.push(
+      `since the map: ${plural(result.changed.files, 'in-scope file')} changed` +
+        (unknown.length === 0
+          ? ''
+          : `; ${plural(unknown.length, 'file')} unknown to the map` +
+            ` (a change to one runs everything): ${named.join(', ')}` +
+            (more > 0 ? ` (+${String(more)} more)` : '')),
+    )
+  }
   if (result.topFiles.length > 0) {
     lines.push('most-tested files:')
     for (const file of result.topFiles.slice(0, 5)) {

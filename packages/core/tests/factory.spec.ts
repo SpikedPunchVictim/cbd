@@ -400,9 +400,29 @@ test.group('createCbd', () => {
       assert.deepEqual(stats.functionsPerFile, { median: 1, p90: 1, max: 1 })
       assert.deepEqual(stats.testsPerFunction, { median: 2, p90: 2, max: 2 })
       assert.deepEqual(
-        stats.topFiles.map((file) => [file.file.replace(`${realpathSync(repo.root)}/`, ''), file.tests, file.functions]),
+        stats
+          .topFiles
+          .map((file) => [file.file.replace(`${realpathSync(repo.root)}/`, ''), file.tests, file.functions]),
         [['src/a.ts', 2, 1]],
       )
+      assert.deepEqual(stats.suites, [{ dir: 'tests', tests: 2 }])
+      assert.deepEqual(stats.changed, { files: 0, unknown: [] })
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('stats names changes since the map and the files it has never seen', () => {
+    const { repo, cleanup } = prepared()
+    try {
+      const cbd = createCbd({ root: repo.root })
+      cbd.build()
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+      repo.write('src/new.ts', 'export const x = 1\n')
+
+      const stats = cbd.stats()
+      assert.equal(stats.changed.files, 2)
+      assert.deepEqual(stats.changed.unknown, ['src/new.ts'])
     } finally {
       cleanup()
     }
