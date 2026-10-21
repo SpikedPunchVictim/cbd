@@ -3,6 +3,36 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
+## 0.0.3 — 2026-10-21
+
+Round-2 feedback from grizzly-sv T-29-015.
+
+- **A straddling hunk now widens.** `functionsHit` classified a hunk only by whether it
+  intersected a function, so a hunk containing module scope and a function's first
+  line selected just that function's tests and could omit a test that compares a
+  module-scope binding. A hunk is now checked for coverage: any changed line
+  outside every function sets the file-level answer as well. A line-count-changing
+  hunk that contains a function's first line also widens, because the new-side
+  coordinates can move module scope; the module body's whole-file V8 entry is
+  excluded from the coverage check while its tests still count as observers.
+- **The root no longer comes from `cwd`.** The CLI uses the nearest directory upward
+  with a `cbd.config.json` **within the git top level**, else the git top level, else
+  (outside git) the nearest config or the working directory. A config above the
+  repository cannot capture a nested repository. Roots are canonical, so a symlinked
+  `tmpdir` does not split the config globs from the changed paths. `--root` still
+  overrides.
+- **A changed config forces all.** A change to the loaded config file is checked
+  before `include` and produces `all` with reason `config-changed`; it is no longer
+  listed as merely ignored. Real-path comparison covers a symlinked or
+  differently-cased config, and a config outside `--root` is checked with a targeted
+  git query.
+- **`cbd --version`.** Prints the CLI and core versions and exits 0; the select JSON
+  answer carries `cbdVersion`. The shipped bin answers before importing the CLI and
+  core, so a broken or partial install can still report its version, and neither
+  `--version` nor `--help` spawns git.
+- Follow-ups filed: recording file reads as touches (a spike with a stated soundness
+  boundary) and per-glob `unknownPolicy` or `file-importers`.
+
 ## 0.0.2 — 2026-10-20
 
 Fixes from grizzly-sv T-29-015, all in the selection path. No API was removed; a map

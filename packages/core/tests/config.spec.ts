@@ -75,6 +75,21 @@ test.group('cbd.config.json', () => {
     }
   })
 
+  test('globs are built against the canonical root', () => {
+    // `tmpdir()` sits behind a symlink on macOS. Building include globs from the
+    // raw spelling made every real change miss and select nothing.
+    const raw = mkdtempSync(join(tmpdir(), 'cbd-config-link-'))
+    try {
+      const config = parseConfig({ include: ['src/**'] }, raw)
+      const canonical = realpathSync(raw)
+      assert.equal(config.root, canonical)
+      assert.equal(config.select!.include!(join(canonical, 'src/a.ts')), true)
+      assert.equal(config.select!.include!(join(canonical, 'docs/a.md')), false)
+    } finally {
+      rmSync(raw, { recursive: true, force: true })
+    }
+  })
+
   test('an empty file is the safe default', () => {
     const { root, cleanup } = tempRoot()
     try {
@@ -165,6 +180,7 @@ test.group('cbd.config.json', () => {
       writeFileSync(configPath(root), JSON.stringify({ include: ['src/**'] }))
       const loaded = loadConfig(root)!
       assert.equal(loaded.path, configPath(root))
+      assert.equal(loaded.config.configFile, realpathSync(configPath(root)))
       assert.equal(loaded.config.select!.include!(join(root, 'src/a.ts')), true)
     } finally {
       cleanup()

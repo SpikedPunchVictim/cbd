@@ -214,6 +214,7 @@ spawns, then builds the map.
 ## CLI
 
 ```sh
+cbd --version
 cbd build   [--commit <sha>] [--partial] [--format json]
 cbd select  [--since <ref>] [--no-worktree] [--strict] [--commit <sha>]
 cbd explain <file>[:<line>] [--format json]
@@ -223,8 +224,12 @@ cbd collect [--no-select] [--no-build] [--shard <path>] -- <test command>
 cbd gc      [--keep <n>]
 ```
 
-`--root` selects the repository (default: the working directory); `--config` selects the config file.
-See [`@spikedpunch/cbd-cli`](packages/cli/README.md) for details.
+The root is chosen once per command: within the git top level, the nearest directory upward with a
+`cbd.config.json`, else the git top level itself; outside git, the nearest config, else the working
+directory. A config above the git top level belongs to another project and is not used. `--root`
+overrides it; `--config` selects the config file.
+`cbd --version` prints the CLI and core versions, and the `select --format json` answer carries
+`cbdVersion`. See [`@spikedpunch/cbd-cli`](packages/cli/README.md) for details.
 
 ## How selection stays safe
 
@@ -232,6 +237,8 @@ See [`@spikedpunch/cbd-cli`](packages/cli/README.md) for details.
 - Code executed between tests (`@between`) or during teardown is unattributable, so it runs all tests
   unless `betweenPolicy` says otherwise.
 - A window whose test failed is not trusted as a passing window and does not enter the map.
+- A change to `cbd.config.json` runs all tests: the map was built under the old include, policies and
+  `alwaysSelect` list.
 - A shard whose source bytes changed since recording is refused (`StaleShardError`) rather than
   mapped to the wrong offsets.
 - A map that is dirty or older than `maxAgeCommits` warns, and with `strict` escalates to all.

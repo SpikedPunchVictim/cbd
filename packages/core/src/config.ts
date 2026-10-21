@@ -104,7 +104,7 @@ export function loadConfigFile(path: string, root: string): LoadedConfig | undef
   } catch (error) {
     throw new Error(`cbd: ${path} is not valid JSON: ${String(error)}`)
   }
-  return { config: parseConfig(parsed, root), path }
+  return { config: { ...parseConfig(parsed, root), configFile: realpathSync(path) }, path }
 }
 
 function strings(raw: unknown, key: string, path: string): string[] | undefined {
@@ -136,12 +136,16 @@ const absoluteGlobs = (root: string, globs: string[]): string[] =>
  */
 export function parseConfig(raw: unknown, root: string): CbdConfig {
   const path = configPath(root)
+  // One canonical root for the globs and the returned config. Building the globs
+  // against a symlinked spelling while the factory resolves changed paths against
+  // the realpath made `include` reject every change — a silent zero-test answer.
+  const canonical = realpathSync(resolve(root))
   const file = asObject(raw, path)
   checkKnownKeys(file, path)
   checkScalars(file, path)
-  const select = selectFrom(file, root, path)
+  const select = selectFrom(file, canonical, path)
   return {
-    root: realpathSync(resolve(root)),
+    root: canonical,
     ...(file.stateDir === undefined ? {} : { stateDir: file.stateDir as string }),
     ...(Object.keys(select).length === 0 ? {} : { select }),
   }

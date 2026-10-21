@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-japa",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "description": "japa adapter: turns a plain japa run into per-test coverage windows, and selects with them.",
   "main": "./dist/src/index.js",

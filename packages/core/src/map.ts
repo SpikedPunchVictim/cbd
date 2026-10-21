@@ -450,7 +450,11 @@ export function testsForLine(map: CoverageMap, file: string, line: number): Test
 
   const indices = new Set<number>()
   let inside = false
-  for (const entry of Object.values(functions)) {
+  for (const [key, entry] of Object.entries(functions)) {
+    // The module body's V8 range is the whole file, but it is module scope, not
+    // a function: a line that only the module body contains is outside every
+    // function and takes the file-level answer (`cbd-73r.1`).
+    if (key.startsWith('<module>')) continue
     if (line < entry.startLine || line > entry.endLine) continue
     inside = true
     for (const index of entry.tests) indices.add(index)

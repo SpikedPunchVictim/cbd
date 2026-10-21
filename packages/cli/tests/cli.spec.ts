@@ -8,19 +8,82 @@
  * leave the wiring between them untested.
  */
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import {
+  chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
+import { defaultRoot } from '../src/args.js'
 import { EXIT } from '../src/cli.js'
 import { tempRepo } from './support/git.js'
 import { invoke, prepared } from './support/repo.js'
+
+test.group('cbd --version', () => {
+  test('prints the CLI and core versions, in text and JSON', () => {
+    const repo = tempRepo()
+    try {
+      const cli = JSON.parse(
+        readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+      ) as { version: string }
+      const core = JSON.parse(
+        readFileSync(new URL('../../../core/package.json', import.meta.url), 'utf8'),
+      ) as { version: string }
+
+      const text = invoke(repo.root, '--version')
+      assert.equal(text.code, EXIT.ok)
+      assert.equal(text.out[0], `cbd ${cli.version} (@spikedpunch/cbd ${core.version})`)
+
+      const json = invoke(repo.root, '--version', '--format', 'json')
+      assert.equal(json.code, EXIT.ok)
+      assert.deepEqual(JSON.parse(json.out.join('\n')), {
+        cli: cli.version,
+        core: core.version,
+      })
+
+      // `help` wins when both are present, and a positional help is not an error.
+      assert.match(invoke(repo.root, '--version', '--help').out[0]!, /^cbd —/)
+      assert.match(invoke(repo.root, 'help', '--version').out[0]!, /^cbd —/)
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('--version does not wait for git', () => {
+    // A broken git wrapper on PATH must not block a diagnostic command; the
+    // shipped bin answers before importing the CLI (and therefore core).
+    const shim = mkdtempSync(join(tmpdir(), 'cbd-shim-'))
+    try {
+      const fake = join(shim, 'git')
+      writeFileSync(fake, '#!/bin/sh\nsleep 5\nexit 1\n')
+      chmodSync(fake, 0o755)
+      const bin = fileURLToPath(new URL('../../bin/cbd.js', import.meta.url))
+      const started = Date.now()
+      const result = spawnSync(process.execPath, [bin, '--version'], {
+        encoding: 'utf8',
+        timeout: 4000,
+        env: { ...process.env, PATH: `${shim}:${process.env.PATH ?? ''}` },
+      })
+      assert.equal(result.status, 0, result.stderr)
+      assert.match(result.stdout, /^cbd \d/)
+      assert.ok(Date.now() - started < 3000, 'version must not wait for git')
+    } finally {
+      rmSync(shim, { recursive: true, force: true })
+    }
+  })
+})
 
 test.group('cbd build', () => {
   test('merges the commit’s shards and reports the map it wrote', () => {
@@ -50,6 +113,93 @@ test.group('cbd build', () => {
 })
 
 test.group('cbd select', () => {
+  test('the root is the nearest config, else the git top level', () => {
+    const repo = tempRepo()
+    try {
+      repo.write('sub/cbd.config.json', '{}\n')
+      repo.write('sub/deeper/file.ts', 'export const x = 1\n')
+      repo.write('src/a.ts', 'export const a = 1\n')
+      repo.commit('base')
+
+      // Roots are canonical: macOS's tmpdir sits behind a symlink.
+      assert.equal(
+        defaultRoot(join(repo.root, 'sub/deeper')),
+        realpathSync(join(repo.root, 'sub')),
+      )
+      assert.equal(defaultRoot(join(repo.root, 'src')), realpathSync(repo.root))
+      // Outside any git repository and without a config, cwd is the answer.
+      const loose = mkdtempSync(join(tmpdir(), 'cbd-loose-'))
+      try {
+        assert.equal(defaultRoot(loose), realpathSync(loose))
+      } finally {
+        rmSync(loose, { recursive: true, force: true })
+      }
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('a config above the git root does not capture a nested repository', () => {
+    const outer = tempRepo()
+    try {
+      outer.write('cbd.config.json', '{}\n')
+      outer.write('inner/deeper/a.ts', 'export const a = 1\n')
+      outer.git(['-C', 'inner', 'init', '-q', '-b', 'main'])
+      outer.git(['-C', 'inner', 'config', 'user.email', 'test@example.com'])
+      outer.git(['-C', 'inner', 'config', 'user.name', 'CBD Test'])
+      outer.git(['-C', 'inner', 'add', '-A'])
+      outer.git(['-C', 'inner', 'commit', '-qm', 'inner'])
+
+      // The outer config is above the inner repository's top level; it belongs
+      // to another project and must not become the root.
+      assert.equal(
+        defaultRoot(join(outer.root, 'inner/deeper')),
+        realpathSync(join(outer.root, 'inner')),
+      )
+    } finally {
+      outer.cleanup()
+    }
+  })
+
+  test('select from a subdirectory gives the same answer as from the root', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const fromRoot = invoke(root, 'select')
+      const fromSub = invoke(join(root, 'src'), 'select')
+      assert.equal(fromSub.code, fromRoot.code)
+      assert.deepEqual(fromSub.out, fromRoot.out)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a changed config forces all and is not ignored', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      writeFileSync(join(root, 'cbd.config.json'), JSON.stringify({ include: ['src/**'] }))
+
+      const result = invoke(root, 'select', '--format', 'json')
+      assert.equal(result.code, EXIT.all)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { mode: string; reasons: Array<{ kind: string; why?: string }>; ignored: string[] }
+      }
+      assert.equal(parsed.selection.mode, 'all')
+      assert.ok(
+        parsed.selection.reasons.some(
+          (reason) => reason.kind === 'all' && reason.why === 'config-changed',
+        ),
+      )
+      assert.ok(
+        !parsed.selection.ignored.some((path) => path.endsWith('/cbd.config.json')),
+        'the config is claimed by its own rule, not silently ignored',
+      )
+    } finally {
+      cleanup()
+    }
+  })
+
   test('a changed function selects its tests, and exits 0', () => {
     const { repo, root, cleanup } = prepared()
     try {
@@ -119,12 +269,14 @@ test.group('cbd select', () => {
       const result = invoke(root, 'select', '--format', 'json')
       assert.equal(result.code, EXIT.ok)
       const parsed = JSON.parse(result.out.join('\n')) as {
+        cbdVersion: string
         selection: { mode: string; tests: number[] }
         selected: Array<{ title: string }>
       }
       assert.equal(parsed.selection.mode, 'subset')
       assert.deepEqual(parsed.selection.tests, [0, 1])
       assert.deepEqual(parsed.selected.map((entry) => entry.title), ['adds', 'reads'])
+      assert.match(parsed.cbdVersion, /^\d+\.\d+\.\d+/)
     } finally {
       cleanup()
     }
@@ -136,13 +288,56 @@ test.group('cbd select', () => {
       assert.equal(invoke(root, 'build').code, EXIT.ok)
       repo.write('src/other.ts', 'export const other = 1;\n')
       repo.commit('after the map')
-      writeFileSync(join(root, 'cbd.config.json'), JSON.stringify({ unknownPolicy: 'ignore' }))
+      // `--config` from outside the repository: an in-repo config would itself be
+      // a change, and a changed config now forces all (`cbd-73r.3`).
+      const configDir = mkdtempSync(join(tmpdir(), 'cbd-config-'))
+      try {
+        const configPath = join(configDir, 'cbd.config.json')
+        writeFileSync(configPath, JSON.stringify({ unknownPolicy: 'ignore' }))
 
-      const result = invoke(root, 'select')
-      assert.equal(result.code, EXIT.ok)
-      // Two changes: src/other.ts and the untracked cbd.config.json written above.
-      // Untracked files are changes in worktree mode (`cbd-0na.1`).
-      assert.match(result.out.at(-1)!, /^0 tests for 2 changed files/)
+        const result = invoke(root, 'select', '--config', configPath)
+        assert.equal(result.code, EXIT.ok)
+        assert.match(result.out.at(-1)!, /^0 tests for 1 changed file/)
+      } finally {
+        rmSync(configDir, { recursive: true, force: true })
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a config outside --root still forces all', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      // A map under the sub-root, so `--root pkg` can select at all.
+      mkdirSync(join(root, 'pkg'), { recursive: true })
+      cpSync(join(root, '.cbd'), join(root, 'pkg/.cbd'), { recursive: true })
+      // The config sits above --root, outside the relative diff.
+      const config = join(root, 'cbd.config.json')
+      writeFileSync(config, '{}\n')
+
+      const result = invoke(
+        root,
+        '--root',
+        'pkg',
+        '--config',
+        config,
+        'select',
+        '--format',
+        'json',
+      )
+      assert.equal(result.code, EXIT.all)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { mode: string; reasons: Array<{ kind: string; why?: string }>; ignored: string[] }
+      }
+      assert.equal(parsed.selection.mode, 'all')
+      assert.ok(
+        parsed.selection.reasons.some(
+          (reason) => reason.kind === 'all' && reason.why === 'config-changed',
+        ),
+      )
+      assert.ok(!parsed.selection.ignored.includes(config))
     } finally {
       cleanup()
     }
@@ -171,12 +366,15 @@ test.group('cbd select', () => {
 
   test('a change outside include is named in selection.ignored', () => {
     const { repo, root, cleanup } = prepared()
+    const configDir = mkdtempSync(join(tmpdir(), 'cbd-config-'))
     try {
-      writeFileSync(join(root, 'cbd.config.json'), JSON.stringify({ include: ['src/**'] }))
+      // An external config: an in-repo one is itself a change, and now forces all.
+      const configPath = join(configDir, 'cbd.config.json')
+      writeFileSync(configPath, JSON.stringify({ include: ['src/**'] }))
       repo.write('docs/readme.md', '# docs\n')
       assert.equal(invoke(root, 'build').code, EXIT.ok)
 
-      const result = invoke(root, 'select', '--format', 'json')
+      const result = invoke(root, 'select', '--config', configPath, '--format', 'json')
       assert.equal(result.code, EXIT.ok)
       const parsed = JSON.parse(result.out.join('\n')) as {
         selection: { ignored: string[] }
@@ -186,23 +384,22 @@ test.group('cbd select', () => {
         `expected docs/readme.md in ignored, got ${JSON.stringify(parsed.selection.ignored)}`,
       )
 
-      const text = invoke(root, 'select')
+      const text = invoke(root, 'select', '--config', configPath)
       assert.equal(text.code, EXIT.ok)
-      // The config itself is outside include too, and is named rather than hidden.
-      assert.match(
-        text.out.join('\n'),
-        /ignored 2 changed files: cbd\.config\.json, docs\/readme\.md/,
-      )
+      assert.match(text.out.join('\n'), /ignored 1 changed file: docs\/readme\.md/)
     } finally {
+      rmSync(configDir, { recursive: true, force: true })
       cleanup()
     }
   })
 
   test('an alwaysSelect entry is added to a triggered subset', () => {
     const { repo, root, cleanup } = prepared()
+    const configDir = mkdtempSync(join(tmpdir(), 'cbd-config-'))
     try {
+      const configPath = join(configDir, 'cbd.config.json')
       writeFileSync(
-        join(root, 'cbd.config.json'),
+        configPath,
         JSON.stringify({
           include: ['src/**'],
           alwaysSelect: [{ tests: ['tests/a.spec.ts > adds'] }],
@@ -211,7 +408,7 @@ test.group('cbd select', () => {
       assert.equal(invoke(root, 'build').code, EXIT.ok)
       repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
 
-      const result = invoke(root, 'select', '--format', 'json')
+      const result = invoke(root, 'select', '--config', configPath, '--format', 'json')
       assert.equal(result.code, EXIT.ok)
       const parsed = JSON.parse(result.out.join('\n')) as {
         selection: { mode: string; tests: number[]; reasons: Array<{ kind: string }> }
@@ -220,6 +417,7 @@ test.group('cbd select', () => {
       assert.ok(parsed.selection.reasons.some((reason) => reason.kind === 'always'))
       assert.deepEqual(parsed.selection.tests, [0, 1])
     } finally {
+      rmSync(configDir, { recursive: true, force: true })
       cleanup()
     }
   })

@@ -1736,3 +1736,52 @@ The six cases against the real 360-test pipeline map:
    `selection.ignored` names it.
 
 The copy is `/tmp/cbd-grizzly-test`; the original checkout was not modified.
+
+## 2026-10-21 — round-2 selection feedback (`cbd-73r`, 0.0.3)
+
+grizzly re-ran the selection against published 0.0.2. Four defects, fixed here, and two feature
+requests filed for later.
+
+- **A straddling hunk under-selected** (`cbd-73r.1`). `functionsHit` called a hunk "outside every
+  function" only when it intersected none, so one hunk containing module scope and the function's
+  first line was classified as the function's. On the real 360-test pipeline map,
+  `appliedHash.ts` hunk 2–8 returned 22 tests and omitted
+  `fix 3 F6: the pipeline and the rules library share one canonicalJson`. A hunk is now checked for
+  coverage: any changed line outside every function sets the file-level answer too. The same input
+  returns 360 and includes the killer. A hunk wholly inside a function still answers precisely.
+- **The root came from `cwd`** (`cbd-73r.2`). From `typescript/`, `cbd select` looked under
+  `typescript/.cbd` and failed. The CLI now roots at the nearest `cbd.config.json` upward, else the
+  git top level, else the working directory; `--root` still wins. Live: the same command from
+  `typescript/` finds the map at the copy root.
+- **A changed config was ignored** (`cbd-73r.3`). The loaded config file now forces `all` with
+  `config-changed` before `include`; a rename away from it does too, and it is no longer listed in
+  `selection.ignored`. Live: editing the copy's `cbd.config.json` gives `all`, reason
+  `config-changed`, `ignored: []`.
+- **No `--version`** (`cbd-73r.4`). `cbd --version` prints the CLI and core versions and exits 0;
+  the select JSON carries `cbdVersion`. Both are read from package manifests at run time.
+- Filed: `cbd-73r.5` (record file reads as touches; a spike with a stated soundness boundary) and
+  `cbd-73r.6` (per-glob `unknownPolicy` or `file-importers`).
+
+An adversarial bug hunt over the fix found and closed six more:
+
+- **New-side straddle.** The coverage check used old-side ranges only; a replacement that
+  inserted a line above a declaration while its old range lay inside the function still
+  under-selected. A line-count-changing hunk containing a function's first line now widens.
+- **Module-body observers.** Excluding the whole-file `<module>` range from coverage also removed
+  it from `hit`, dropping dynamic importers. Coverage and hit now use two range lists.
+- **Canonical config globs.** `parseConfig` built include/alwaysAll globs from the raw root while
+  the factory resolved changes against the realpath; a symlinked root made `include` reject every
+  change. The root is canonicalized once.
+- **Config outside `--root`.** The relative diff cannot see it; the factory now asks git about that
+  one path and adds a synthetic change. A symlinked or differently-cased config is compared by real
+  path.
+- **Root boundary.** The config search could climb out of the repository into a parent project.
+  It is bounded by the git top level, and roots are canonical.
+- **Version robustness.** `cbd --version` is answered by the bin before the CLI (and core) is
+  imported, so a broken install still reports; help/version no longer spawn git.
+
+Tests: core 292, CLI 49 (root choice, nested-repository boundary, subdirectory parity, config
+change and rename, config outside `--root`, version text/JSON/help precedence, a git shim proving
+`--version` does not invoke it, and the `cbdVersion` field). Full workspace suite passes
+sequentially. Live verification used `/tmp/cbd-grizzly-test`, a copy of the reporting checkout with
+the recorded 360-test map rebuilt under 0.0.3.

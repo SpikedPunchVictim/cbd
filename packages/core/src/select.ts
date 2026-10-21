@@ -33,6 +33,7 @@ export type AllWhy =
   | 'no-map'
   | 'test-file'
   | 'always-unknown'
+  | 'config-changed'
 
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
@@ -119,6 +120,23 @@ export interface SelectConfig {
   /** Tests every matching subset must also run, for oracles that read sources as text. */
   alwaysSelect?: AlwaysSelectEntry[]
   /**
+   * The config file this selection was made under, absolute.
+   *
+   * A change to it can change `include`, `alwaysAll`, `alwaysSelect` or the
+   * policies, so a map built under the old config cannot answer for the new one.
+   * The file is outside `include` in some repositories and used to be reported as
+   * merely ignored (`cbd-73r.3`).
+   */
+  configFile?: string
+  /**
+   * The factory's canonical comparison result for the config file.
+   *
+   * A symlinked config, a case-insensitive filesystem or a `--config` outside
+   * `--root` can spell the same file differently in the diff. The factory has
+   * the filesystem access to compare real paths; `select` only sees strings.
+   */
+  configChanged?: boolean
+  /**
    * Whether a changed path statically looks like it defines tests.
    *
    * A helper module can define tests through a function a spec calls; the map
@@ -161,6 +179,36 @@ function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((a, b) => a - b)
 }
 
+/** Case-folded path equality on the platforms whose filesystems ignore case. */
+function samePath(a: string, b: string): boolean {
+  return (
+    a === b ||
+    ((process.platform === 'darwin' || process.platform === 'win32') &&
+      a.toLowerCase() === b.toLowerCase())
+  )
+}
+
+/**
+ * Whether every line in `[start, end]` is inside at least one function range.
+ *
+ * Ranges are sorted by start and may nest. The sweep advances a cursor over the
+ * covered line; a gap means module scope.
+ */
+function fullyCovered(
+  start: number,
+  end: number,
+  ranges: Array<{ start: number; end: number }>,
+): boolean {
+  let cursor = start
+  for (const range of ranges) {
+    if (range.end < cursor) continue
+    if (range.start > cursor) return false
+    cursor = range.end + 1
+    if (cursor > end) return true
+  }
+  return false
+}
+
 /**
  * Rules 4 and 5 for one known file: which mapped functions the change reaches,
  * and whether it reaches code the map cannot place at all.
@@ -171,6 +219,14 @@ function uniqueSorted(values: Iterable<number>): number[] {
  * could be read by anything in the file. An insertion after a function's closing
  * brace is top-level code, not the function's, hence `< endLine` rather than
  * `<=`.
+ *
+ * **A hunk is not one thing.** git emits one hunk for contiguous changed lines,
+ * and a rename plus the signature that uses it can put module scope and a
+ * function's first line in the same hunk. Classifying the hunk only by whether
+ * it intersects a function hid the module-scope part and selected just that
+ * function's tests (`cbd-73r.1`). Both answers are recorded: the functions it
+ * touches, and `outsideEveryFunction` when any changed line lies outside every
+ * function.
  */
 function functionsHit(
   change: Change,
@@ -178,25 +234,44 @@ function functionsHit(
 ): { hit: Set<string>; outsideEveryFunction: boolean } {
   const hit = new Set<string>()
   let outsideEveryFunction = false
+  const allRanges = Object.entries(functions)
+    .map(([key, entry]) => ({ key, start: entry.startLine, end: entry.endLine }))
+    .sort((a, b) => a.start - b.start)
+  // The module body is a V8 entry whose range is the whole file. It is not a
+  // function in the source: including it in the coverage check would call every
+  // hunk "inside a function" and re-open the straddle miss. It stays in `hit`:
+  // a test that dynamically imported the module can observe its exports.
+  const functionRanges = allRanges.filter((range) => !range.key.startsWith('<module>'))
+
+  // New-side line numbers shift relative to the map's old-side function ranges.
+  // When a hunk changes the line count *and* contains a function's first line,
+  // the new text may be module scope even though the old line was in the
+  // function (e.g. a statement inserted above the declaration); there is no map
+  // at the new commit to place it, so widen (`cbd-73r.1`).
+  const oldLines = change.hunks.reduce((n, hunk) => n + (hunk.end - hunk.start + 1), 0)
+  const newLines = change.newHunks?.reduce((n, hunk) => n + (hunk.end - hunk.start + 1), 0)
+  const lineCountChanged = newLines !== undefined && newLines !== oldLines
 
   for (const hunk of change.hunks) {
-    let matched = false
-    for (const [key, entry] of Object.entries(functions)) {
-      if (intersects(hunk, { start: entry.startLine, end: entry.endLine })) {
-        matched = true
-        hit.add(key)
-      }
+    for (const range of allRanges) {
+      if (intersects(hunk, range)) hit.add(range.key)
     }
-    if (!matched) outsideEveryFunction = true
+    if (!fullyCovered(hunk.start, hunk.end, functionRanges)) outsideEveryFunction = true
+    if (
+      lineCountChanged &&
+      functionRanges.some((range) => hunk.start <= range.start && range.start <= hunk.end)
+    ) {
+      outsideEveryFunction = true
+    }
   }
 
   for (const point of change.insertions ?? []) {
     let matched = false
-    for (const [key, entry] of Object.entries(functions)) {
-      if (point >= entry.startLine && point < entry.endLine) {
-        matched = true
-        hit.add(key)
-      }
+    for (const range of allRanges) {
+      if (point >= range.start && point < range.end) hit.add(range.key)
+    }
+    for (const range of functionRanges) {
+      if (point >= range.start && point < range.end) matched = true
     }
     if (!matched) outsideEveryFunction = true
   }
@@ -334,6 +409,19 @@ export function select(
 
   for (const change of changes) {
     const path = change.path
+
+    // Rule 0 — the config itself. It changes what the other rules mean, so a
+    // map built under the old file cannot answer for a selection under the new
+    // one. Checked before `include`: the config often sits outside it.
+    if (
+      config.configChanged === true ||
+      (config.configFile !== undefined &&
+        (samePath(path, config.configFile) ||
+          (change.from !== undefined && samePath(change.from, config.configFile))))
+    ) {
+      forceAll('config-changed', path)
+      continue
+    }
 
     // Rule 1 — a file the map cannot answer for by policy, and the first rule in
     // §8.3's table for a reason: `alwaysAll` is independent of `include`. The

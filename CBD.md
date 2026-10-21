@@ -622,11 +622,12 @@ source changes.
 
 | case | result |
 |---|---|
+| the loaded config file (`cbd.config.json`, or `--config`) changed | `mode: all`, reason `config-changed` — the map was built under the old rules |
 | a changed file matches `alwaysAll` globs (lockfile, `package.json`, test config, `tsconfig*`, migrations — user-configured) | `mode: all`, reason names the file |
 | a changed file is touched only by `@load` or `@teardown` (startup code, global setup) | `mode: all` |
 | a changed file is a test file (it defines tests the map knows, or is a helper that statically contains a registration call) | select the tests the map knows in that file and **warn that an added test cannot be named** (`testFilePolicy: 'known'`, the default); `'all'` forces the suite; a new test file the map has never seen → all |
 | a changed file is in the map, and a hunk intersects a mapped function's line range | the tests that touched that function |
-| a changed file is in the map, and a hunk is outside every function (imports, top-level constants, class field initializers) | every test that touched the file, **plus every test in the process that evaluated the module body** (`@load`/`@teardown`); `mode: all` when the map has no such attribution |
+| a changed file is in the map, and a hunk has **any line** outside every function (imports, top-level constants, class field initializers) | every test that touched the file, **plus every test in the process that evaluated the module body** (`@load`/`@teardown`); `mode: all` when the map has no such attribution |
 | a changed file is in the map but no test touched it | nothing selected; reported as `untested` |
 | a changed file was **never seen** by the map and matches `include` | `mode: all` by default (`unknownPolicy: 'all' \| 'ignore' \| 'file-importers'`) |
 | a deleted file in the map | every test that touched it |
@@ -640,6 +641,29 @@ be a hunk at all. It is carried separately as an insertion point: content insert
 mapped function is that function's (rule 4), and content inserted outside every function is answered
 by the whole file (rule 5). Dropping it made an added block invisible and selected nothing
 (`cbd-81h.1`, found by the replay harness).
+
+**A hunk is not one thing.** git groups contiguous changed lines, so renaming a constant and the
+JSDoc and signature that use it can put module scope and a function's first line in a single hunk.
+Rules 4 and 5 are therefore evaluated independently: the hunk contributes every function it
+intersects **and** sets the file-level answer when any of its lines lies outside every function.
+Classifying the whole hunk as "the function's" hid the module-scope change and selected only that
+function's tests — the case where a test compares a re-exported binding and calls no function
+(`cbd-73r.1`). A hunk wholly inside a function still answers precisely.
+
+The coverage check is against the map's **old-side** function ranges. When a hunk changes its line
+count *and* contains a function's first line, the new text may be module scope even though the old
+line was inside the function (a statement inserted above the declaration, for example). There is no
+map at the new commit to place it, so the selection widens; an insertion inside the body does not.
+The V8 entry for the module body is not a source function: its range is the whole file and would
+mark every hunk covered, so it is excluded from the coverage check while its tests still count as
+observers.
+
+A **changed config file** forces `mode: all` before `include` is consulted. The map was built under
+the old `include`, `alwaysAll`, `alwaysSelect` and policies, so it cannot answer for a selection
+whose rules have changed; the file is often outside `include`, and reporting it as merely ignored
+was wrong (`cbd-73r.3`). The comparison follows real paths (a symlinked or differently-cased config
+is the same file), and a config outside `--root` is checked with a targeted git query because the
+relative diff cannot see it.
 
 A **changed test file** can *add* a test the map cannot name, so the selection says what it cannot
 answer: it selects the tests the map knows in that file and **warns** that a newly added one will not
@@ -718,7 +742,7 @@ export type Reason =
   | { kind: 'file'; file: string; tests: number[] }
   | { kind: 'test-file'; file: string; tests: number[] }
   | { kind: 'always'; tests: number[] }
-  | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map' | 'test-file' | 'always-unknown'; file?: string }
+  | { kind: 'all'; why: 'always-all' | 'load' | 'unknown-file' | 'between' | 'stale-map' | 'no-map' | 'test-file' | 'always-unknown' | 'config-changed'; file?: string }
 ```
 
 ### 8.5 Other queries

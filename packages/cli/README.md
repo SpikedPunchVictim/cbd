@@ -11,6 +11,7 @@ pnpm add -D @spikedpunch/cbd-cli @spikedpunch/cbd
 ## Commands
 
 ```sh
+cbd --version
 cbd build   [--commit <sha>] [--partial] [--root <dir>] [--format json]
 cbd select  [--since <ref>] [--no-worktree] [--strict] [--commit <sha>]
 cbd explain <file>[:<line>] [--root <dir>] [--format json]
@@ -20,9 +21,12 @@ cbd collect [--no-select] [--no-build] [--shard <path>] -- <test command>
 cbd gc      [--keep <n>] [--root <dir>] [--format json]
 ```
 
-The repository is the working directory unless `--root` names another. The config is
-`<root>/cbd.config.json` unless `--config` names another; a missing default config means safe
-defaults, a missing explicit one is an error.
+The root is, within the git top level, the nearest directory upward containing a `cbd.config.json`,
+else the git top level itself; outside git, the nearest config, else the working directory. A config
+above the git top level is not used. `--root` overrides it. The config is `<root>/cbd.config.json` unless
+`--config` names another; a missing default config means safe defaults, a missing explicit one is an
+error. `cbd --version` prints the CLI and core versions, and `select --format json` carries
+`cbdVersion`.
 
 ### `cbd collect`
 

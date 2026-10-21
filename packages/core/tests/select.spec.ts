@@ -66,6 +66,29 @@ const change = (
 const reasonKinds = (selection: ReturnType<typeof select>): string[] =>
   selection.reasons.map((r) => (r.kind === 'all' ? `all:${r.why}` : r.kind))
 
+// --- rule 0: the config file (`cbd-73r.3`) ----------------------------------
+test('rule 0: a changed config file forces mode: all', () => {
+  const config = '/repo/cbd.config.json'
+  const result = select(makeMap(), [change(config)], {
+    configFile: config,
+    include: () => false,
+  })
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:config-changed'])
+  assert.deepEqual(result.ignored, [], 'the config is claimed, not ignored')
+})
+
+test('rule 0: renaming the config away also forces all', () => {
+  const config = '/repo/cbd.config.json'
+  const result = select(
+    makeMap(),
+    [{ path: '/repo/old-config.json', status: 'R', from: config, hunks: [] }],
+    { configFile: config },
+  )
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:config-changed'])
+})
+
 // --- rule 1 -----------------------------------------------------------------
 test('rule 1: a file matching alwaysAll forces mode: all', () => {
   const result = select(makeMap(), [change('/repo/package.json')], {
@@ -291,6 +314,98 @@ test('rule 5: a hunk partly outside still widens to the whole file', () => {
   const result = select(makeMap(), [change(SRC, [{ start: 2, end: 2 }, { start: 50, end: 50 }])])
   assert.deepEqual(reasonKinds(result), ['function', 'file'])
   assert.deepEqual(result.tests, [0, 1])
+})
+
+// `cbd-73r.1`: one hunk can contain module scope and a function's first line.
+// Treating the whole hunk as the function's dropped the binding readers.
+test('rule 5: a single hunk spanning module scope and a function widens too', () => {
+  // Line 4 is between functions; line 5 is `multiply`'s first line.
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 5 }])])
+  assert.deepEqual(reasonKinds(result), ['function', 'file'])
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('rule 5: a deletion hunk spanning the boundary widens too', () => {
+  // The new side is empty: lines 4–5 were deleted. The old-side range still
+  // contains module scope (line 4) and `multiply`'s first line (5).
+  const result = select(makeMap(), [
+    { path: SRC, status: 'M', hunks: [{ start: 4, end: 5 }], newHunks: [] },
+  ])
+  assert.deepEqual(reasonKinds(result), ['function', 'file'])
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('rule 5: a module-body range does not cover the file for the outside check', () => {
+  // A module body can be a `files` entry when a test imported it dynamically;
+  // its V8 range is the whole file, so treating it as a function would hide the
+  // module-scope answer again.
+  const base = makeMap()
+  const map = {
+    ...base,
+    files: {
+      ...base.files,
+      [SRC]: {
+        ...base.files[SRC]!,
+        '<module>@0': { startLine: 0, endLine: 20, tests: [2] },
+      },
+    },
+  }
+  const result = select(map, [change(SRC, [{ start: 4, end: 4 }])])
+  assert.deepEqual(reasonKinds(result), ['function', 'file'])
+  assert.deepEqual(result.tests, [0, 1, 2])
+})
+
+test('rule 4: a module-body observer is selected for a change inside a function', () => {
+  // A test that dynamically imported the module can read an export whose
+  // declaration changed, without calling the function. The module body must stay
+  // in `hit` even though it is excluded from the coverage check.
+  const base = makeMap()
+  const map = {
+    ...base,
+    files: {
+      ...base.files,
+      [SRC]: {
+        ...base.files[SRC]!,
+        '<module>@0': { startLine: 0, endLine: 20, tests: [2] },
+      },
+    },
+  }
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.deepEqual(result.tests, [0, 2])
+})
+
+test('rule 5: a replacement that adds a line at a function start widens', () => {
+  // `cbd-73r.1` follow-up: old line 1 is the function's first line, but the new
+  // side has two lines, so the added one may be module scope.
+  const result = select(makeMap(), [
+    {
+      path: SRC,
+      status: 'M',
+      hunks: [{ start: 1, end: 1 }],
+      newHunks: [{ start: 1, end: 2 }],
+    },
+  ])
+  assert.deepEqual(reasonKinds(result), ['function', 'file'])
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('rule 5: adding a line inside a function body does not widen', () => {
+  const result = select(makeMap(), [
+    {
+      path: SRC,
+      status: 'M',
+      hunks: [{ start: 2, end: 2 }],
+      newHunks: [{ start: 2, end: 3 }],
+    },
+  ])
+  assert.deepEqual(reasonKinds(result), ['function'])
+  assert.deepEqual(result.tests, [0])
+})
+
+test('rule 5: a hunk wholly inside a function does not widen', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 2, end: 3 }])])
+  assert.deepEqual(reasonKinds(result), ['function'])
+  assert.deepEqual(result.tests, [0])
 })
 
 test('rule 5: a change carrying no hunks at all still widens to the whole file', () => {

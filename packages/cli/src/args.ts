@@ -10,7 +10,9 @@
  * here, so `cbd stats --partial` fails as a usage error instead of quietly doing
  * nothing.
  */
-import { resolve } from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { existsSync, realpathSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
 export type Command =
   | 'build'
@@ -20,6 +22,7 @@ export type Command =
   | 'stats'
   | 'collect'
   | 'gc'
+  | 'version'
   | 'help'
 
 export type Format = 'text' | 'json'
@@ -77,12 +80,21 @@ const VALUE_FLAGS = new Set([
   'file',
 ])
 
-const BOOLEAN_FLAGS = new Set(['help', 'partial', 'worktree', 'strict', 'select', 'build'])
+const BOOLEAN_FLAGS = new Set([
+  'help',
+  'version',
+  'partial',
+  'worktree',
+  'strict',
+  'select',
+  'build',
+])
 
 /** Global flags every command accepts; the rest are per command. */
-const GLOBAL = new Set(['root', 'config', 'format', 'help'])
+const GLOBAL = new Set(['root', 'config', 'format', 'help', 'version'])
 
 const ALLOWED: Record<Command, readonly string[]> = {
+  version: [],
   build: ['commit', 'partial'],
   select: ['since', 'worktree', 'strict', 'commit'],
   explain: [],
@@ -157,8 +169,88 @@ function takeFlag(argv: string[], index: number, flags: Map<string, FlagValue>):
   return inline === undefined ? index + 1 : index
 }
 
+/** Whether `dir` is `ceiling` or below it. */
+function atOrBelow(dir: string, ceiling: string): boolean {
+  const rel = relative(ceiling, dir)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * The nearest ancestor of `cwd` holding `cbd.config.json`, if any.
+ *
+ * The walk stops at `ceiling` when given. That is the git top level: a config
+ * above the repository belongs to a different project, and letting it win made a
+ * nested repository answer for its parent's tree — or, with a submodule, run the
+ * parent's suite (`cbd-73r.2` follow-up).
+ */
+function configRoot(cwd: string, ceiling?: string): string | undefined {
+  // Canonical, because `git rev-parse --show-toplevel` answers a realpath while
+  // `cwd` may be reached through a symlink (`/tmp` on macOS). Comparing the two
+  // spellings would stop the walk before the config directory.
+  let dir = canonical(cwd)
+  for (;;) {
+    if (existsSync(join(dir, 'cbd.config.json'))) return dir
+    if (ceiling !== undefined && dir === ceiling) return undefined
+    const parent = dirname(dir)
+    if (parent === dir) return undefined
+    if (ceiling !== undefined && !atOrBelow(parent, ceiling)) return undefined
+    dir = parent
+  }
+}
+
+function canonical(path: string): string {
+  try {
+    return realpathSync(resolve(path))
+  } catch {
+    return resolve(path)
+  }
+}
+
+/** The git top level, when `cwd` is inside a repository. */
+function gitRoot(cwd: string): string | undefined {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    // Strip the line ending, not whitespace: a repository path may legally end
+    // in a space, and trimming it produced a path that does not exist.
+    const root = out.replace(/\r?\n$/, '')
+    return root === '' ? undefined : root
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Where the repository is, when `--root` does not say.
+ *
+ * The git top level is the outer boundary: a `cbd.config.json` only marks the
+ * project root within it, so a config in a parent repository or a parent
+ * directory cannot capture an unrelated checkout. Within the repository the
+ * nearest config wins (a monorepo can put one in a package); without one the git
+ * top level is the root. Outside git, an upward config search still works, and
+ * `cwd` is the last resort. Rooting at `process.cwd()` made `cbd select` from a
+ * subdirectory look for `<subdir>/.cbd` and fail (`cbd-73r.2`).
+ */
+export function defaultRoot(cwd: string): string {
+  const git = gitRoot(cwd)
+  if (git !== undefined) return configRoot(cwd, git) ?? git
+  return configRoot(cwd) ?? canonical(cwd)
+}
+
+/**
+ * The first token decides help before the version flag does: `cbd help
+ * --version` should print help, not reject the pair.
+ */
 function commandOf(flags: Map<string, FlagValue>, positional: string[]): Command {
   if (flags.get('help') === true) return 'help'
+  if (positional[0] === 'help') {
+    positional.shift()
+    return 'help'
+  }
+  if (flags.get('version') === true) return 'version'
   const command = positional.shift()
   if (command === undefined) throw new UsageError('missing command (try "cbd --help")')
   if (!COMMANDS.has(command)) throw new UsageError(`unknown command "${command}"`)
@@ -172,13 +264,20 @@ function checkAllowed(command: Command, flags: Map<string, FlagValue>): void {
     }
     if (GLOBAL.has(name)) continue
     if (!ALLOWED[command].includes(name)) {
-      throw new UsageError(`"cbd ${command}" does not take --${name}`)
+      const form = command === 'version' ? 'cbd --version' : `"cbd ${command}"`
+      throw new UsageError(`${form} does not take --${name}`)
     }
   }
 }
 
 function checkPositional(command: Command, positional: string[], exec: string[]): void {
   if (command === 'help') return
+  if (command === 'version') {
+    if (positional.length > 0 || exec.length > 0) {
+      throw new UsageError('--version takes no arguments')
+    }
+    return
+  }
   if (exec.length > 0 && command !== 'collect') {
     throw new UsageError(`unexpected argument "${exec[0]}" (only collect takes "-- <command>")`)
   }
@@ -242,10 +341,20 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const shard = stringOf(flags, 'shard')
   const file = stringOf(flags, 'file')
   const keep = positiveIntOf(flags, 'keep')
+  const explicitRoot = stringOf(flags, 'root')
+  // Help and version do not read a map, so they must not spawn git or walk the
+  // filesystem to choose a root: a diagnostic command cannot hang on a broken
+  // git wrapper or a wedged network path.
+  const root =
+    command === 'help' || command === 'version'
+      ? resolve(cwd)
+      : explicitRoot === undefined
+        ? defaultRoot(cwd)
+        : resolve(cwd, explicitRoot)
   return {
     command,
     format: formatOf(flags),
-    root: resolve(cwd, stringOf(flags, 'root') ?? '.'),
+    root,
     ...(config === undefined ? {} : { config: resolve(cwd, config) }),
     ...(commit === undefined ? {} : { commit }),
     ...(since === undefined ? {} : { since }),

@@ -50,6 +50,11 @@ export interface CbdConfig {
   root: string
   /** Where shards and maps live, relative to `root`. Default `.cbd`. */
   stateDir?: string
+  /**
+   * The config file the selection was loaded from, absolute. Set by the loaders;
+   * a change to it forces `mode: all` because it changes what selection means.
+   */
+  configFile?: string
   /** Forwarded to `select`: include, alwaysAll, policies, testFiles, maxAgeCommits, strict. */
   select?: SelectConfig
 }
@@ -280,7 +285,8 @@ export function nearestMapCommit(root: string, stateDir = '.cbd'): string | unde
 function dirtyTree(root: string, stateDir: string): boolean {
   try {
     const out = git(root, ['status', '--porcelain', '--', '.'])
-    const top = git(root, ['rev-parse', '--show-toplevel']).trim()
+    // Strip the line ending, not whitespace: a path may end in a space.
+    const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
     const prefix = relative(top, root)
     const state = stateDir.replace(/^\.\//, '').replace(/\/+$/, '')
     return out.split('\n').some((line) => {
@@ -299,6 +305,34 @@ function dirtyTree(root: string, stateDir: string): boolean {
 function inside(path: string, dir: string): boolean {
   const rel = relative(dir, path)
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * Whether a config outside `root` changed.
+ *
+ * `changesSince --relative` cannot see a path outside the project root, so a
+ * `--config` in a monorepo parent (or above `--root`) was invisible to rule 0.
+ * Ask git directly for that one path, from the top level. A config outside the
+ * git repository cannot be compared and is left to the caller.
+ */
+function configChangedOutside(root: string, configFile: string, since: string): boolean {
+  try {
+    const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
+    const rel = relative(top, configFile)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
+    const changed = git(top, ['diff', '--name-only', since, '--', rel]).replace(/\r?\n$/, '')
+    if (changed !== '') return true
+    const untracked = git(top, [
+      'ls-files',
+      '--others',
+      '--exclude-standard',
+      '--',
+      rel,
+    ]).replace(/\r?\n$/, '')
+    return untracked !== ''
+  } catch {
+    return false
+  }
 }
 
 /** Every `.ndjson` under a directory, at any depth. */
@@ -452,8 +486,45 @@ export function createCbd(config: CbdConfig): Cbd {
         // gitignored, its files would otherwise read as untracked source changes
         // and force a full run on every selection.
         .filter((change) => !inside(change.path, stateRoot))
+
+      // A config above `--root` is outside the relative diff; ask git about it
+      // directly, and add it as a change so rule 0 can fire.
+      const configFile = config.configFile
+      if (
+        configFile !== undefined &&
+        !inside(configFile, root) &&
+        configChangedOutside(root, configFile, since)
+      ) {
+        allChanges.push({ path: configFile, status: 'M', hunks: [], insertions: [] })
+      }
+
+      // A symlinked config, or one spelled with different case, is the same file
+      // but not the same string. Compare real paths, which also makes the
+      // outside-root synthetic change above match.
+      // macOS and Windows are case-insensitive but case-preserving: the loaded
+      // spelling and git's spelling can differ in case while naming one file.
+      // Folding is only used for this comparison; a false positive forces all.
+      const samePath = (a: string, b: string): boolean =>
+        a === b ||
+        ((process.platform === 'darwin' || process.platform === 'win32') &&
+          a.toLowerCase() === b.toLowerCase())
+      const isConfigPath = (path: string | undefined): boolean => {
+        if (path === undefined || configFile === undefined) return false
+        if (samePath(path, configFile)) return true
+        try {
+          return samePath(realpathSync(path), configFile)
+        } catch {
+          return false
+        }
+      }
+      const configChanged =
+        configFile !== undefined &&
+        allChanges.some((change) => isConfigPath(change.path) || isConfigPath(change.from))
+
       const changes = allChanges.filter(
         (change) =>
+          isConfigPath(change.path) ||
+          isConfigPath(change.from) ||
           include(change.path) ||
           matchesAnyGlob(change.path, alwaysAll) !== null ||
           matchesAnyGlob(change.path, claimedByWhen) !== null,
@@ -484,6 +555,8 @@ export function createCbd(config: CbdConfig): Cbd {
         ...selectCore(loaded.map, changes, {
           ...config.select,
           definesTests,
+          ...(config.configFile === undefined ? {} : { configFile: config.configFile }),
+          ...(configChanged ? { configChanged: true } : {}),
           ...(options.strict === undefined ? {} : { strict: options.strict }),
         }, {
           commit: info.commit,

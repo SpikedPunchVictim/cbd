@@ -1,6 +1,6 @@
 {
   "name": "@spikedpunch/cbd-jest",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "type": "module",
   "description": "Jest adapter: a test environment that records per-test coverage windows and selects with them.",
   "main": "./dist/src/index.js",

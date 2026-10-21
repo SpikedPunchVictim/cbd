@@ -33,6 +33,7 @@ import { UsageError, parseArgs, type ParsedArgs } from './args.js'
 import { collect } from './collect.js'
 import { EXIT } from './exit.js'
 import { DEFAULT_KEEP, gc, type GcResult } from './gc.js'
+import { versions } from './version.js'
 import {
   buildLines,
   explainLines,
@@ -57,6 +58,7 @@ export interface RunOptions extends Io {
 const HELP = `cbd — run the tests that reach the code you changed
 
 Usage:
+  cbd --version
   cbd build   [--commit <sha>] [--partial] [--root <dir>] [--format json]
   cbd select  [--since <ref>] [--no-worktree] [--strict] [--commit <sha>]
   cbd explain <file>[:<line>] [--root <dir>] [--format json]
@@ -81,8 +83,9 @@ reaches answers the question explain asks backwards: does this one test reach th
 file or line? A bare title that names more than one test is refused; --file picks
 one. explain names the tests per function, stats summarises the map.
 
-The repository is the working directory unless --root names another. The config
-is <root>/cbd.config.json unless --config names another; a missing default config
+The root is the nearest directory upward with a cbd.config.json, else the git
+top level, else the working directory; --root overrides it. The config is
+<root>/cbd.config.json unless --config names another; a missing default config
 means the safe defaults, a missing explicit one is an error.`
 
 function configFor(parsed: ParsedArgs): CbdConfig {
@@ -102,6 +105,12 @@ function output(parsed: ParsedArgs, value: unknown, lines: string[], io: Io): vo
   for (const line of rendered) io.out(line)
 }
 
+function runVersion(parsed: ParsedArgs, io: Io): number {
+  const v = versions()
+  output(parsed, v, [`cbd ${v.cli} (@spikedpunch/cbd ${v.core})`], io)
+  return EXIT.ok
+}
+
 function runBuild(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
   const result: BuildResult = cbd.build({
     ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
@@ -119,7 +128,10 @@ function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
     strict: parsed.strict,
   })
   for (const warning of result.selection.warnings) io.err(`cbd: warning: ${warning}`)
-  output(parsed, result, selectLines(result, parsed.root), io)
+  // The JSON answer carries the version that produced it, so a consumer can
+  // refuse an answer from an older CLI without a second process (`cbd-73r.4`).
+  const value = parsed.format === 'json' ? { ...result, cbdVersion: versions().cli } : result
+  output(parsed, value, selectLines(result, parsed.root), io)
   return result.selection.mode === 'all' ? EXIT.all : EXIT.ok
 }
 
@@ -205,6 +217,7 @@ export function run(argv: string[], options: RunOptions): number {
     for (const line of HELP.split('\n')) options.out(line)
     return EXIT.ok
   }
+  if (parsed.command === 'version') return runVersion(parsed, options)
 
   try {
     const config = configFor(parsed)
