@@ -58,6 +58,10 @@ export interface ParsedArgs {
   batch?: string
   /** `select`: write the v2 selection file here. Absolute. */
   emitSelection?: string
+  /** `select`: write one v2 selection file per suite here. Absolute. */
+  emitSelectionDir?: string
+  /** `select`: the suite name and file globs for `--emit-selection-dir`. */
+  suites?: Array<{ name: string; globs: string[] }>
   /** `select`: answer for this diff file instead of the worktree. Absolute. */
   patch?: string
   /** `select`: answer for these changed lines, `path:start[-end]`. */
@@ -98,9 +102,14 @@ const VALUE_FLAGS = new Set([
   'change',
   'batch',
   'emit-selection',
+  'emit-selection-dir',
+  'suite',
   'base',
   'order',
 ])
+
+/** Flags that may be given more than once; each value is kept. */
+const REPEATABLE = new Set(['suite'])
 
 const BOOLEAN_FLAGS = new Set([
   'help',
@@ -119,7 +128,7 @@ const GLOBAL = new Set(['root', 'config', 'format', 'help', 'version'])
 const ALLOWED: Record<Command, readonly string[]> = {
   version: [],
   build: ['commit', 'partial', 'incremental', 'base'],
-  select: ['since', 'worktree', 'strict', 'commit', 'patch', 'change', 'emit-selection', 'order'],
+  select: ['since', 'worktree', 'strict', 'commit', 'patch', 'change', 'emit-selection', 'emit-selection-dir', 'suite', 'order'],
   explain: [],
   reaches: ['commit', 'file', 'batch'],
   stats: ['commit'],
@@ -139,10 +148,12 @@ type FlagValue = string | boolean
  */
 function takeFlags(argv: string[]): {
   flags: Map<string, FlagValue>
+  repeated: Map<string, string[]>
   positional: string[]
   exec: string[]
 } {
   const flags = new Map<string, FlagValue>()
+  const repeated = new Map<string, string[]>()
   const positional: string[] = []
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -150,12 +161,12 @@ function takeFlags(argv: string[]): {
     // Everything after `--` is the test command, not this parser's business: a
     // runner's own flags look exactly like ours (`--filter`, `--reporter`), and
     // parsing them here would reject the command a user meant to run.
-    if (arg === '--') return { flags, positional, exec: argv.slice(index + 1) }
-    if (arg.startsWith('-')) index = takeFlag(argv, index, flags)
+    if (arg === '--') return { flags, repeated, positional, exec: argv.slice(index + 1) }
+    if (arg.startsWith('-')) index = takeFlag(argv, index, flags, repeated)
     else positional.push(arg)
   }
 
-  return { flags, positional, exec: [] }
+  return { flags, repeated, positional, exec: [] }
 }
 
 /**
@@ -165,7 +176,12 @@ function takeFlags(argv: string[]): {
  * a script can spell the default. Both forms go through the same boolean check, so
  * a command cannot end up with one of them and not the other.
  */
-function takeFlag(argv: string[], index: number, flags: Map<string, FlagValue>): number {
+function takeFlag(
+  argv: string[],
+  index: number,
+  flags: Map<string, FlagValue>,
+  repeated: Map<string, string[]>,
+): number {
   const arg = argv[index]!
   if (arg === '-h') {
     flags.set('help', true)
@@ -188,6 +204,11 @@ function takeFlag(argv: string[], index: number, flags: Map<string, FlagValue>):
   if (!VALUE_FLAGS.has(name)) throw new UsageError(`unknown flag --${name}`)
   const value = inline ?? argv[index + 1]
   if (value === undefined || value === '') throw new UsageError(`--${name} needs a value`)
+  if (REPEATABLE.has(name)) {
+    const list = repeated.get(name) ?? []
+    list.push(value)
+    repeated.set(name, list)
+  }
   flags.set(name, value)
   return inline === undefined ? index + 1 : index
 }
@@ -354,6 +375,31 @@ const stringOf = (flags: Map<string, FlagValue>, name: string): string | undefin
 }
 
 /**
+ * A `--suite` value: `name=glob[,glob...]`.
+ *
+ * The name becomes a file name in the output directory, so it is restricted to
+ * what a path segment can safely carry. `_other` is reserved for selected tests no
+ * suite claimed.
+ */
+function suiteSpec(value: string): { name: string; globs: string[] } {
+  const at = value.indexOf('=')
+  if (at <= 0) throw new UsageError(`--suite wants <name>=<glob,...>, not "${value}"`)
+  const name = value.slice(0, at)
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name === '_other') {
+    throw new UsageError(
+      `--suite name "${name}" must be letters, digits, dot, dash or underscore (and not "_other")`,
+    )
+  }
+  const globs = value
+    .slice(at + 1)
+    .split(',')
+    .map((glob) => glob.trim())
+    .filter((glob) => glob !== '')
+  if (globs.length === 0) throw new UsageError(`--suite "${name}" needs at least one glob`)
+  return { name, globs }
+}
+
+/**
  * A count that must be at least 1.
  *
  * Zero is refused rather than read as "remove everything": it is the one value a
@@ -369,11 +415,19 @@ function positiveIntOf(flags: Map<string, FlagValue>, name: string): number | un
 }
 
 export function parseArgs(argv: string[], cwd: string): ParsedArgs {
-  const { flags, positional, exec } = takeFlags(argv)
+  const { flags, repeated, positional, exec } = takeFlags(argv)
   const command = commandOf(flags, positional)
   checkAllowed(command, flags)
   const batch = stringOf(flags, 'batch')
   const emitSelection = stringOf(flags, 'emit-selection')
+  const emitSelectionDir = stringOf(flags, 'emit-selection-dir')
+  const suites = (repeated.get('suite') ?? []).map(suiteSpec)
+  if (suites.length > 0 && emitSelectionDir === undefined) {
+    throw new UsageError('--suite needs --emit-selection-dir <dir>')
+  }
+  if (emitSelectionDir !== undefined && suites.length === 0) {
+    throw new UsageError('--emit-selection-dir needs at least one --suite <name>=<glob,...>')
+  }
   const base = stringOf(flags, 'base')
   checkPositional(command, positional, exec, batch !== undefined)
 
@@ -414,6 +468,8 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
     ...(order === undefined ? {} : { order }),
     ...(batch === undefined ? {} : { batch: resolve(cwd, batch) }),
     ...(emitSelection === undefined ? {} : { emitSelection: resolve(cwd, emitSelection) }),
+    ...(emitSelectionDir === undefined ? {} : { emitSelectionDir: resolve(cwd, emitSelectionDir) }),
+    ...(suites.length === 0 ? {} : { suites }),
     ...(base === undefined ? {} : { base }),
     cwd: resolve(cwd),
     partial: flags.get('partial') === true,

@@ -40,6 +40,11 @@ until a tag is pushed and the publish workflow runs.
   test counts, counts the in-scope files changed since the map's commit, and names the changed files
   the map has never seen — the ones a selection must answer with `all`. The JSON result carries the
   same fields as `suites` and `changed`.
+- **Per-suite selection files.** `select --emit-selection-dir <dir> --suite <name>=<glob,...>`
+  (repeatable) writes a v2 selection per suite, omits a suite with no selected tests, and removes
+  that suite's stale file. Selected tests that match no suite go to `_other.json`, so the union of
+  the files is the unsplit answer. A mode-all or empty answer removes every file the command
+  manages. A consumer that splits one selection by suite no longer has to.
 
 ## 0.0.4 — 2026-10-20
 

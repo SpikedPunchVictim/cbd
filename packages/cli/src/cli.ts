@@ -16,13 +16,14 @@
  * one line per reason when everything runs. Warnings go to stderr so they cannot be
  * mistaken for selected tests by a pipe.
  */
-import { existsSync, readFileSync, unlinkSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
+import { relative, resolve, sep } from 'node:path'
 import {
   createCbd,
   headCommit,
   loadConfig,
   loadConfigFile,
+  matchesAnyGlob,
   parseUnifiedDiff,
   writeSelection,
   type BuildResult,
@@ -35,6 +36,7 @@ import {
   type ReachesResult,
   type SelectResult,
   type StatsResult,
+  type TestEntry,
 } from '@spikedpunch/cbd'
 import { UsageError, parseArgs, type ParsedArgs } from './args.js'
 import { collect } from './collect.js'
@@ -72,7 +74,9 @@ Usage:
   cbd build   [--commit <sha>] [--partial] [--incremental [--base <sha>]] [--root <dir>]
   cbd select  [--since <ref>] [--no-worktree] [--strict] [--commit <sha>]
               [--patch <file.diff> | --change <path>:<start>[-<end>]]
-              [--emit-selection <path>] [--order impact] [--format text|json|summary]
+              [--emit-selection <path>]
+              [--emit-selection-dir <dir> --suite <name>=<glob,...> ...]
+              [--order impact] [--format text|json|summary]
   cbd explain <file>[:<line>] [--root <dir>] [--format json]
   cbd reaches <test-title> <file>[:<line>] [--file <test-file>] [--format json]
   cbd reaches --batch <rows.json> [--format json]
@@ -166,6 +170,7 @@ function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
     )
   }
   if (parsed.emitSelection !== undefined) emitSelection(parsed, result, io)
+  if (parsed.emitSelectionDir !== undefined) emitSuiteSelections(parsed, result, io)
   if (parsed.format === 'summary') {
     for (const line of summaryLines(result)) io.out(line)
   } else {
@@ -204,6 +209,85 @@ function emitSelection(parsed: ParsedArgs, result: SelectResult, io: Io): void {
   }
   writeSelection(path, result.selected)
   io.err(`cbd: wrote ${plural(result.selected.length, 'test')} to ${path}`)
+}
+
+/**
+ * One v2 selection per suite, plus `_other.json` for selected tests no suite
+ * claimed, so the union of the files is the unsplit answer.
+ *
+ * A suite with no selected test gets no file (and a stale one is removed): an
+ * adapter reads an empty selection as an error, and its caller should skip the
+ * suite rather than run it with nothing. A mode-all or empty answer removes every
+ * file this command manages.
+ */
+function emitSuiteSelections(parsed: ParsedArgs, result: SelectResult, io: Io): void {
+  const dir = parsed.emitSelectionDir!
+  const suites = parsed.suites!
+  mkdirSync(dir, { recursive: true })
+  const files = suites.map((suite) => ({ ...suite, path: resolve(dir, `${suite.name}.json`) }))
+  const other = resolve(dir, '_other.json')
+  const managed = [...files.map((file) => file.path), other]
+
+  if (result.selection.mode === 'all' || result.selected.length === 0) {
+    const why = result.selection.mode === 'all' ? 'selection is all' : 'no tests are selected'
+    let removed = 0
+    for (const path of managed) {
+      if (!existsSync(path)) continue
+      unlinkSync(path)
+      removed += 1
+    }
+    io.err(
+      `cbd: ${why}; ` +
+        (removed === 0
+          ? 'no suite selection files written'
+          : `removed ${plural(removed, 'stale suite selection file')}`),
+    )
+    return
+  }
+
+  const matched = new Map<string, TestEntry[]>()
+  const unmatched: TestEntry[] = []
+  for (const test of result.selected) {
+    if (test.file === null) {
+      unmatched.push(test)
+      continue
+    }
+    const relativePath = relative(parsed.root, test.file).split(sep).join('/')
+    const owners = suites.filter((suite) => matchesAnyGlob(relativePath, suite.globs) !== null)
+    if (owners.length === 0) unmatched.push(test)
+    for (const owner of owners) {
+      const list = matched.get(owner.name) ?? []
+      list.push(test)
+      matched.set(owner.name, list)
+    }
+  }
+
+  let wrote = 0
+  let removed = 0
+  for (const file of files) {
+    const tests = matched.get(file.name) ?? []
+    if (tests.length === 0) {
+      if (existsSync(file.path)) {
+        unlinkSync(file.path)
+        removed += 1
+      }
+      continue
+    }
+    writeSelection(file.path, tests)
+    wrote += 1
+  }
+  if (unmatched.length > 0) {
+    writeSelection(other, unmatched)
+    wrote += 1
+    io.err(`cbd: ${plural(unmatched.length, 'selected test')} matched no suite; wrote ${other}`)
+  } else if (existsSync(other)) {
+    unlinkSync(other)
+    removed += 1
+  }
+  io.err(
+    `cbd: wrote ${plural(wrote, 'suite selection file')} to ${dir}` +
+      (removed === 0 ? '' : `; removed ${plural(removed, 'stale file')}`),
+  )
 }
 
 /**

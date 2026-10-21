@@ -394,6 +394,120 @@ test.group('cbd select', () => {
     }
   })
 
+  test('--emit-selection-dir writes one file per suite and removes stale ones', () => {
+    const { repo, root, cleanup } = prepared()
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-suites-'))
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+      writeFileSync(join(dir, 'other.json'), JSON.stringify({ version: 2, tests: [] }))
+
+      const result = invoke(
+        root,
+        'select',
+        '--emit-selection-dir',
+        dir,
+        '--suite',
+        'one=tests/a.spec.ts',
+        '--suite',
+        'other=tests/b.spec.ts',
+      )
+      assert.equal(result.code, EXIT.ok)
+      const one = JSON.parse(readFileSync(join(dir, 'one.json'), 'utf8')) as {
+        version: number
+        tests: Array<{ title: string }>
+      }
+      assert.equal(one.version, 2)
+      assert.deepEqual(one.tests.map((test) => test.title), ['adds', 'reads'])
+      // A suite with no selected tests gets no file, and the stale one is gone.
+      assert.equal(existsSync(join(dir, 'other.json')), false)
+      assert.equal(existsSync(join(dir, '_other.json')), false)
+      assert.match(result.err.join('\n'), /wrote 1 suite selection file/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
+  test('--emit-selection-dir writes _other.json for tests no suite claims', () => {
+    const { repo, root, cleanup } = prepared()
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-suites-other-'))
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const result = invoke(
+        root,
+        'select',
+        '--emit-selection-dir',
+        dir,
+        '--suite',
+        'unmatched=tests/nope.spec.ts',
+      )
+      assert.equal(result.code, EXIT.ok)
+      assert.equal(existsSync(join(dir, 'unmatched.json')), false)
+      const other = JSON.parse(readFileSync(join(dir, '_other.json'), 'utf8')) as {
+        tests: Array<{ title: string }>
+      }
+      assert.deepEqual(other.tests.map((test) => test.title), ['adds', 'reads'])
+      assert.match(result.err.join('\n'), /matched no suite/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
+  test('--emit-selection-dir removes every managed file when the answer is all', () => {
+    const { root, cleanup } = prepared()
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-suites-all-'))
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      for (const name of ['one.json', 'two.json', '_other.json']) {
+        writeFileSync(join(dir, name), JSON.stringify({ version: 2, tests: [] }))
+      }
+
+      const result = invoke(
+        root,
+        'select',
+        '--change',
+        'src/unknown.ts:1',
+        '--emit-selection-dir',
+        dir,
+        '--suite',
+        'one=tests/a.spec.ts',
+        '--suite',
+        'two=tests/b.spec.ts',
+      )
+      assert.equal(result.code, EXIT.all)
+      assert.equal(existsSync(join(dir, 'one.json')), false)
+      assert.equal(existsSync(join(dir, 'two.json')), false)
+      assert.equal(existsSync(join(dir, '_other.json')), false)
+      assert.match(result.err.join('\n'), /selection is all; removed/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
+  test('--suite needs --emit-selection-dir and a valid name', () => {
+    const { root, cleanup } = prepared()
+    try {
+      const missingDir = invoke(root, 'select', '--suite', 'one=tests/**')
+      assert.equal(missingDir.code, EXIT.usage)
+      assert.match(missingDir.err.join('\n'), /--suite needs --emit-selection-dir/)
+
+      const noSuites = invoke(root, 'select', '--emit-selection-dir', root)
+      assert.equal(noSuites.code, EXIT.usage)
+      assert.match(noSuites.err.join('\n'), /needs at least one --suite/)
+
+      const badName = invoke(root, 'select', '--emit-selection-dir', root, '--suite', '_other=tests/**')
+      assert.equal(badName.code, EXIT.usage)
+      assert.match(badName.err.join('\n'), /and not "_other"/)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('--format summary is only for select', () => {
     const { root, cleanup } = prepared()
     try {
