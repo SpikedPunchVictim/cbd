@@ -413,15 +413,21 @@ test.group('select --since histories', (group) => {
     }
 
 
-    for (const entry of cases) {
-      const repo = tempRepo()
-      const root = realpathSync(repo.root)
-      const source = join(root, 'src/a.ts')
-      const spec = join(root, 'tests/a.spec.ts')
-      try {
-        repo.write('src/a.ts', render(ORIGINAL))
-        repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
-        const base = repo.commit('base')
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    const source = join(root, 'src/a.ts')
+    const spec = join(root, 'tests/a.spec.ts')
+    try {
+      // One repository for every history: each case resets to the same base, so a
+      // 57-case property does not pay for 57 inits. `.cbd` is ignored, so the
+      // reset leaves the maps already written for the per-case commits.
+      repo.write('.gitignore', '.cbd/\n')
+      repo.write('src/a.ts', render(ORIGINAL))
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      const base = repo.commit('base')
+
+      for (const entry of cases) {
+        repo.git(['reset', '--hard', base])
         repo.write('src/a.ts', render(entry.map))
         // An edit pair can cancel itself (reorder twice), leaving the map's tree
         // equal to the base; that is still a valid map commit.
@@ -455,9 +461,9 @@ test.group('select --since histories', (group) => {
               `(selected: ${[...selected].join(', ') || 'none'})`,
           )
         }
-      } finally {
-        repo.cleanup()
       }
+    } finally {
+      repo.cleanup()
     }
   })
 })
