@@ -45,6 +45,11 @@ until a tag is pushed and the publish workflow runs.
   that suite's stale file. Selected tests that match no suite go to `_other.json`, so the union of
   the files is the unsplit answer. A mode-all or empty answer removes every file the command
   manages. A consumer that splits one selection by suite no longer has to.
+- **Non-JS inputs are declared feeds.** No new key: an `alwaysSelect` entry with a `when` glob and
+  a bare test-file locator selects every test the map knows in that file, including when a file is
+  added under a listed directory. The SQL-migration shape is documented, and a test covers an
+  added migration outside `include` selecting the declared suite. Reads at spec load and directory
+  listings remain observed; an input no recorded process opened needs this declaration.
 
 ## 0.0.4 — 2026-10-20
 

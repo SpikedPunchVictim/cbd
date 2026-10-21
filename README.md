@@ -217,6 +217,24 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
 | `mapsDir` | Where per-commit maps live, instead of `<stateDir>/maps`. An absolute path (for example the git common directory) lets worktrees and review sandboxes share one set. |
 | `granularity` | Only `"test"` is implemented. |
 
+### Files coverage cannot see
+
+A migration, schema file, YAML document or Dockerfile changes behavior without any test executing
+code in it. Declare it as a feed: an `alwaysSelect` entry with a `when` glob and a bare test-file
+locator selects every test the map knows in that file.
+
+```json
+"alwaysSelect": [
+  { "tests": ["typescript/tests/stores/tests/key-store.spec.ts"],
+    "when": ["typescript/db/migrations/**"] }
+]
+```
+
+A bare locator is the whole file; `file > title` narrows to one test. A file a test reads while
+loading is already recorded (`loadReads`), and a directory it lists is `dirReads`; this declaration
+is for inputs no recorded process opened — a migration directory a service reads at boot, for
+example. An entry naming a test the map does not know forces a full run and warns.
+
 ## Environment variables
 
 | Variable | Used by | Meaning |

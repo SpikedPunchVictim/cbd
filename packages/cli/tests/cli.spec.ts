@@ -767,6 +767,40 @@ test.group('cbd select', () => {
     }
   })
 
+  test('a declared non-JS input selects the test file it feeds', () => {
+    const { repo, root, cleanup } = prepared()
+    const configDir = mkdtempSync(join(tmpdir(), 'cbd-config-'))
+    try {
+      const configPath = join(configDir, 'cbd.config.json')
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          include: ['src/**'],
+          // A migration is outside include and unknown to the map; the declaration
+          // is what makes it select the suite that exercises it.
+          alwaysSelect: [
+            { tests: ['tests/a.spec.ts'], when: ['db/migrations/**'] },
+          ],
+        }),
+      )
+      assert.equal(invoke(root, 'build', '--config', configPath).code, EXIT.ok)
+      repo.write('db/migrations/001.sql', 'create table keys (id text primary key);\n')
+
+      const result = invoke(root, 'select', '--config', configPath, '--format', 'json')
+      assert.equal(result.code, EXIT.ok)
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        selection: { mode: string; tests: number[]; reasons: Array<{ kind: string }>; ignored: string[] }
+      }
+      assert.equal(parsed.selection.mode, 'subset')
+      assert.deepEqual(parsed.selection.tests, [0, 1])
+      assert.ok(parsed.selection.reasons.some((reason) => reason.kind === 'always'))
+      assert.equal(parsed.selection.ignored.includes(join(root, 'db/migrations/001.sql')), false)
+    } finally {
+      rmSync(configDir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
   test('an alwaysSelect entry is added to a triggered subset', () => {
     const { repo, root, cleanup } = prepared()
     const configDir = mkdtempSync(join(tmpdir(), 'cbd-config-'))
