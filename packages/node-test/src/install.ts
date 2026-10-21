@@ -17,6 +17,9 @@
  *
  * A test that skips itself from inside its body still reports `passed: true`, so
  * the hook wraps the context's `skip`/`todo` calls to remember that it happened.
+ * Node 22 does not call `afterEach` for such a test at all: the next
+ * `beforeEach`, or the file's `after`, closes the window as skipped. A
+ * non-skipped window still open at `after` refuses the shard.
  * A test registered `{todo: true}` never runs its body but *does* reach the hooks,
  * and Node exposes no marker for it; it is recorded as passed with a hooks-only
  * window, which can only over-select. Selection is handled by the register entry
@@ -80,8 +83,28 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
   let open = 0
   let refused = false
   let warnedNoFullName = false
+  /** The window `afterEach` has not closed yet, and the title it was opened with. */
+  let pending: { context: NodeTestContextLike; title: string } | null = null
+
+  /**
+   * Close a window whose `afterEach` never ran.
+   *
+   * Node 22 does not call `afterEach` for a test whose body called `t.skip()`.
+   * The next `beforeEach`, or the file's `after`, is the first chance to close
+   * it; without this the next test looked concurrent and the file was refused,
+   * or a skipped last test vanished from the shard.
+   */
+  const closePendingSkip = (): void => {
+    if (pending === null || !skipped.has(pending.context)) return
+    const { context, title } = pending
+    pending = null
+    opened.delete(context)
+    open -= 1
+    recorder.testEnd(title, statusOf(context, true))
+  }
 
   hooks.beforeEach((context) => {
+    closePendingSkip()
     const title = titleOf(context)
     if (title === null) return
     if (!warnedNoFullName && (context.fullName === undefined || context.fullName === '')) {
@@ -93,7 +116,7 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     }
 
     // `t.skip()`/`t.todo()` inside the body do not change `passed`; remember the
-    // call so `afterEach` can classify the window honestly.
+    // call so `afterEach` (or `closePendingSkip`) can classify the window honestly.
     remember(context, 'skip')
     remember(context, 'todo')
 
@@ -111,12 +134,14 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     }
     recorder.testStart(title, absolute(fileOf(context) ?? file))
     opened.add(context)
+    pending = { context, title }
     open += 1
   })
 
   hooks.afterEach((context) => {
     if (!opened.has(context)) return
     opened.delete(context)
+    if (pending?.context === context) pending = null
     open -= 1
     const title = titleOf(context)
     if (title === null) return
@@ -124,9 +149,12 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
   })
 
   hooks.after(async () => {
-    if (refused) {
-      // No end record: the build refuses an incomplete shard, so an overlapping
-      // run cannot silently become a map.
+    // A body skip that is the file's last test never reaches another
+    // `beforeEach`; close it here with its own status.
+    closePendingSkip()
+    if (refused || pending !== null) {
+      // No end record: a window that did not close where the runner should have
+      // closed it cannot be attributed honestly, so the build must refuse it.
       source.close()
       stopReads()
       stopProcesses()

@@ -18,6 +18,12 @@ until a tag is pushed and the publish workflow runs.
   own reasons. It now forces all once, names the config, and leaves the other
   changed files their normal diagnosis. A config change reported only by a base
   leg still produces the single reason naming the config.
+- **Body-skipped `node:test` tests are recorded on Node 22.** Node 22 does not
+  call `afterEach` for a test whose body calls `t.skip()`. The window stayed open,
+  so a following test looked concurrent and refused the file, and a skipped last
+  test vanished from the shard. The adapter closes that window at the next
+  `beforeEach` or at the file's `after`, and refuses the shard if a non-skipped
+  window is still open when the file ends. Node 24 was unaffected.
 
 ## 0.0.4 — 2026-10-20
 
