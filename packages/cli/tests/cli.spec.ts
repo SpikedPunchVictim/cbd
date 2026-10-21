@@ -332,6 +332,9 @@ test.group('cbd select', () => {
       ]) {
         const result = invoke(root, ...argv)
         assert.equal(result.code, EXIT.usage, argv.join(' '))
+        if (argv.includes('--order')) {
+          assert.match(result.err.join('\n'), /--order accepts only "impact"/)
+        }
       }
     } finally {
       cleanup()

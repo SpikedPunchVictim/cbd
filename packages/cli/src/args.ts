@@ -99,6 +99,7 @@ const VALUE_FLAGS = new Set([
   'batch',
   'emit-selection',
   'base',
+  'order',
 ])
 
 const BOOLEAN_FLAGS = new Set([
