@@ -35,6 +35,14 @@
  * environment a recording needs (`CBD_SHARD`, `CBD_COMMIT`, and for the subset
  * run `CBD_SELECTION`) and interprets the shards that come back.
  *
+ * **A full run that does not load is a step, not a crash.** An import error or a
+ * missing build writes the shard header and dies, leaving no end record; cbd
+ * refuses that shard, so there is no map and no test outcomes for either oracle.
+ * The step is recorded as a load failure and the replay continues. The selector
+ * is still checked against the map it would have used: with the base map it must
+ * name every test the map knows, and the tests it omits are reported as
+ * `unverified`; in commit mode the step reports that no commit map exists.
+ *
  * Usage:
  *   node scripts/replay.mjs --repo <path> --base <commit> --state <dir> \
  *     --full-cmd "<cmd>" [--subset-cmd "<cmd>"] [--commits <n>] [--head <ref>] \
@@ -68,7 +76,7 @@ import {
   select,
   testsForLine,
 } from '../dist/src/index.js'
-import { parseShard, summarizeShard } from '../dist/src/adapter.js'
+import { parseShard, summarizeShard, IncompleteShardError } from '../dist/src/adapter.js'
 
 // ---------------------------------------------------------------------------
 // Arguments
@@ -156,6 +164,15 @@ const alwaysAll = options['always-all'] === undefined ? [] : options['always-all
 const DEFAULT_TEST_FILES = ['**/*.spec.*', '**/*.test.*', '**/__tests__/**', '**/tests/**']
 const testFiles =
   options['test-files'] === undefined ? DEFAULT_TEST_FILES : options['test-files'].split(',').map((g) => g.trim())
+
+/** The policy both the scored and the load-failure paths select with. */
+const selectConfig = {
+  include: (path) => isIncluded(path),
+  alwaysAll,
+  unknownPolicy: 'all',
+  betweenPolicy: 'all',
+  testFiles,
+}
 
 const extraEnv = Object.fromEntries(
   options.env.map((pair) => {
@@ -269,12 +286,9 @@ function prepare(commit, dir) {
   }
 }
 
-/** The merged map of a run: the test process's shard plus a service shard when one exists. */
-function mapOf(shardPath, commit) {
-  if (!existsSync(shardPath)) {
-    throw new Error(`replay: ${shardPath} was not written; --full-cmd must record to $CBD_SHARD`)
-  }
-  const shards = [{ name: shardPath, records: parseShard(readFileSync(shardPath, 'utf8'), shardPath) }]
+/** The merged map of a run: the parsed shard plus a service shard when one exists. */
+function mapOf(records, shardPath, commit) {
+  const shards = [{ name: shardPath, records }]
   const servicePath = shardPath.replace(/\.ndjson$/, '.service.ndjson')
   if (existsSync(servicePath)) {
     shards.push({
@@ -283,6 +297,43 @@ function mapOf(shardPath, commit) {
     })
   }
   return canonicalMap(buildMap(shards, { commit }))
+}
+
+/**
+ * The full run's records, or `null` when the run wrote no complete shard.
+ *
+ * A suite that fails at import time writes the header and dies, so the recorder
+ * never writes its end record; an interrupted run looks the same. Either way the
+ * step has no map and no test outcomes, which the caller reports as a load
+ * failure rather than letting one step abort the whole replay.
+ *
+ * A shard that was never written at all is a harness or wiring mistake, not a
+ * property of the commit, so it stays fatal.
+ */
+function fullRunRecords(shardPath) {
+  if (!existsSync(shardPath)) {
+    throw new Error(`replay: ${shardPath} was not written; --full-cmd must record to $CBD_SHARD`)
+  }
+  try {
+    return parseShard(readFileSync(shardPath, 'utf8'), shardPath)
+  } catch (error) {
+    if (error instanceof IncompleteShardError) return null
+    throw error
+  }
+}
+
+/** The `mode: all` reasons in the console and report spelling. */
+function allReasons(selection) {
+  return [
+    ...new Set(
+      selection.reasons
+        .filter((reason) => reason.kind === 'all')
+        .map(
+          (reason) =>
+            `${reason.why}${reason.file === undefined ? '' : `:${reason.file.replace(`${repo}/`, '')}`}`,
+        ),
+    ),
+  ]
 }
 
 function runTests(dir, shardPath, commit, selectionPath) {
@@ -401,47 +452,111 @@ for (const [index, step] of plan.entries()) {
   const shardPath = resolve(dir, 'full.ndjson')
   const full = runTests(dir, shardPath, step.commit)
   process.stdout.write(`replay:   full ${full.wall.toFixed(1)}s (exit ${full.status})\n`)
-  const map = mapOf(shardPath, step.commit)
+  const records = fullRunRecords(shardPath)
+  const summary = records === null ? null : summarizeShard(records)
 
   if (step.role === 'base') {
-    baseMap = map
+    if (summary === null) {
+      throw new Error(
+        `replay: the base run at ${short} wrote no complete shard, so there is no map to select ` +
+          `against. See ${resolve(dir, 'full.log')}`,
+      )
+    }
+    baseMap = mapOf(records, shardPath, step.commit)
     baseRun = {
       commit: step.commit,
       wall: full.wall,
       status: full.status,
-      tests: summarizeShard(parseShard(readFileSync(shardPath, 'utf8'), shardPath)).tests.length,
+      tests: summary.tests.length,
     }
     if (teardownCommand !== undefined) run(teardownCommand, {}, resolve(dir, 'teardown.log'))
     continue
   }
 
-  const mapForSelection = selectorMode === 'commit' ? map : baseMap
   const rawChanges = changesBetween(step.commit)
   const changes = selectorMode === 'commit' ? inMapCoordinates(rawChanges) : rawChanges
+
+  // The full run wrote no complete shard: it failed at import, crashed, or ran
+  // no tests. There are no outcomes for either oracle, but the selector's answer
+  // is still checkable against the map it would have used.
+  if (summary === null || summary.tests.length === 0) {
+    const selectorMap = selectorMode === 'commit' ? null : baseMap
+    const universe = selectorMap === null ? [] : selectorMap.tests.map((test) => test.title)
+    let mode = null
+    let why = []
+    let selected = 0
+    let unverified = []
+    if (selectorMap !== null && changes.length > 0) {
+      const selection = select(selectorMap, changes, selectConfig, {
+        commit: selectorMap.commit,
+        distance: index,
+        dirty: false,
+      })
+      mode = selection.mode
+      const chosen =
+        mode === 'all'
+          ? universe
+          : [...new Set(selection.tests.map((testIndex) => selectorMap.tests[testIndex].title))]
+      const chosenSet = new Set(chosen)
+      selected = chosen.length
+      // Nothing ran, so only an answer that names every known test can be
+      // trusted. A subset that leaves tests out is the unsafe direction.
+      unverified = universe.filter((title) => !chosenSet.has(title))
+      why = allReasons(selection)
+    }
+    results.push({
+      commit: step.commit.slice(0, 12),
+      files: new Set(changes.map((change) => change.path)).size,
+      loadFailure: true,
+      fullStatus: full.status,
+      mode,
+      why,
+      tests: universe.length,
+      selected,
+      rCount: universe.length === 0 ? 0 : selected / universe.length,
+      rTime: 0,
+      tFull: full.wall,
+      tSubset: full.wall,
+      eTime: 0,
+      required: null,
+      miss: [],
+      newTests: [],
+      newFailures: [],
+      missedFailures: [],
+      subsetOnlyFailures: [],
+      unverified,
+    })
+    const detail =
+      selectorMap === null
+        ? 'no commit map to select against'
+        : changes.length === 0
+          ? 'no in-scope changes'
+          : `${String(mode)} · ${String(selected)}/${String(universe.length)} tests · ` +
+            `unverified ${String(unverified.length)}`
+    const failure =
+      summary === null
+        ? `no complete full-run shard (exit ${String(full.status)})`
+        : 'no test outcomes in the full run'
+    process.stdout.write(`replay:   ${failure}; load failure · ${detail}\n`)
+    if (teardownCommand !== undefined) run(teardownCommand, {}, resolve(dir, 'teardown.log'))
+    continue
+  }
+
+  const map = mapOf(records, shardPath, step.commit)
+  const mapForSelection = selectorMode === 'commit' ? map : baseMap
   if (changes.length === 0) {
     process.stdout.write('replay:   no in-scope changes; nothing to select\n')
     if (teardownCommand !== undefined) run(teardownCommand, {}, resolve(dir, 'teardown.log'))
     continue
   }
 
-  const selection = select(
-    mapForSelection,
-    changes,
-    {
-      include: (path) => isIncluded(path),
-      alwaysAll,
-      unknownPolicy: 'all',
-      betweenPolicy: 'all',
-      testFiles,
-    },
-    {
-      commit: mapForSelection.commit,
-      distance: selectorMode === 'commit' ? 0 : index,
-      dirty: false,
-    },
-  )
+  const selection = select(mapForSelection, changes, selectConfig, {
+    commit: mapForSelection.commit,
+    distance: selectorMode === 'commit' ? 0 : index,
+    dirty: false,
+  })
 
-  const fullSummary = summarizeShard(parseShard(readFileSync(shardPath, 'utf8'), shardPath))
+  const fullSummary = summary
   const universe = fullSummary.tests.map((test) => test.title)
   const fullFailed = fullSummary.tests.filter((test) => test.status === 'failed').map((test) => test.title)
   const totalMs = fullSummary.tests.reduce((sum, test) => sum + test.durationMs, 0)
@@ -507,7 +622,7 @@ for (const [index, step] of plan.entries()) {
     commit: step.commit.slice(0, 12),
     files: new Set(changes.map((change) => change.path)).size,
     mode: selection.mode,
-    why: [...new Set(selection.reasons.filter((reason) => reason.kind === 'all').map((reason) => `${reason.why}${reason.file === undefined ? '' : `:${reason.file.replace(`${repo}/`, '')}`}`))],
+    why: allReasons(selection),
     tests: universe.length,
     selected: selected.length,
     rCount: universe.length === 0 ? 0 : selected.length / universe.length,
@@ -555,30 +670,36 @@ for (const [index, step] of plan.entries()) {
 // The numbers
 // ---------------------------------------------------------------------------
 
-const escalations = results.filter((result) => result.mode === 'all').length
-const pAll = results.length === 0 ? 0 : escalations / results.length
+const scored = results.filter((result) => result.loadFailure !== true)
+const loadFailures = results.length - scored.length
+const escalations = scored.filter((result) => result.mode === 'all').length
+const pAll = scored.length === 0 ? 0 : escalations / scored.length
 const mean = (values) => (values.length === 0 ? 0 : values.reduce((a, b) => a + b, 0) / values.length)
-const rCount = mean(results.map((result) => result.rCount))
-const rTime = mean(results.map((result) => result.rTime))
+const rCount = mean(scored.map((result) => result.rCount))
+const rTime = mean(scored.map((result) => result.rTime))
 const misses = results.reduce((sum, result) => sum + result.miss.length, 0)
+const unverified = results.reduce((sum, result) => sum + (result.unverified?.length ?? 0), 0)
 const newTests = results.reduce((sum, result) => sum + result.newTests.length, 0)
 const missedFailures = results.reduce((sum, result) => sum + result.missedFailures.length, 0)
 const newFailures = results.reduce((sum, result) => sum + result.newFailures.length, 0)
 const subsetOnly = results.reduce((sum, result) => sum + result.subsetOnlyFailures.length, 0)
-const meanFull = mean(results.map((result) => result.tFull))
-const meanSubset = mean(results.map((result) => result.tSubset))
-const meanE = mean(results.map((result) => result.eTime))
+const meanFull = mean(scored.map((result) => result.tFull))
+const meanSubset = mean(scored.map((result) => result.tSubset))
+const meanE = mean(scored.map((result) => result.eTime))
 
 const report = {
   base,
   head: origin,
   commits: results.length,
+  scored: scored.length,
+  loadFailures,
   pAll,
   rCount,
   rTime,
   sCount: (1 - pAll) * (1 - rCount),
   sTime: (1 - pAll) * (1 - rTime),
   misses,
+  unverified,
   newTests,
   newFailures,
   missedFailures,
@@ -591,14 +712,15 @@ const report = {
 if (options.json !== undefined) writeFileSync(resolve(options.json), JSON.stringify(report, null, 2))
 
 console.log('\n=== replay ===')
-console.log(`  commits     ${String(report.commits)} of ${String(commits.length)} replayed (base ${base.slice(0, 8)})`)
+console.log(`  commits     ${String(report.commits)} of ${String(commits.length)} replayed (base ${base.slice(0, 8)})` +
+  (loadFailures === 0 ? '' : `; ${String(loadFailures)} load failure(s), ${String(scored.length)} scored`))
 console.log(`  P(all)      ${(pAll * 100).toFixed(1)}%`)
 console.log(`  r(count)    ${(rCount * 100).toFixed(1)}%   r(time) ${(rTime * 100).toFixed(1)}%`)
 console.log(`  S(count)    ${(report.sCount * 100).toFixed(1)}%   S(time) ${(report.sTime * 100).toFixed(1)}%`)
 console.log(
   `  miss        ${String(misses)}   new tests ${String(newTests)}   ` +
     `missed failures ${String(missedFailures)}   new failures ${String(newFailures)}   ` +
-    `subset-only failures ${String(subsetOnly)}`,
+    `subset-only failures ${String(subsetOnly)}   unverified ${String(unverified)}`,
 )
 console.log(
   `  timing      full ${meanFull.toFixed(1)}s · subset ${meanSubset.toFixed(1)}s · ` +
