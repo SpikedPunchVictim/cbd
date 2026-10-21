@@ -36,6 +36,7 @@ interface CoreAdapter {
   FileSink: new (path: string) => unknown
   Recorder: new (options: unknown) => {
     runStart(): void
+    specStart(file: string | null): void
     runEnd(): Promise<void> | void
     testStart(title: string, file: string | null): void
     testEnd(title: string, status: 'passed' | 'failed' | 'skipped'): void
@@ -88,6 +89,8 @@ class CbdEnvironment extends TestEnvironment {
       },
     })
     this.#recorder.runStart()
+    // setup() runs before the test file is evaluated, so this is the import scope.
+    this.#recorder.specStart(this.#file)
     this.#stopReads = core.installReadTracking(this.#recorder)
     this.#stopProcesses = core.installProcessTracking(this.#recorder)
   }

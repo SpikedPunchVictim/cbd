@@ -361,6 +361,40 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
       }
     }
 
+    // Import-phase reads: a helper called at spec load read a file before any
+    // test window existed. The spec the adapter scoped it to owns it; when the
+    // adapter could not name the file (a process that imports several specs),
+    // every test in the shard does. A scope whose tests are not in the map falls
+    // back to the shard rather than dropping the read.
+    for (const record of resolved.loadReads) {
+      let targets = allTests
+      if (record.file !== null) {
+        const matched = allTests.filter((index) => tests[index]?.file === record.file)
+        if (matched.length > 0) targets = matched
+      }
+      if (targets.length === 0) continue
+      for (const path of record.reads) {
+        for (const kept of readPaths(path)) {
+          let set = reads.get(kept)
+          if (set === undefined) {
+            set = new Set()
+            reads.set(kept, set)
+          }
+          for (const index of targets) set.add(index)
+        }
+      }
+      for (const path of record.dirReads) {
+        for (const kept of readPaths(path)) {
+          let set = dirReads.get(kept)
+          if (set === undefined) {
+            set = new Set()
+            dirReads.set(kept, set)
+          }
+          for (const index of targets) set.add(index)
+        }
+      }
+    }
+
     // Every test in this process shared the module instance that the load or
     // teardown touch came from. A service shard is the exception: it is not the
     // process the tests ran in, and its recorder opened a window for every test

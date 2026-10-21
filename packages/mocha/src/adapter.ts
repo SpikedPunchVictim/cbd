@@ -77,6 +77,8 @@ export function beginShard(wiring: AdapterWiring): Recorder {
   // from the scan at the one funnel every mocha recorder passes through (`cbd-qly`).
   const recorder = new Recorder({ ...wiring, scan: withSelfRoot(wiring.scan) })
   recorder.runStart()
+  // Test files import after this funnel; module-scope reads belong to their tests.
+  recorder.specStart(null)
   return recorder
 }
 

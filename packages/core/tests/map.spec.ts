@@ -48,7 +48,12 @@ function headerFrom(pid: number, commit = 'c0ffee'): ShardHeader {
 function shard(
   name: string,
   tests: ResolvedTest[],
-  buckets: { load?: TouchRef[]; between?: TouchRef[]; teardown?: TouchRef[] } = {},
+  buckets: {
+    load?: TouchRef[]
+    between?: TouchRef[]
+    teardown?: TouchRef[]
+    loadReads?: ResolvedShard['loadReads']
+  } = {},
 ): ResolvedShard {
   return {
     name,
@@ -57,6 +62,7 @@ function shard(
     load: buckets.load ?? [],
     between: buckets.between ?? [],
     teardown: buckets.teardown ?? [],
+    loadReads: buckets.loadReads ?? [],
   }
 }
 
@@ -218,6 +224,7 @@ test('a service shard attributes load only to the tests that touched it', () => 
     load: [ref(A, '<module>@0', 0, 9)],
     between: [],
     teardown: [],
+    loadReads: [],
   }
   const map = mergeShards([service], { commit: 'c0ffee' })
   assert.deepEqual(map.shardTests?.[0], [0])
@@ -309,6 +316,51 @@ test('projection rules map a read of build output back to its source', () => {
   )
   assert.deepEqual(map.reads, { '/repo/src/a.ts': [0] })
   assert.deepEqual(map.dirReads, { '/repo/src': [0] })
+})
+
+test('import-phase reads are attributed to the spec the adapter named', () => {
+  const spec = '/repo/tests/a.spec.ts'
+  const other = '/repo/tests/other.spec.ts'
+  const map = mergeShards(
+    [
+      shard(
+        's1',
+        [
+          { ...testRecord('a', []), file: spec },
+          { ...testRecord('b', []), file: spec },
+          { ...testRecord('c', []), file: other },
+        ],
+        { loadReads: [{ file: spec, reads: ['/repo/data.json'], dirReads: ['/repo/specs'] }] },
+      ),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.reads, { '/repo/data.json': [0, 1] })
+  assert.deepEqual(map.dirReads, { '/repo/specs': [0, 1] })
+})
+
+test('an unscoped import-phase read belongs to every test in the shard', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('a', []), testRecord('b', [])], {
+        loadReads: [{ file: null, reads: ['/repo/data.json'], dirReads: [] }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.reads, { '/repo/data.json': [0, 1] })
+})
+
+test('a scope that names no recorded test falls back to the whole shard', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('a', [])], {
+        loadReads: [{ file: '/repo/tests/absent.spec.ts', reads: ['/repo/data.json'], dirReads: [] }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.reads, { '/repo/data.json': [0] })
 })
 
 test('the map records which shards produced it', () => {

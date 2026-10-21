@@ -572,6 +572,14 @@ export class Recorder {
     | null = null
   /** `(file, title)` -> occurrences seen this run. The first has no ordinal. */
   #ordinals = new Map<string, number>()
+  /**
+   * Reads noted during a spec's import phase, before any test window.
+   *
+   * `file` is the spec the adapter scoped them to, or `null` when it cannot say
+   * (a process that imports several spec files). The build attributes a scoped
+   * record to that spec's tests and an unscoped one to every test in the shard.
+   */
+  #spec: { file: string | null; reads: Set<string>; dirReads: Set<string> } | null = null
   /** Reads noted while a test window is open; cleared at each boundary. */
   #reads = new Set<string>()
   #dirReads = new Set<string>()
@@ -693,7 +701,36 @@ export class Recorder {
     })
   }
 
+  /**
+   * Open the import phase for a spec, so reads made before the first test are
+   * recorded instead of dropped.
+   *
+   * Call it right after `runStart`, before the test file is imported. An adapter
+   * that knows the file passes it; the others pass `null` and the build attributes
+   * the reads to every test in the shard. The scope closes at the first `testStart`
+   * (imports are over) or at `runEnd` for a file with no tests.
+   */
+  specStart(file: string | null = null): void {
+    if (this.#spec !== null) return
+    this.#spec = { file, reads: new Set(), dirReads: new Set() }
+  }
+
+  #flushSpecReads(): void {
+    const spec = this.#spec
+    this.#spec = null
+    if (spec === null || (spec.reads.size === 0 && spec.dirReads.size === 0)) return
+    this.#windows.commit({
+      type: 'loadReads',
+      file: spec.file,
+      ...(spec.reads.size === 0 ? {} : { reads: [...spec.reads].sort() }),
+      ...(spec.dirReads.size === 0 ? {} : { dirReads: [...spec.dirReads].sort() }),
+    })
+  }
+
   testStart(title: string, file: string | null = null, detail: TestRefDetail = {}): void {
+    // Imports are over, so the spec's import-phase reads are complete. Commit
+    // them before the first window: they are a plain record, not a capture.
+    this.#flushSpecReads()
     // The first test's start is the moment the load phase ends: everything the
     // process executed up to here is module import, which is `@load`.
     if (!this.#loadCaptured) {
@@ -810,11 +847,13 @@ export class Recorder {
    */
   noteRead(path: string): void {
     if (this.#open !== null) this.#reads.add(path)
+    else this.#spec?.reads.add(path)
   }
 
   /** Note a directory listing made while a test window is open. */
   noteReadDir(path: string): void {
     if (this.#open !== null) this.#dirReads.add(path)
+    else this.#spec?.dirReads.add(path)
   }
 
   /** Note an invisible dependency of the open test. See `recordOpaque`. */
@@ -823,6 +862,9 @@ export class Recorder {
   }
 
   runEnd(): void {
+    // A file with no tests never reached `testStart`, so its import-phase reads
+    // are still open.
+    this.#flushSpecReads()
     // A test that never reported its end (a crash in the runner) must not leave
     // the record API pointed at a window that is about to be torn down.
     this.#releaseSink?.()

@@ -423,6 +423,10 @@ kept in the map only when it is under the project root and inside `include`, and
 `node_modules` — a change outside that scope could not select the test anyway. A read of a build output is also recorded at the source a
 sibling source map names, or at the path a projection rule produces, so a `tsc` test that reads
 `dist` is selected by a change to `src`.
+
+A read made while a spec file is importing is recorded in a spec scope. The build attributes it to
+that spec's tests when the adapter named the file (Vitest, Jest); an adapter that cannot name it
+(japa, mocha, node:test) gets the whole shard, which is conservative but never drops the dependency.
 `recordOpaque` marks a test as selected by any in-scope change — the honest fallback for a test that
 spawns a tool or drives a service.
 

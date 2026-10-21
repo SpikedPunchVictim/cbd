@@ -78,6 +78,9 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     scan: withSelfRoot(scanFromEnv()),
   })
   recorder.runStart()
+  // The test file imports after this setup file; a module-scope read belongs to
+  // the tests in this file, and the worker filepath is the scope.
+  recorder.specStart(file ?? null)
   // The setup file runs once per test file; installs form a stack so the active
   // file's recorder receives the reads.
   const stopReads = installReadTracking(recorder)

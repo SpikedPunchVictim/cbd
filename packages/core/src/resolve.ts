@@ -71,6 +71,8 @@ export interface ResolvedShard {
   load: TouchRef[]
   between: TouchRef[]
   teardown: TouchRef[]
+  /** Import-phase reads, already relocated/filtered by the build's scan. */
+  loadReads: Array<{ file: string | null; reads: string[]; dirReads: string[] }>
 }
 
 export interface ResolveOptions {
@@ -375,7 +377,8 @@ function checkReferences(
 
 /** Resolve a whole shard. */
 export function resolveShard(input: ShardInput, options: ResolveOptions = {}): ResolvedShard {
-  const { header, tests, load, between, teardown, scripts, functions } = summarizeShard(input.records)
+  const { header, tests, load, between, teardown, loadReads, scripts, functions } =
+    summarizeShard(input.records)
   const scriptRows = scriptTable(scripts, input.name)
   const functionRows = functionTable(functions, input.name)
 
@@ -411,6 +414,11 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
   }
   const dirPaths = (paths: readonly string[] | undefined): string[] =>
     paths === undefined ? [] : [...new Set(paths.map((path) => relocate(path)))].sort()
+  const resolvedLoadReads = loadReads.map((record) => ({
+    file: record.file,
+    reads: readPaths(record.reads),
+    dirReads: dirPaths(record.dirReads),
+  }))
   const cache = options.cache ?? new FileCache()
   const identities = new Map<string, Map<string, Identity>>()
   for (const [scriptId, script] of scriptRows) {
@@ -465,5 +473,6 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
     load: load.flatMap(touchesOf),
     between: between.flatMap(touchesOf),
     teardown: teardown.flatMap(touchesOf),
+    loadReads: resolvedLoadReads,
   }
 }

@@ -16,6 +16,10 @@ until a tag is pushed and the publish workflow runs.
   selection diff can ever reach. A read of a build output is also recorded at the
   source its sibling source map names, or at the path the same projection rules
   coverage uses produce, so a change to `src` selects a test that reads `dist`.
+  A read made while a spec is importing is kept too: the adapters that know the
+  file (Vitest, Jest) attribute it to the tests in that spec, and the others
+  (japa, mocha, node:test, whose process imports several files) attribute it to
+  every test in the shard.
   Reads through a captured reference before install,
   native addons, child processes, or a separately started service are not seen;
   `alwaysSelect` remains the escape hatch.

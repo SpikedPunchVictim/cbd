@@ -156,6 +156,38 @@ test('reads noted in a window belong to that test; reads outside are dropped', (
   }
 })
 
+test('reads during a spec scope are recorded as a loadReads record', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    recorder.runStart()
+    recorder.specStart('/repo/tests/a.spec.ts')
+    recorder.noteRead('/repo/src/a.ts')
+    recorder.noteReadDir('/repo/src')
+    recorder.testStart('a', '/repo/tests/a.spec.ts')
+    recorder.testEnd('a', 'passed')
+    recorder.runEnd()
+
+    const records = parseShard(sink.text, 'spec')
+    const load = records.find((record) => record.type === 'loadReads')
+    assert.deepEqual(load, {
+      type: 'loadReads',
+      file: '/repo/tests/a.spec.ts',
+      reads: ['/repo/src/a.ts'],
+      dirReads: ['/repo/src'],
+    })
+    // The import read is not charged to the first test window as well.
+    assert.equal(summarizeShard(records).tests[0]?.reads, undefined)
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('an abandoned window is not recorded and does not leak its reads', () => {
   const tree = makeTree()
   try {

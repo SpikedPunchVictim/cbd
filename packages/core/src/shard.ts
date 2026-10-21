@@ -179,6 +179,22 @@ export interface ShardBucket {
   touches: ShardTouch
 }
 
+/**
+ * Files read while a spec file was importing, before any test window.
+ *
+ * A test helper can read a source file at module scope (a text oracle, a suite
+ * builder). There is no test window yet, and the read belongs to every test the
+ * spec defines. `file` is the spec the adapter scoped it to, or `null` when the
+ * adapter cannot know which file is importing — the build then attributes it to
+ * every test in the shard, which is conservative.
+ */
+export interface ShardLoadReads {
+  type: 'loadReads'
+  file: string | null
+  reads?: string[]
+  dirReads?: string[]
+}
+
 export interface ShardFooter {
   type: 'end'
   tests: number
@@ -208,6 +224,7 @@ export type ShardRecord =
   | ShardFunction
   | ShardTest
   | ShardBucket
+  | ShardLoadReads
   | ShardFooter
 
 /** One parsed shard, with the name it is known by in a map's provenance. */
@@ -322,6 +339,7 @@ export function summarizeShard(records: ShardRecord[]): {
   load: ShardTouch[]
   between: ShardTouch[]
   teardown: ShardTouch[]
+  loadReads: ShardLoadReads[]
   scripts: ShardScript[]
   functions: ShardFunction[]
 } {
@@ -332,6 +350,7 @@ export function summarizeShard(records: ShardRecord[]): {
   const load: ShardTouch[] = []
   const between: ShardTouch[] = []
   const teardown: ShardTouch[] = []
+  const loadReads: ShardLoadReads[] = []
   const scripts: ShardScript[] = []
   const functions: ShardFunction[] = []
   for (const record of records) {
@@ -339,8 +358,9 @@ export function summarizeShard(records: ShardRecord[]): {
     else if (record.type === 'load') load.push(record.touches)
     else if (record.type === 'between') between.push(record.touches)
     else if (record.type === 'teardown') teardown.push(record.touches)
+    else if (record.type === 'loadReads') loadReads.push(record)
     else if (record.type === 'script') scripts.push(record)
     else if (record.type === 'function') functions.push(record)
   }
-  return { header, tests, load, between, teardown, scripts, functions }
+  return { header, tests, load, between, teardown, loadReads, scripts, functions }
 }

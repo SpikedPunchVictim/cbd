@@ -68,6 +68,12 @@ test('a run writes one complete shard per test file, and the map answers', () =>
     }))
     const map = buildMap(inputs, { commit: 'vitest-e2e' })
     assert.equal(map.tests.length, 3)
+    // one.spec reads math.mjs at module scope: both tests in that file depend on
+    // it, and the other spec does not.
+    assert.deepEqual(
+      (map.reads?.[mathFile] ?? []).map((index) => map.tests[index]?.title).sort(),
+      ['math > adds', 'math > subtracts'],
+    )
     // `cbd-x2j`: Vitest compiles in memory, so V8's offsets are into generated
     // text. The build must use the shard's generated line starts, not the source
     // file's; otherwise every function resolves to the file's last line.

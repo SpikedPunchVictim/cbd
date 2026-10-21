@@ -251,6 +251,8 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
       // The test process reads; the service's reads happen in its own process and
       // are not observable here. Only the first recorder is the in-process one.
       const stopReads = installReadTracking(recorders[0]!)
+      // The spec files are about to import; reads made there belong to their tests.
+      recorders[0]!.specStart(null)
       const stopProcesses = installProcessTracking(recorders[0]!)
       emitter.on('runner:end', stopReads)
       emitter.on('runner:end', stopProcesses)

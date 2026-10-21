@@ -72,10 +72,12 @@ it. An incompatible change bumps it.
 
 - Adapters keep working unchanged; the new fields are optional, and titles remain
   derivable from a v2 file.
-- `recordRead` from spec-import time is not attributed. The spec's identity is not
-  visible to core, and an adapter cannot open a context around the import. Such a
-  helper must be called inside a test, or the test needs `alwaysSelect`; this is
-  stated in the API's documentation.
+- `recordRead` from spec-import time is attributed through a spec scope: an adapter
+  that knows the importing file (Vitest's worker filepath, Jest's test path) opens
+  the scope before the import, and the build attributes its reads to that spec's
+  tests. An adapter whose process imports several files without naming them opens
+  an unscoped scope, and the reads belong to every test in the shard — conservative,
+  but never dropped.
 - Consumers get IDs in `cbd select --format json`, in the selection file, and in
   `explain`; later features (incremental recording, `--emit-selection`, batch
   `reaches`) build on them.

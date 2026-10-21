@@ -70,6 +70,8 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     scan: withSelfRoot(scanFromEnv()),
   })
   recorder.runStart()
+  // The test file imports after this module; its module-scope reads belong to it.
+  recorder.specStart(null)
   const stopReads = installReadTracking(recorder)
   const stopProcesses = installProcessTracking(recorder)
 
