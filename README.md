@@ -62,6 +62,10 @@ Install the core, the CLI, and the adapter for your runner. The Vitest example:
 pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-vitest
 ```
 
+If pnpm refuses the version because of its `minimumReleaseAge` policy (a release published minutes ago can
+fall inside the default window), add `@spikedpunch/*` to `minimumReleaseAgeExclude` or wait out the
+window. That is pnpm policy, not a CBD failure.
+
 Add the setup file once. **This is the complete config change** — there are no CBD variables to put
 in it:
 

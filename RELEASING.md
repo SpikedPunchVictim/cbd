@@ -40,8 +40,8 @@ for a public package from a public repository. No `--provenance` flag and no
 Every package shares one version:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.0.3
+git push origin v0.0.3
 ```
 
 The tag is the release. The workflow:
