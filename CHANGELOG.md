@@ -11,9 +11,11 @@ until a tag is pushed and the publish workflow runs.
   `dirReads`; a change to a read file — or to any file under a listed directory —
   selects the tests that read or listed it, with reason `read`. Named ESM imports
   are covered via `syncBuiltinESMExports`; the recorder's own projection reads are
-  suppressed. Reads through a captured reference before install, native addons,
-  child processes, or a separately started service are not seen; `alwaysSelect`
-  remains the escape hatch.
+  suppressed. Reads are kept only for paths under the project root and inside
+  `include`, and never under `node_modules`: a shard can record far more than a
+  selection diff can ever reach. Reads through a captured reference before install,
+  native addons, child processes, or a separately started service are not seen;
+  `alwaysSelect` remains the escape hatch.
 - **`unknownPolicyFor`.** Per-glob overrides for a file the map has
   never seen, e.g. `[{ "paths": ["typescript/tools/**"], "policy": "ignore" }]`.
   The first matching entry wins, only `all`/`ignore` are accepted, a known file is
@@ -33,7 +35,9 @@ until a tag is pushed and the publish workflow runs.
   an opaque declaration selects the test on any in-scope change. The map now keeps
   each test's status and duration. `ADAPTER_CONTRACT_VERSION` is exported; the
   contract is window-based rather than `AsyncLocalStorage`-based, for the reason
-  recorded in ADR-0017.
+  recorded in ADR-0017. An adapter whose runner overlaps test windows declines to
+  record: `cbd-vitest` refuses a concurrent run and leaves the shard incomplete,
+  rather than charging one test's coverage to another.
 - **`cbd collect` accuracy.** A command that dies before the adapter records now
   reports "no tests ran; nothing recorded" instead of naming a shard that was
   never written, skips the build, and no longer prints a doubled `cbd: cbd:`

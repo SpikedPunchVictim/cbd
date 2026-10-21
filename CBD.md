@@ -418,7 +418,9 @@ toolchain consumes only those:
 Test code — or a helper it calls — can add what the recorder cannot observe:
 `recordRead(path)`, `recordDirRead(dir)`, `recordDependency(paths)` and `recordOpaque(reason)`,
 exported from `@spikedpunch/cbd`. They take no test id; the open window receives them, and a call
-outside every window is ignored, which leaves the file unknown and escalates to `all`.
+outside every window is ignored, which leaves the file unknown and escalates to `all`. A read is
+kept in the map only when it is under the project root and inside `include`, and never under
+`node_modules` — a change outside that scope could not select the test anyway.
 `recordOpaque` marks a test as selected by any in-scope change — the honest fallback for a test that
 spawns a tool or drives a service.
 
@@ -430,7 +432,9 @@ together. `ADAPTER_CONTRACT_VERSION` is exported from the package root and the a
 The contract is window-based, deliberately not `AsyncLocalStorage`-based: no supported runner lets
 a *plugin* wrap the test body, and a context established in a `beforeEach` does not reliably survive
 into the runner's own invocation. A runner that overlaps tests by default must serialize windows or
-decline to record. See [ADR-0017](arch/decisions/0017-adapter-contract.md).
+decline to record. `cbd-vitest` declines: an overlapping window throws instead of charging one test's
+coverage to another, and the shard is left without an end record so the build refuses it. See
+[ADR-0017](arch/decisions/0017-adapter-contract.md).
 
 ### 7.1 japa (`@spikedpunch/cbd-japa`)
 

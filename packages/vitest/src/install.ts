@@ -85,6 +85,8 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
   const wanted = selection === undefined ? null : new Set(selection)
   const opened = new WeakSet<object>()
   const filtered = new WeakSet<object>()
+  let open = 0
+  let refused = false
 
   hooks.beforeEach((context) => {
     const task = context.task
@@ -97,8 +99,22 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
       context.skip?.()
       return
     }
+    // The Recorder attributes coverage and reads to one open window. A runner that
+    // overlaps tests (`test.concurrent`, or `sequence.concurrent` in the config)
+    // would charge one test's execution to another, so this adapter declines to
+    // record rather than write a map that is confidently wrong.
+    if (open > 0) {
+      refused = true
+      throw new Error(
+        'cbd: Vitest is running tests concurrently, but recording attributes coverage ' +
+          'and reads to one open test window. Record without test.concurrent (or with ' +
+          'sequence.concurrent disabled). The shard is left incomplete so it cannot be ' +
+          'selected from.',
+      )
+    }
     recorder.testStart(title, absolute(fileOf(task) ?? file ?? null))
     opened.add(task)
+    open += 1
   })
 
   hooks.afterEach((context) => {
@@ -107,9 +123,18 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     const title = titleOf(task)
     if (title === null) return
     recorder.testEnd(title, statusOf(task.result?.state))
+    open -= 1
   })
 
   hooks.afterAll(async () => {
+    // No end record after a refused run: the build refuses an incomplete shard,
+    // so overlapping windows can never silently become a map. The source is still
+    // closed (outside every window) so a recording run leaves no handle behind.
+    if (refused) {
+      source.close()
+      stopReads()
+      return
+    }
     // Outside every test window: the source fetches generated script text for
     // transformed modules before the table is finalized (`cbd-x2j`).
     await recorder.runEnd()

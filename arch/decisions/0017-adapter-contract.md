@@ -82,3 +82,6 @@ it. An incompatible change bumps it.
 - A future adapter that can wrap test bodies may add an ALS context *inside* the
   adapter and call `activateRecordSink` around it; no API change is needed, because
   the record API does not name the context.
+- `cbd-vitest` implements the "decline to record" half of the concurrency rule: a
+  window opened while another is open throws, and the run finishes without an end
+  record, so the build cannot accept a map whose attribution overlapped.

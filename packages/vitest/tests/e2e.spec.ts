@@ -7,7 +7,7 @@
  * functions answer, the skipped test absent, and `CBD_SELECTION` narrowing the run.
  */
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -19,6 +19,7 @@ import { parseShard } from '@spikedpunch/cbd/adapter'
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const vitest = join(packageRoot, 'node_modules', '.bin', 'vitest')
 const config = join(packageRoot, 'fixture', 'vitest.e2e.config.mjs')
+const concurrentConfig = join(packageRoot, 'fixture', 'vitest.concurrent.config.mjs')
 const mathFile = realpathSync(join(packageRoot, 'fixture', 'src', 'math.mjs'))
 
 function run(dir: string, shard: string, titles?: string[]): void {
@@ -84,6 +85,43 @@ test('a run writes one complete shard per test file, and the map answers', () =>
       testsForFunction(map, mathFile, 'sub@0').map((entry) => entry.title),
       ['math > subtracts'],
     )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a concurrent run is refused and leaves no complete shard', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-vitest-concurrent-'))
+  try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      CBD_SHARD: join(dir, 'run.ndjson'),
+      CBD_COMMIT: 'vitest-e2e',
+    }
+    delete env.CBD_SELECTION
+    delete env.CBD_SOCKET_DIR
+    delete env.NODE_OPTIONS
+
+    const result = spawnSync(vitest, ['run', '--config', concurrentConfig], {
+      cwd: packageRoot,
+      env,
+      encoding: 'utf8',
+    })
+    assert.notEqual(result.status, 0, 'a concurrent recording must fail, not be recorded')
+    assert.match(`${result.stdout}\n${result.stderr}`, /running tests concurrently/)
+
+    // The adapter declines to finish the shard. An end record would let a build
+    // accept a map whose windows overlapped, which is the failure this guard exists
+    // to prevent.
+    const shards = readdirSync(dir).filter((name) => name.endsWith('.ndjson'))
+    for (const name of shards) {
+      const text = readFileSync(join(dir, name), 'utf8')
+      assert.equal(
+        text.includes('"type":"end"'),
+        false,
+        `${name} has an end record, so an overlapping run could be built`,
+      )
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
