@@ -420,7 +420,9 @@ Test code — or a helper it calls — can add what the recorder cannot observe:
 exported from `@spikedpunch/cbd`. They take no test id; the open window receives them, and a call
 outside every window is ignored, which leaves the file unknown and escalates to `all`. A read is
 kept in the map only when it is under the project root and inside `include`, and never under
-`node_modules` — a change outside that scope could not select the test anyway.
+`node_modules` — a change outside that scope could not select the test anyway. A read of a build output is also recorded at the source a
+sibling source map names, or at the path a projection rule produces, so a `tsc` test that reads
+`dist` is selected by a change to `src`.
 `recordOpaque` marks a test as selected by any in-scope change — the honest fallback for a test that
 spawns a tool or drives a service.
 

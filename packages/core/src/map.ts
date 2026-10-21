@@ -7,9 +7,10 @@
  * of that is severe: the share of changes that can be answered at all falls from
  * ~66% at a one-commit window to ~2.4% at ten.
  */
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { testId } from './contract.js'
+import { projectPath } from './projection.js'
 import { FileCache } from './line-index.js'
 import { resolveShard, type ResolvedShard, type ResolvedTest } from './resolve.js'
 import type { ScanOptions } from './normalize.js'
@@ -184,6 +185,32 @@ function underNodeModules(file: string): boolean {
   return file.split(sep).includes('node_modules')
 }
 
+/**
+ * The source file a build output's sibling source map names, if there is one.
+ *
+ * A `tsc` test reads `dist/x.d.ts`; the dependency a selection can see is
+ * `src/x.ts`. Declaration maps and source maps carry that link, and the read
+ * tracker sees the build path because that is what the test opened.
+ */
+function sourceMapSource(file: string): string | undefined {
+  const mapPath = `${file}.map`
+  if (!existsSync(mapPath)) return undefined
+  try {
+    const parsed = JSON.parse(readFileSync(mapPath, 'utf8')) as {
+      sources?: unknown
+      sourceRoot?: unknown
+    }
+    const sources = parsed.sources
+    if (!Array.isArray(sources) || sources.length === 0) return undefined
+    const first = sources[0]
+    if (typeof first !== 'string' || first === '') return undefined
+    const root = typeof parsed.sourceRoot === 'string' ? parsed.sourceRoot : ''
+    return resolve(dirname(mapPath), root, first)
+  } catch {
+    return undefined
+  }
+}
+
 const refId = (ref: TouchRef): string => `${ref[0]}\u0000${ref[1]}`
 
 function mergeRefs(target: Map<string, TouchRef>, refs: TouchRef[]): void {
@@ -222,6 +249,31 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
 
   const keepRead = (path: string): boolean =>
     !underNodeModules(path) && (options.keepRead?.(path) ?? true)
+
+  const readCandidates = new Map<string, string[]>()
+  /**
+   * The paths a read or listing should be recorded under.
+   *
+   * The path the test opened, plus the source its sibling map names and the path a
+   * projection rule maps it to. `keepRead` then decides which belong in this map's
+   * scope: a `dist` read is usually outside `include` while its `src` is inside it.
+   */
+  const readPaths = (path: string): string[] => {
+    if (underNodeModules(path)) return []
+    const cached = readCandidates.get(path)
+    if (cached !== undefined) return cached
+    const candidates = new Set<string>([path])
+    const projection = options.scan?.projection
+    if (projection !== undefined) {
+      const projected = projectPath(path, projection)
+      if (projected !== null) candidates.add(projected)
+    }
+    const source = sourceMapSource(path)
+    if (source !== undefined) candidates.add(source)
+    const kept = [...candidates].filter(keepRead)
+    readCandidates.set(path, kept)
+    return kept
+  }
 
   const indexOfTest = (test: ResolvedTest): number => {
     const key = `${test.title}\u0000${test.file ?? ''}\u0000${String(test.ordinal ?? 0)}`
@@ -273,22 +325,24 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
         set.add(index)
       }
       for (const file of test.reads ?? []) {
-        if (!keepRead(file)) continue
-        let set = reads.get(file)
-        if (set === undefined) {
-          set = new Set()
-          reads.set(file, set)
+        for (const path of readPaths(file)) {
+          let set = reads.get(path)
+          if (set === undefined) {
+            set = new Set()
+            reads.set(path, set)
+          }
+          set.add(index)
         }
-        set.add(index)
       }
       for (const dir of test.dirReads ?? []) {
-        if (!keepRead(dir)) continue
-        let set = dirReads.get(dir)
-        if (set === undefined) {
-          set = new Set()
-          dirReads.set(dir, set)
+        for (const path of readPaths(dir)) {
+          let set = dirReads.get(path)
+          if (set === undefined) {
+            set = new Set()
+            dirReads.set(path, set)
+          }
+          set.add(index)
         }
-        set.add(index)
       }
       for (const ref of test.touches) {
         let byKey = files.get(ref[0])

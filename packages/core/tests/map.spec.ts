@@ -13,6 +13,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -267,6 +268,47 @@ test('reads under node_modules are dropped; a caller can narrow further', () => 
     keepRead: (path) => path !== A,
   })
   assert.deepEqual(narrowed.reads, { '/repo/src/my-node_modules-notes.md': [0] })
+})
+
+test('a read of a build output is also recorded at the source its map names', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cbd-readmap-'))
+  try {
+    mkdirSync(join(root, 'dist'), { recursive: true })
+    mkdirSync(join(root, 'src'), { recursive: true })
+    const built = join(root, 'dist/x.js')
+    writeFileSync(built, '// built\n')
+    writeFileSync(
+      `${built}.map`,
+      JSON.stringify({ version: 3, sources: ['../src/x.ts'], names: [], mappings: '' }),
+    )
+
+    // The include-shaped filter drops the build path and keeps the source, which
+    // is the path a selection diff can actually contain.
+    const map = mergeShards(
+      [shard('s1', [{ ...testRecord('reads', []), reads: [built] }])],
+      { commit: 'c0ffee', keepRead: (path) => path.startsWith(join(root, 'src')) },
+    )
+    assert.deepEqual(map.reads, { [join(root, 'src/x.ts')]: [0] })
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('projection rules map a read of build output back to its source', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('reads', []), reads: ['/repo/out/a.js'], dirReads: ['/repo/out'] },
+      ]),
+    ],
+    {
+      commit: 'c0ffee',
+      scan: { projection: [{ from: '/repo/out', to: '/repo/src' }] },
+      keepRead: (path) => path.startsWith('/repo/src'),
+    },
+  )
+  assert.deepEqual(map.reads, { '/repo/src/a.ts': [0] })
+  assert.deepEqual(map.dirReads, { '/repo/src': [0] })
 })
 
 test('the map records which shards produced it', () => {

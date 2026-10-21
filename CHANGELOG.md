@@ -13,7 +13,10 @@ until a tag is pushed and the publish workflow runs.
   are covered via `syncBuiltinESMExports`; the recorder's own projection reads are
   suppressed. Reads are kept only for paths under the project root and inside
   `include`, and never under `node_modules`: a shard can record far more than a
-  selection diff can ever reach. Reads through a captured reference before install,
+  selection diff can ever reach. A read of a build output is also recorded at the
+  source its sibling source map names, or at the path the same projection rules
+  coverage uses produce, so a change to `src` selects a test that reads `dist`.
+  Reads through a captured reference before install,
   native addons, child processes, or a separately started service are not seen;
   `alwaysSelect` remains the escape hatch.
 - **Spawned processes are dependencies.** The adapters wrap the test process's

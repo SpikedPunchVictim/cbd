@@ -61,7 +61,10 @@ export function projectPath(file: string, rules: ProjectionRule[]): string | nul
   for (const rule of rules) {
     if (!within(file, rule.from)) continue
     const rest = file.slice(rule.from.length).replace(/^\//, '')
-    const joined = `${rule.to.replace(/\/$/, '')}/${rest}`
+    const base = rule.to.replace(/\/$/, '')
+    // The rule's own prefix (a directory a test listed) must not come back with a
+    // trailing slash: the map keys it as a path, and `/repo/src` !== `/repo/src/`.
+    const joined = rest === '' ? base : `${base}/${rest}`
     return swapExtension(joined, rule.extensions ?? DEFAULT_EXTENSIONS)
   }
   return null

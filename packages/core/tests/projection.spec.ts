@@ -139,3 +139,7 @@ test('canonicalizes the from-prefix but leaves the to-prefix as written', () => 
     tree.cleanup()
   }
 })
+
+test('the rule prefix itself projects without a trailing slash', () => {
+  assert.equal(projectPath('/repo/out-nomaps', rules), '/repo')
+})
