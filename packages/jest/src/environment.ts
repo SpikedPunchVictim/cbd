@@ -40,12 +40,14 @@ interface CoreAdapter {
     testStart(title: string, file: string | null): void
     testEnd(title: string, status: 'passed' | 'failed' | 'skipped'): void
     testAbandon(): void
+    noteOpaque(reason: string): void
   }
   inProcessSource(): Promise<unknown>
   installReadTracking(sink: {
     noteRead(path: string): void
     noteReadDir(path: string): void
   }): () => void
+  installProcessTracking(sink: { noteOpaque(reason: string): void }): () => void
   packageCodeRoots(moduleUrl: string, packageName: string): string[]
   scanFromEnv(): Record<string, unknown> | undefined
 }
@@ -55,6 +57,7 @@ class CbdEnvironment extends TestEnvironment {
   #recorder: CoreAdapter['Recorder'] extends new (...args: never[]) => infer R ? R : never | null = null
   #source: { close?: () => void } | null = null
   #stopReads: (() => void) | null = null
+  #stopProcesses: (() => void) | null = null
   #opened = new WeakSet<object>()
   #open = 0
   #refused = false
@@ -86,6 +89,7 @@ class CbdEnvironment extends TestEnvironment {
     })
     this.#recorder.runStart()
     this.#stopReads = core.installReadTracking(this.#recorder)
+    this.#stopProcesses = core.installProcessTracking(this.#recorder)
   }
 
   override async teardown(): Promise<void> {
@@ -100,6 +104,8 @@ class CbdEnvironment extends TestEnvironment {
     }
     this.#stopReads?.()
     this.#stopReads = null
+    this.#stopProcesses?.()
+    this.#stopProcesses = null
     this.#source?.close?.()
     this.#source = null
     await super.teardown()

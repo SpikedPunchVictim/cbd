@@ -16,6 +16,12 @@ until a tag is pushed and the publish workflow runs.
   selection diff can ever reach. Reads through a captured reference before install,
   native addons, child processes, or a separately started service are not seen;
   `alwaysSelect` remains the escape hatch.
+- **Spawned processes are dependencies.** The adapters wrap the test process's
+  public `node:child_process` spawn, exec and fork calls and note an opaque
+  dependency while a test window is open, so a test that runs a tool or starts a
+  service is selected by any in-scope change instead of being silently omitted.
+  Only the call is seen; what the child does is not. `CBD_TRACK_PROCESSES=0`
+  disables the wrapper for tests that spawn something harmless.
 - **`unknownPolicyFor`.** Per-glob overrides for a file the map has
   never seen, e.g. `[{ "paths": ["typescript/tools/**"], "policy": "ignore" }]`.
   The first matching entry wins, only `all`/`ignore` are accepted, a known file is

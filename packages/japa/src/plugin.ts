@@ -51,6 +51,7 @@ import {
   FileSink,
   SOCKET_DIR_ENV,
   inProcessSource,
+  installProcessTracking,
   installReadTracking,
   readSelection,
   rescanningSocketSource,
@@ -250,7 +251,9 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
       // The test process reads; the service's reads happen in its own process and
       // are not observable here. Only the first recorder is the in-process one.
       const stopReads = installReadTracking(recorders[0]!)
+      const stopProcesses = installProcessTracking(recorders[0]!)
       emitter.on('runner:end', stopReads)
+      emitter.on('runner:end', stopProcesses)
       installJapaAdapter(
         emitter,
         recorders,

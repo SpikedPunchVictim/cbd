@@ -96,6 +96,7 @@ export {
 } from './record.js'
 
 export { installReadTracking, type ReadSink } from './read-tracker.js'
+export { installProcessTracking, type ProcessSink } from './process-tracker.js'
 
 export { SOCKET_DIR_ENV } from './instrument-protocol.js'
 

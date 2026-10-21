@@ -424,6 +424,10 @@ kept in the map only when it is under the project root and inside `include`, and
 `recordOpaque` marks a test as selected by any in-scope change — the honest fallback for a test that
 spawns a tool or drives a service.
 
+The adapters also wrap the test process's public `node:child_process` spawn, exec and fork calls and
+note an opaque dependency while a window is open, so a test that runs a tool is not silently omitted.
+Only the call is seen; the child's work is not. `CBD_TRACK_PROCESSES=0` turns the wrapper off.
+
 `cbd collect` writes the v2 selection file `{ "version": 2, "tests": [{ id, file, title, … }] }`;
 a v1 `{ "titles": [...] }` file is still read, so an adapter and a CLI do not have to upgrade
 together. `ADAPTER_CONTRACT_VERSION` is exported from the package root and the adapter entry, and

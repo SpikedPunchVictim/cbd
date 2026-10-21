@@ -27,6 +27,7 @@ import {
   FileSink,
   Recorder,
   inProcessSource,
+  installProcessTracking,
   installReadTracking,
   scanFromEnv,
 } from '@spikedpunch/cbd/adapter'
@@ -70,6 +71,7 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
   })
   recorder.runStart()
   const stopReads = installReadTracking(recorder)
+  const stopProcesses = installProcessTracking(recorder)
 
   const opened = new WeakSet<object>()
   const skipped = new WeakSet<object>()
@@ -125,12 +127,14 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
       // run cannot silently become a map.
       source.close()
       stopReads()
+      stopProcesses()
       return
     }
     // Outside every test window: transformed-script coordinates are fetched here.
     await recorder.runEnd()
     source.close()
     stopReads()
+    stopProcesses()
   })
 
   function remember(context: NodeTestContextLike, method: 'skip' | 'todo'): void {

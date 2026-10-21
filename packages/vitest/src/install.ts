@@ -20,6 +20,7 @@ import {
   FileSink,
   Recorder,
   inProcessSource,
+  installProcessTracking,
   installReadTracking,
   readSelection,
   scanFromEnv,
@@ -80,6 +81,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
   // The setup file runs once per test file; installs form a stack so the active
   // file's recorder receives the reads.
   const stopReads = installReadTracking(recorder)
+  const stopProcesses = installProcessTracking(recorder)
 
   const selection = readSelection(process.env)
   const wanted = selection === undefined ? null : new Set(selection)
@@ -133,6 +135,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     if (refused) {
       source.close()
       stopReads()
+      stopProcesses()
       return
     }
     // Outside every test window: the source fetches generated script text for
@@ -140,6 +143,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     await recorder.runEnd()
     source.close()
     stopReads()
+    stopProcesses()
   })
 }
 

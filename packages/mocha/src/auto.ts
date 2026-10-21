@@ -30,6 +30,7 @@ import { fileURLToPath } from 'node:url'
 import {
   FileSink,
   inProcessSource,
+  installProcessTracking,
   installReadTracking,
   readSelection,
   scanFromEnv,
@@ -79,6 +80,7 @@ const only = readSelection(process.env)
 
 let recorder: Recorder | null = null
 let stopReads: (() => void) | null = null
+let stopProcesses: (() => void) | null = null
 if (shardPath !== undefined) {
   const source = await inProcessSource()
   const scan = scanFromEnv()
@@ -89,6 +91,7 @@ if (shardPath !== undefined) {
     ...(scan === undefined ? {} : { scan }),
   })
   stopReads = installReadTracking(recorder)
+  stopProcesses = installProcessTracking(recorder)
 }
 
 if (recorder !== null || only !== undefined) {
@@ -136,6 +139,8 @@ if (recorder !== null || only !== undefined) {
       // coordinates must be written before it is called.
       await first.finish()
       stopReads?.()
+      stopProcesses?.()
+      stopProcesses = null
       return callback?.(failures)
     })
   }
