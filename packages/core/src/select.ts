@@ -154,6 +154,16 @@ export interface SelectConfig {
    * missing callback keeps the pre-existing registry-only behaviour.
    */
   definesTests?: (path: string) => boolean
+  /**
+   * Put the tests the change reaches most directly first.
+   *
+   * `'impact'` orders by reason: a changed function, then the file-level answer
+   * (module scope), then a read, then a changed test file, then an opaque
+   * declaration, then `alwaysSelect`. A consumer that runs entries in order fails
+   * on the closest cause first. The selected set is unchanged; the default is map
+   * order, so existing output stays stable.
+   */
+  order?: 'impact'
 }
 
 const DEFAULT_TEST_FILES = [
@@ -186,6 +196,39 @@ export function fileDefinesTests(text: string): boolean {
 
 function uniqueSorted(values: Iterable<number>): number[] {
   return [...new Set(values)].sort((a, b) => a - b)
+}
+
+/** How directly a reason reaches a test; lower runs first under `order: 'impact'`. */
+const IMPACT: Record<Reason['kind'], number> = {
+  function: 0,
+  file: 1,
+  read: 2,
+  'test-file': 3,
+  opaque: 4,
+  always: 5,
+  all: 6,
+}
+
+/**
+ * The subset in map order, or by impact.
+ *
+ * A test can be selected by more than one reason; the most direct one is the one
+ * that explains it. The sort is stable within a rank (by index), so an impact
+ * order is deterministic and equal to map order when every reason is the same.
+ */
+function orderTests(selected: Set<number>, reasons: Reason[], order?: 'impact'): number[] {
+  const tests = uniqueSorted(selected)
+  if (order !== 'impact') return tests
+  const rank = new Map<number, number>()
+  for (const reason of reasons) {
+    if (!('tests' in reason)) continue
+    const value = IMPACT[reason.kind]
+    for (const index of reason.tests) {
+      const current = rank.get(index)
+      if (current === undefined || value < current) rank.set(index, value)
+    }
+  }
+  return tests.sort((a, b) => (rank.get(a) ?? 9) - (rank.get(b) ?? 9) || a - b)
 }
 
 /** Whether `path` is strictly below `dir`. */
@@ -689,7 +732,7 @@ export function select(
   return {
     mode: forced ? 'all' : 'subset',
     reasons,
-    tests: forced ? [] : uniqueSorted(selected),
+    tests: forced ? [] : orderTests(selected, reasons, config.order),
     unmapped: [...new Set(unmapped)].sort(),
     untested: [...new Set(untested)].sort(),
     ignored: [...new Set(ignored)].sort(),

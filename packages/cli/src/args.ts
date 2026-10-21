@@ -62,6 +62,8 @@ export interface ParsedArgs {
   patch?: string
   /** `select`: answer for these changed lines, `path:start[-end]`. */
   change?: string
+  /** `select`: order the subset so the most directly affected tests run first. */
+  order?: 'impact'
   /** The directory the command was invoked from; relative paths resolve here. */
   cwd: string
   /** Everything after `--`: the test command `collect` spawns. */
@@ -116,7 +118,7 @@ const GLOBAL = new Set(['root', 'config', 'format', 'help', 'version'])
 const ALLOWED: Record<Command, readonly string[]> = {
   version: [],
   build: ['commit', 'partial', 'incremental', 'base'],
-  select: ['since', 'worktree', 'strict', 'commit', 'patch', 'change', 'emit-selection'],
+  select: ['since', 'worktree', 'strict', 'commit', 'patch', 'change', 'emit-selection', 'order'],
   explain: [],
   reaches: ['commit', 'file', 'batch'],
   stats: ['commit'],
@@ -382,6 +384,10 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const keep = positiveIntOf(flags, 'keep')
   const patch = stringOf(flags, 'patch')
   const change = stringOf(flags, 'change')
+  const order = stringOf(flags, 'order')
+  if (order !== undefined && order !== 'impact') {
+    throw new UsageError('--order accepts only "impact"')
+  }
   const explicitRoot = stringOf(flags, 'root')
   // Help and version do not read a map, so they must not spawn git or walk the
   // filesystem to choose a root: a diagnostic command cannot hang on a broken
@@ -404,6 +410,7 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
     ...(keep === undefined ? {} : { keep }),
     ...(patch === undefined ? {} : { patch: resolve(cwd, patch) }),
     ...(change === undefined ? {} : { change }),
+    ...(order === undefined ? {} : { order }),
     ...(batch === undefined ? {} : { batch: resolve(cwd, batch) }),
     ...(emitSelection === undefined ? {} : { emitSelection: resolve(cwd, emitSelection) }),
     ...(base === undefined ? {} : { base }),

@@ -75,6 +75,10 @@ until a tag is pushed and the publish workflow runs.
   function is not.
 - **Cost, in one place.** Test status and duration are kept on the map; `select`
   reports the subset's recorded milliseconds against the whole map.
+- **`--order impact`.** `select` can order the subset by how directly the change
+  reaches each test — changed function, module scope, read, changed test file,
+  opaque declaration, `alwaysSelect` — without changing the set, so a runner that
+  follows the order fails on the closest cause first.
 - **`--format summary`.** Mode, selected of total, reason counts, warnings, ignored
   files, map age and estimate in a few lines.
 - **Capabilities and `--emit-selection`.** `cbd --version --format json` lists

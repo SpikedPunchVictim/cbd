@@ -72,7 +72,7 @@ Usage:
   cbd build   [--commit <sha>] [--partial] [--incremental [--base <sha>]] [--root <dir>]
   cbd select  [--since <ref>] [--no-worktree] [--strict] [--commit <sha>]
               [--patch <file.diff> | --change <path>:<start>[-<end>]]
-              [--emit-selection <path>] [--format text|json|summary]
+              [--emit-selection <path>] [--order impact] [--format text|json|summary]
   cbd explain <file>[:<line>] [--root <dir>] [--format json]
   cbd reaches <test-title> <file>[:<line>] [--file <test-file>] [--format json]
   cbd reaches --batch <rows.json> [--format json]
@@ -86,7 +86,9 @@ so a script can branch without parsing output. Failures exit 1; bad arguments 2.
 --patch and --change ask what a prospective edit would select without applying it:
 the patch is parsed by the same diff reader --since uses, and the changed lines are
 old-side, as a map always is. Patch paths are read relative to --root, the same
-coordinate --since prints.
+coordinate --since prints. --order impact keeps the same selected set but puts a
+changed function first, then module scope, reads, changed test files, opaque
+declarations and alwaysSelect, so a runner that follows the order fails early.
 
 collect runs the test command with CBD_SHARD and CBD_COMMIT set, selects first
 (unless --no-select), and builds the map in the same process afterwards
@@ -146,6 +148,7 @@ function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
     ...(parsed.since === undefined ? {} : { since: parsed.since }),
     ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
     ...(changes === undefined ? { worktree: parsed.worktree } : { changes }),
+    ...(parsed.order === undefined ? {} : { order: parsed.order }),
     strict: parsed.strict,
   })
   for (const warning of result.selection.warnings) io.err(`cbd: warning: ${warning}`)

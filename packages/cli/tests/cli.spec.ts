@@ -328,6 +328,7 @@ test.group('cbd select', () => {
         ['select', '--change', 'src/a.ts'],
         ['select', '--change', 'src/a.ts:9-3'],
         ['select', '--change', 'src/a.ts:x'],
+        ['select', '--order', 'nope'],
       ]) {
         const result = invoke(root, ...argv)
         assert.equal(result.code, EXIT.usage, argv.join(' '))

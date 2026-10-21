@@ -755,6 +755,23 @@ test('verify has nothing to check when the answer was all', () => {
   assert.deepEqual(result.misses, [])
 })
 
+test('order impact runs the changed function before a reader and keeps the set', () => {
+  // Test 0 reads DATA; test 1 executes the changed function in SRC. Map order is
+  // [0, 1], so a different order proves the ranking rather than a coincidence.
+  const map = makeMap({ reads: { [DATA]: [0] } })
+  const changes = [change(DATA), change(SRC, [{ start: 5, end: 5 }])]
+
+  const plain = select(map, changes, {})
+  const ordered = select(map, changes, { order: 'impact' })
+  assert.deepEqual(plain.tests, [0, 1])
+  assert.deepEqual(ordered.tests, [1, 0])
+  assert.deepEqual(
+    [...ordered.tests].sort((a, b) => a - b),
+    [...plain.tests].sort((a, b) => a - b),
+    'ordering must not change which tests are selected',
+  )
+})
+
 test('verify ignores tests whose touches are nowhere near a changed range', () => {
   const map = makeMap()
   const selection = select(map, [change(SRC, [{ start: 2, end: 2 }])])

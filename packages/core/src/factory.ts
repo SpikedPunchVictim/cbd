@@ -118,6 +118,8 @@ export interface SelectOptions {
   strict?: boolean
   /** Map commit to load. Defaults to HEAD. */
   commit?: string
+  /** Order the subset by impact; see `SelectConfig.order`. */
+  order?: 'impact'
   /**
    * Answer for these changes instead of diffing the tree.
    *
@@ -755,6 +757,7 @@ export function createCbd(config: CbdConfig): Cbd {
         ...(config.configFile === undefined ? {} : { configFile: config.configFile }),
         ...(configChanged ? { configChanged: true } : {}),
         ...(options.strict === undefined ? {} : { strict: options.strict }),
+        ...(options.order === undefined ? {} : { order: options.order }),
       }, {
         commit: info.commit,
         distance: info.distance,
