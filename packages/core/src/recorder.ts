@@ -781,6 +781,25 @@ export class Recorder {
   }
 
   /**
+   * Drop the open window without recording it.
+   *
+   * A runner can announce a test and then skip it: Jest emits `test_start`
+   * followed by `test_skip`, never `test_done`, for a test its selection pattern
+   * filtered out. That window is not a result. Recording it as skipped would put
+   * a filtered test in the shard, and leaving it open would charge the next test's
+   * start to it. The window and its pending evidence are discarded.
+   */
+  testAbandon(): void {
+    if (this.#open === null) return
+    this.#reads.clear()
+    this.#dirReads.clear()
+    this.#opaque.clear()
+    this.#releaseSink?.()
+    this.#releaseSink = null
+    this.#open = null
+  }
+
+  /**
    * Note a file read made while a test window is open.
    *
    * Called by `installReadTracking`, not by adapters directly. Reads before the

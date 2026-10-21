@@ -432,8 +432,9 @@ together. `ADAPTER_CONTRACT_VERSION` is exported from the package root and the a
 The contract is window-based, deliberately not `AsyncLocalStorage`-based: no supported runner lets
 a *plugin* wrap the test body, and a context established in a `beforeEach` does not reliably survive
 into the runner's own invocation. A runner that overlaps tests by default must serialize windows or
-decline to record. `cbd-vitest` declines: an overlapping window throws instead of charging one test's
-coverage to another, and the shard is left without an end record so the build refuses it. See
+decline to record. `cbd-vitest`, `cbd-jest` and `cbd-node-test` decline: an overlapping window throws
+instead of charging one test's coverage to another, and the shard is left without an end
+record so the build refuses it. See
 [ADR-0017](arch/decisions/0017-adapter-contract.md).
 
 ### 7.1 japa (`@spikedpunch/cbd-japa`)

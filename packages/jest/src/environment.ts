@@ -39,6 +39,7 @@ interface CoreAdapter {
     runEnd(): Promise<void> | void
     testStart(title: string, file: string | null): void
     testEnd(title: string, status: 'passed' | 'failed' | 'skipped'): void
+    testAbandon(): void
   }
   inProcessSource(): Promise<unknown>
   installReadTracking(sink: {
@@ -55,6 +56,8 @@ class CbdEnvironment extends TestEnvironment {
   #source: { close?: () => void } | null = null
   #stopReads: (() => void) | null = null
   #opened = new WeakSet<object>()
+  #open = 0
+  #refused = false
 
   constructor(config: unknown, context: JestContextLike) {
     super(config as never, context as never)
@@ -87,8 +90,12 @@ class CbdEnvironment extends TestEnvironment {
 
   override async teardown(): Promise<void> {
     if (this.#recorder !== null) {
-      // Outside every test window: transformed-script coordinates are fetched here.
-      await this.#recorder.runEnd()
+      // A refused run leaves no end record, so a build refuses the shard instead
+      // of accepting coverage charged to the wrong test window.
+      if (!this.#refused) {
+        // Outside every test window: transformed-script coordinates are fetched here.
+        await this.#recorder.runEnd()
+      }
       this.#recorder = null
     }
     this.#stopReads?.()
@@ -108,13 +115,40 @@ class CbdEnvironment extends TestEnvironment {
       if (test === undefined || test.mode === 'skip' || test.mode === 'todo') return
       const title = titleOf(test)
       if (title === null) return
+      // `test.concurrent` overlaps windows; one window is the recorder's unit of
+      // attribution. Refuse the run rather than charge one test's execution to
+      // another.
+      if (this.#open > 0) {
+        this.#refused = true
+        process.stderr.write(
+          'cbd: Jest is running tests concurrently; recording refuses the run and leaves ' +
+            'the shard incomplete.\n',
+        )
+        throw new Error(
+          'cbd: Jest is running tests concurrently, but recording attributes coverage ' +
+            'and reads to one open test window. Record without test.concurrent. The shard ' +
+            'is left incomplete so it cannot be selected from.',
+        )
+      }
       recorder.testStart(title, this.#file)
       this.#opened.add(test)
+      this.#open += 1
+      return
+    }
+    if (event.name === 'test_skip') {
+      // A test its name pattern filtered out: `test_start` opened a window, but
+      // the body never runs and `test_done` never arrives. Abandon it so it is not
+      // recorded and does not look like an overlapping window to the guard.
+      if (test === undefined || !this.#opened.has(test)) return
+      this.#opened.delete(test)
+      this.#open -= 1
+      recorder.testAbandon()
       return
     }
     if (event.name === 'test_done') {
       if (test === undefined || !this.#opened.has(test)) return
       this.#opened.delete(test)
+      this.#open -= 1
       const title = titleOf(test)
       if (title === null) return
       recorder.testEnd(title, statusOf(test))

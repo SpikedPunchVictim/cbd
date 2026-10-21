@@ -73,6 +73,8 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
 
   const opened = new WeakSet<object>()
   const skipped = new WeakSet<object>()
+  let open = 0
+  let refused = false
   let warnedNoFullName = false
 
   hooks.beforeEach((context) => {
@@ -91,19 +93,40 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     remember(context, 'skip')
     remember(context, 'todo')
 
+    // A concurrent subtree (`{ concurrency: true }`, or a concurrent describe)
+    // opens a second window while the first is still recording. The Recorder
+    // attributes coverage and reads to one open window, so the run is refused
+    // rather than recorded wrongly.
+    if (open > 0) {
+      refused = true
+      throw new Error(
+        'cbd: node:test is running tests concurrently, but recording attributes coverage ' +
+          'and reads to one open test window. Record with concurrency disabled. The shard ' +
+          'is left incomplete so it cannot be selected from.',
+      )
+    }
     recorder.testStart(title, absolute(fileOf(context) ?? file))
     opened.add(context)
+    open += 1
   })
 
   hooks.afterEach((context) => {
     if (!opened.has(context)) return
     opened.delete(context)
+    open -= 1
     const title = titleOf(context)
     if (title === null) return
     recorder.testEnd(title, statusOf(context, skipped.has(context)))
   })
 
   hooks.after(async () => {
+    if (refused) {
+      // No end record: the build refuses an incomplete shard, so an overlapping
+      // run cannot silently become a map.
+      source.close()
+      stopReads()
+      return
+    }
     // Outside every test window: transformed-script coordinates are fetched here.
     await recorder.runEnd()
     source.close()

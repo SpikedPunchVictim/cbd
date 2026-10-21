@@ -36,8 +36,8 @@ until a tag is pushed and the publish workflow runs.
   each test's status and duration. `ADAPTER_CONTRACT_VERSION` is exported; the
   contract is window-based rather than `AsyncLocalStorage`-based, for the reason
   recorded in ADR-0017. An adapter whose runner overlaps test windows declines to
-  record: `cbd-vitest` refuses a concurrent run and leaves the shard incomplete,
-  rather than charging one test's coverage to another.
+  record: `cbd-vitest`, `cbd-jest` and `cbd-node-test` refuse a concurrent run and
+  leave the shard incomplete, rather than charging one test's coverage to another.
 - **`cbd collect` accuracy.** A command that dies before the adapter records now
   reports "no tests ran; nothing recorded" instead of naming a shard that was
   never written, skips the build, and no longer prints a doubled `cbd: cbd:`

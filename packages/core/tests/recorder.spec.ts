@@ -156,6 +156,33 @@ test('reads noted in a window belong to that test; reads outside are dropped', (
   }
 })
 
+test('an abandoned window is not recorded and does not leak its reads', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    recorder.runStart()
+    // A runner announced a test and then skipped it (Jest's selection pattern does
+    // exactly this): nothing should reach the shard for it.
+    recorder.testStart('filtered', null)
+    recorder.noteRead('/from-the-filtered-test')
+    recorder.testAbandon()
+    recorder.testStart('ran', null)
+    recorder.testEnd('ran', 'passed')
+    recorder.runEnd()
+
+    const tests = summarizeShard(parseShard(sink.text, 'abandon')).tests
+    assert.deepEqual(tests.map((entry) => entry.title), ['ran'])
+    assert.equal(tests[0]?.reads, undefined, 'the abandoned window leaked its reads')
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('the record API reaches the open window, and nothing outside it', () => {
   const tree = makeTree()
   try {

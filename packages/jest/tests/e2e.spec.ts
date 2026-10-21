@@ -20,6 +20,7 @@ import { parseShard } from '@spikedpunch/cbd/adapter'
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const jest = join(packageRoot, 'node_modules', '.bin', 'jest')
 const config = join(packageRoot, 'fixture', 'jest.cbd.config.cjs')
+const concurrentConfig = join(packageRoot, 'fixture', 'jest.concurrent.config.cjs')
 const mathFile = realpathSync(join(packageRoot, 'fixture', 'src', 'math.js'))
 
 function run(dir: string, shard: string, titles?: string[]): void {
@@ -106,6 +107,40 @@ test('CBD_SELECTION narrows the run through Jest\'s name pattern', () => {
 
 // The reason selection moved to the config: Jest's pattern sees the expanded row
 // name, so `test.each` rows are selectable. A setup-file wrapper would skip them.
+test('a concurrent run is refused and leaves no complete shard', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-jest-concurrent-'))
+  try {
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      CBD_SHARD: join(dir, 'run.ndjson'),
+      CBD_COMMIT: 'jest-e2e',
+    }
+    delete env.CBD_SELECTION
+    delete env.CBD_SOCKET_DIR
+    delete env.NODE_OPTIONS
+
+    const result = spawnSync(jest, ['--config', concurrentConfig, '--runInBand'], {
+      cwd: packageRoot,
+      env,
+      encoding: 'utf8',
+    })
+    assert.notEqual(result.status, 0, 'a concurrent recording must fail, not be recorded')
+    assert.match(`${result.stdout}\n${result.stderr}`, /running tests concurrently/)
+
+    // No end record: a build must refuse the shard rather than accept coverage
+    // charged to the wrong window.
+    for (const shard of shardsIn(dir)) {
+      assert.equal(
+        readFileSync(shard, 'utf8').includes('"type":"end"'),
+        false,
+        `${shard} has an end record, so an overlapping run could be built`,
+      )
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('an each row can be selected', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cbd-jest-each-'))
   try {
