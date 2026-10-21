@@ -594,6 +594,12 @@ export function createCbd(config: CbdConfig): Cbd {
         dirty: dirtyTree(root, stateDir),
         includeNonGreen: options.includeNonGreen === true,
         scan: options.scan ?? scanFromEnv(),
+        // Reads are dependencies only when a change to them is in this project's
+        // question. A shard records every file the process touched — dependencies
+        // under node_modules, files above a nested root — and none of those can
+        // reach the test through a selection diff, which is scoped by root and
+        // include. `node_modules` is dropped again inside the build.
+        keepRead: (path) => inside(path, root) && (config.select?.include?.(path) ?? true),
       })
       let out = map
       let incremental: BuildResult['incremental']

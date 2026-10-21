@@ -8,7 +8,7 @@
  * ~66% at a one-commit window to ~2.4% at ten.
  */
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { testId } from './contract.js'
 import { FileCache } from './line-index.js'
 import { resolveShard, type ResolvedShard, type ResolvedTest } from './resolve.js'
@@ -155,11 +155,33 @@ export interface MapBuildOptions {
    */
   scan?: ScanOptions
   /**
+   * Whether a path a test read or listed belongs in the map.
+   *
+   * The default keeps every path except those under a `node_modules` directory,
+   * which no project change can reach. `createCbd` narrows further to paths under
+   * the project root and inside `include`, the same scope selection uses: a change
+   * outside it would not select the test anyway, and a shard can record a lot of
+   * incidental reads. Applied at build time, like the other path rules, so a
+   * direct `buildMap` caller can supply its own project scope. Paths under
+   * `node_modules` are always dropped, whatever the callback says.
+   */
+  keepRead?: (path: string) => boolean
+  /**
    * Whether to include tests that did not pass. Default false: a test that
    * aborted early executed *less* than it should have, so its touches
    * under-select — silently. Such a window must not reach the map.
    */
   includeNonGreen?: boolean
+}
+
+/**
+ * Whether a path is under a `node_modules` directory.
+ *
+ * A segment match, not a substring: a project may legitimately contain a file or
+ * directory whose name merely contains `node_modules`.
+ */
+function underNodeModules(file: string): boolean {
+  return file.split(sep).includes('node_modules')
 }
 
 const refId = (ref: TouchRef): string => `${ref[0]}\u0000${ref[1]}`
@@ -197,6 +219,9 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   const dirReads = new Map<string, Set<number>>()
   const opaque = new Map<string, Set<number>>()
   const included: string[] = []
+
+  const keepRead = (path: string): boolean =>
+    !underNodeModules(path) && (options.keepRead?.(path) ?? true)
 
   const indexOfTest = (test: ResolvedTest): number => {
     const key = `${test.title}\u0000${test.file ?? ''}\u0000${String(test.ordinal ?? 0)}`
@@ -248,6 +273,7 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
         set.add(index)
       }
       for (const file of test.reads ?? []) {
+        if (!keepRead(file)) continue
         let set = reads.get(file)
         if (set === undefined) {
           set = new Set()
@@ -256,6 +282,7 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
         set.add(index)
       }
       for (const dir of test.dirReads ?? []) {
+        if (!keepRead(dir)) continue
         let set = dirReads.get(dir)
         if (set === undefined) {
           set = new Set()

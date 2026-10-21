@@ -248,6 +248,27 @@ test('reads and directory reads merge per file', () => {
   assert.deepEqual(map.dirReads, { '/repo/specs': [0] })
 })
 
+test('reads under node_modules are dropped; a caller can narrow further', () => {
+  const entries = [
+    {
+      ...testRecord('reads', []),
+      reads: [A, '/repo/node_modules/pkg/index.js', '/repo/src/my-node_modules-notes.md'],
+      dirReads: ['/repo/specs', '/repo/node_modules/pkg'],
+    },
+  ]
+
+  // A segment match: a source file whose name merely contains node_modules stays.
+  const map = mergeShards([shard('s1', entries)], { commit: 'c0ffee' })
+  assert.deepEqual(map.reads, { [A]: [0], '/repo/src/my-node_modules-notes.md': [0] })
+  assert.deepEqual(map.dirReads, { '/repo/specs': [0] })
+
+  const narrowed = mergeShards([shard('s1', entries)], {
+    commit: 'c0ffee',
+    keepRead: (path) => path !== A,
+  })
+  assert.deepEqual(narrowed.reads, { '/repo/src/my-node_modules-notes.md': [0] })
+})
+
 test('the map records which shards produced it', () => {
   const map = mergeShards([shard('one.jsonl', [])], { commit: 'c0ffee' })
   assert.deepEqual(map.shards, ['one.jsonl'])

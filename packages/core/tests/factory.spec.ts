@@ -42,7 +42,13 @@ function lineStarts(text: string): number[] {
  */
 function shardText(
   commit: string,
-  tests: Array<{ title: string; file: string | null; touches: TouchRef[] }>,
+  tests: Array<{
+    title: string
+    file: string | null
+    touches: TouchRef[]
+    reads?: string[]
+    dirReads?: string[]
+  }>,
   options: { buckets?: Partial<Record<'load' | 'between' | 'teardown', TouchRef[]>>; end?: boolean } = {},
 ): string {
   const records: unknown[] = [{ type: 'shard', version: 2, commit, pid: 1, startedAt: 'T0' }]
@@ -112,6 +118,8 @@ function shardText(
       status: 'passed',
       durationMs: 1,
       touches: rowsFor(entry.touches),
+      ...(entry.reads === undefined ? {} : { reads: entry.reads }),
+      ...(entry.dirReads === undefined ? {} : { dirReads: entry.dirReads }),
     })
   }
   for (const kind of ['load', 'between', 'teardown'] as const) {
@@ -385,6 +393,49 @@ test.group('createCbd', () => {
       )
       assert.equal(selection.mode, 'subset')
       assert.deepEqual(selection.tests, [0, 1])
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('build keeps reads only under the root, inside include, and outside node_modules', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    const a = join(root, 'src/a.ts')
+    const docs = join(root, 'docs/note.md')
+    const dep = join(root, 'node_modules/pkg/index.js')
+    const outside = join(dirname(root), 'outside.ts')
+    const spec = join(root, 'tests/a.spec.ts')
+    try {
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return a + b;\n}\n')
+      repo.write('docs/note.md', 'docs\n')
+      repo.write('tests/a.spec.ts', "import { add } from '../src/a.js'\n")
+      const commit = repo.commit('base')
+      writeShard(
+        root,
+        'run.ndjson',
+        shardText(commit, [
+          {
+            title: 'adds',
+            file: spec,
+            touches: [ref(a, 'add@0', 1, 3)],
+            reads: [a, docs, dep, outside],
+            dirReads: [join(root, 'src'), join(root, 'node_modules')],
+          },
+        ]),
+      )
+
+      // The map's read scope is the selection's: a change that could not select
+      // this test (excluded, above the root, or inside node_modules) is not a
+      // dependency the map needs to carry.
+      const cbd = createCbd({
+        root,
+        select: { include: (path) => path.startsWith(join(root, 'src')) },
+      })
+      cbd.build()
+      const loaded = loadMap(root, commit)
+      assert.deepEqual(Object.keys(loaded.map.reads ?? {}), [a])
+      assert.deepEqual(Object.keys(loaded.map.dirReads ?? {}), [join(root, 'src')])
     } finally {
       repo.cleanup()
     }
