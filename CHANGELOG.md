@@ -3,6 +3,17 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
+## Unreleased
+
+- **Map test ids are stored relative to the map's root.** A test's id is
+  `<file>::<title>`, but only `file` was made relative when the map was saved; the
+  id kept the absolute path of the checkout that recorded it. A map copied to
+  another worktree, sandbox or CI checkout therefore carried ids naming the
+  recording machine. `saveMap` now rewrites the id with the same relative path it
+  stores the file under, and `loadMap` resolves it back, so in-memory ids are
+  unchanged and the stored map is portable. Matching on file and title, as
+  grizzly does, was unaffected; printing or comparing ids was not.
+
 ## 0.0.4 — 2026-10-20
 
 - **Reads are recorded.** The adapters wrap the test process's public

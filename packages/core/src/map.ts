@@ -842,9 +842,18 @@ function mapPaths(
 ): CoverageMap {
   return {
     ...map,
-    tests: map.tests.map((entry) =>
-      entry.file === null ? entry : { ...entry, file: to(root, entry.file) },
-    ),
+    tests: map.tests.map((entry) => {
+      if (entry.file === null) return entry
+      const file = to(root, entry.file)
+      // The id is `file::title`, so it has to move with the path. Leaving it
+      // alone stored an absolute id even after the file itself was made
+      // relative, so the map still named the recording machine's checkout.
+      return {
+        ...entry,
+        file,
+        ...(entry.id === undefined ? {} : { id: testId(file, entry.title) }),
+      }
+    }),
     files: Object.fromEntries(
       Object.entries(map.files).map(([file, functions]) => [to(root, file), functions]),
     ),

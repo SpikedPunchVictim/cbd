@@ -622,9 +622,16 @@ test('a map saved in one checkout resolves in a second checkout of the same comm
 
     const stored = JSON.parse(
       readFileSync(join(mapDir(first, 'c0ffee'), 'map.json'), 'utf8'),
-    ) as { files: Record<string, unknown>; tests: Array<{ file: string | null }>; seen: string[] }
+    ) as {
+      files: Record<string, unknown>
+      tests: Array<{ file: string | null; id?: string }>
+      seen: string[]
+    }
     assert.deepEqual(Object.keys(stored.files), ['src/a.ts'])
     assert.equal(stored.tests[0]?.file, 'tests/a.spec.ts')
+    // The id embeds the file, so it must be stored in the same coordinates the
+    // file is; an absolute id kept naming the recording machine's checkout.
+    assert.equal(stored.tests[0]?.id, 'tests/a.spec.ts::adds')
     assert.deepEqual(stored.seen, ['src/a.ts'])
 
     mkdirSync(mapDir(second, 'c0ffee'), { recursive: true })
@@ -636,6 +643,7 @@ test('a map saved in one checkout resolves in a second checkout of the same comm
     const loaded = loadMap(second, 'c0ffee')
     assert.deepEqual(Object.keys(loaded.map.files), [join(second, 'src/a.ts')])
     assert.equal(loaded.map.tests[0]?.file, join(second, 'tests/a.spec.ts'))
+    assert.equal(loaded.map.tests[0]?.id, `${join(second, 'tests/a.spec.ts')}::adds`)
     assert.deepEqual(loaded.map.seen, [join(second, 'src/a.ts')])
     assert.deepEqual(
       testsForFunction(loaded.map, join(second, 'src/a.ts'), 'add@0').map((entry) => entry.title),
