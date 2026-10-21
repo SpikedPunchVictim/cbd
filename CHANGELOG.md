@@ -61,9 +61,11 @@ until a tag is pushed and the publish workflow runs.
   raised an unhandled `EPIPE` and printed a stack trace; the bin now treats it as
   a normal end of output.
 - **Incremental recording.** `cbd build --incremental` and `cbd collect
-  --incremental` carry a previous map's tests forward when every file they used is
-  unchanged, and mark files whose evidence could not be carried as `partial` — a
-  later change to one runs everything. The marker survives a chain of incremental
+  --incremental` carry a previous map's tests forward when their evidence still
+  describes the same bytes. A touched function in a changed file is carried when its
+  line range maps exactly through the diff; reads and directory listings are
+  path-level and survive a change. Anything the change overlaps is marked `partial`
+  — a later change to one runs everything. The marker survives a chain of incremental
   builds, and a dropped test that declared an opaque dependency keeps that
   declaration (with no stale evidence attached), so an invisible dependency is
   never lost to a carry. Buckets and per-shard load attribution are

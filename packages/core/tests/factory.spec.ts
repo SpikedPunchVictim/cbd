@@ -230,6 +230,76 @@ test.group('createCbd', () => {
     }
   })
 
+  test('an incremental build relocates an unchanged function across an insertion above it', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    const a = join(root, 'src/a.ts')
+    const spec = join(root, 'tests/a.spec.ts')
+    try {
+      repo.write(
+        'src/a.ts',
+        [
+          'function g() {', // 1
+          '  return 1', // 2
+          '}', // 3
+          '', // 4
+          'function f() {', // 5
+          '  return 2', // 6
+          '}', // 7
+        ].join('\n') + '\n',
+      )
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      const base = repo.commit('base')
+      writeShard(
+        root,
+        'run.ndjson',
+        shardText(base, [
+          { title: 'adds', file: spec, touches: [ref(a, 'f@0', 5, 7)] },
+          { title: 'other', file: spec, touches: [ref(a, 'g@0', 1, 3)] },
+        ]),
+      )
+      const cbd = createCbd({ root })
+      cbd.build()
+
+      repo.write(
+        'src/a.ts',
+        [
+          'function g() {', // 1
+          '  const a = 1', // 2
+          '  const b = 2', // 3
+          '  return 1', // 4
+          '}', // 5
+          '', // 6
+          'function f() {', // 7
+          '  return 2', // 8
+          '}', // 9
+        ].join('\n') + '\n',
+      )
+      const mapCommit = repo.commit('map')
+      // The select-mode recording ran only `other`; `adds` must be carried with
+      // f's range relocated from 5..7 to 7..9.
+      writeShard(
+        root,
+        'after.ndjson',
+        shardText(mapCommit, [
+          { title: 'other', file: spec, touches: [ref(a, 'g@0', 1, 5)] },
+        ]),
+      )
+
+      const result = cbd.build({ commit: mapCommit, incremental: true })
+      assert.equal(result.incremental?.base, base)
+      assert.equal(result.incremental?.carried, 1)
+
+      const map = loadMap(root, mapCommit).map
+      assert.deepEqual(map.tests.map((test) => test.title).sort(), ['adds', 'other'])
+      const adds = map.tests.findIndex((test) => test.title === 'adds')
+      assert.deepEqual(map.files[a]?.['f@0'], { startLine: 7, endLine: 9, tests: [adds] })
+      assert.equal(map.partial, undefined)
+    } finally {
+      repo.cleanup()
+    }
+  })
+
   test('build refuses an interrupted shard, and --partial is the opt-in', () => {
     const { repo, a, commit, cleanup } = prepared()
     try {

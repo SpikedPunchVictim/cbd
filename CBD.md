@@ -733,11 +733,13 @@ anything). Only `all` and `ignore` are values. An ignored unknown file is named 
 repository warns, because the list drifts the same way `alwaysSelect` does.
 
 **An incremental map carries evidence, not guesses.** `cbd build --incremental` (and
-`cbd collect --incremental`) merges a run with the previous map. A test from that map is carried only
-when every file it touched, read or listed is unchanged, so its line ranges still describe the same
-bytes. A test that used a changed file and was not re-recorded is dropped, and every file it used —
-its own spec included — is marked `partial`; a later change to a partial file, or to anything under a
-partial directory, forces `mode: all` with reason `partial`. The marker survives a chain of
+`cbd collect --incremental`) merges a run with the previous map. A test from that map is carried when
+its evidence still describes the same bytes. A touched function in a changed file is carried when its
+line range maps exactly through the diff (an insertion above it shifts it; a hunk that overlaps it
+does not); reads and directory listings are path-level and survive a change. Whatever the change
+overlaps and the run did not re-record is dropped, and every file it used — its own spec included — is
+marked `partial`; a later change to a partial file, or to anything under a partial directory, forces
+`mode: all` with reason `partial`. The marker survives a chain of
 incremental builds: a later run cannot heal a test that is absent from the map, because there is no
 window to re-record. A dropped test that declared an opaque dependency keeps that declaration with no
 evidence attached — its stale ranges and reads still go — so any in-scope change continues to select

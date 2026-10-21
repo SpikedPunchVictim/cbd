@@ -28,6 +28,7 @@ import {
   saveMap,
   testsForFunction,
   testsForLine,
+  relocateRange,
 } from '../src/map.js'
 import type { ResolvedShard, ResolvedTest } from '../src/resolve.js'
 import type { ShardHeader, TouchRef } from '../src/shard.js'
@@ -363,6 +364,71 @@ test('a scope that names no recorded test falls back to the whole shard', () => 
   assert.deepEqual(map.reads, { '/repo/data.json': [0] })
 })
 
+test('relocateRange shifts a range only when no edit overlaps it', () => {
+  // Two lines inserted before the file.
+  assert.deepEqual(
+    relocateRange([{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 2 }], { start: 5, end: 7 }),
+    { start: 7, end: 9 },
+  )
+  // A replacement above the range shifts it by the difference in counts.
+  assert.deepEqual(
+    relocateRange([{ oldStart: 1, oldCount: 2, newStart: 1, newCount: 3 }], { start: 5, end: 7 }),
+    { start: 6, end: 8 },
+  )
+  // A changed line inside the range, and an insertion inside it, are not movable.
+  assert.equal(
+    relocateRange([{ oldStart: 6, oldCount: 1, newStart: 6, newCount: 1 }], { start: 5, end: 7 }),
+    null,
+  )
+  assert.equal(
+    relocateRange([{ oldStart: 5, oldCount: 0, newStart: 6, newCount: 1 }], { start: 5, end: 7 }),
+    null,
+  )
+  // An insertion after the range leaves it alone.
+  assert.deepEqual(
+    relocateRange([{ oldStart: 7, oldCount: 0, newStart: 8, newCount: 1 }], { start: 5, end: 7 }),
+    { start: 5, end: 7 },
+  )
+})
+
+test('carryMap relocates an unchanged function across an insertion above it', () => {
+  const SPEC_A = '/repo/tests/a.spec.ts'
+  const SPEC_B = '/repo/tests/b.spec.ts'
+  const base = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('shifted', [ref(A, 'f@0', 5, 7)]), file: SPEC_A },
+        { ...testRecord('recorded', [ref(B, 'b@0', 1, 2)]), file: SPEC_B },
+      ]),
+    ],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  const next = mergeShards(
+    [shard('s2', [{ ...testRecord('recorded', [ref(B, 'b@0', 1, 2)]), file: SPEC_B }])],
+    { commit: 'beef', builtAt: 'T2' },
+  )
+  const edits = [{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 2 }]
+  const carried = carryMap(base, next, new Set([A]), (file, range) =>
+    file === A ? relocateRange(edits, range) : null,
+  )
+  assert.deepEqual(carried.tests.map((test) => test.title), ['recorded', 'shifted'])
+  assert.deepEqual(carried.files[A]?.['f@0'], { startLine: 7, endLine: 9, tests: [1] })
+  assert.equal(carried.partial, undefined)
+})
+
+test('carryMap keeps a read dependency when the read file changed', () => {
+  const SPEC = '/repo/tests/a.spec.ts'
+  const base = mergeShards(
+    [shard('s1', [{ ...testRecord('reader', []), file: SPEC, reads: ['/repo/data.json'] }])],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  const next = mergeShards([shard('s2', [])], { commit: 'beef', builtAt: 'T2' })
+  const carried = carryMap(base, next, new Set(['/repo/data.json']))
+  assert.deepEqual(carried.tests.map((test) => test.title), ['reader'])
+  assert.deepEqual(carried.reads, { '/repo/data.json': [0] })
+  assert.equal(carried.partial, undefined)
+})
+
 test('the map records which shards produced it', () => {
   const map = mergeShards([shard('one.jsonl', [])], { commit: 'c0ffee' })
   assert.deepEqual(map.shards, ['one.jsonl'])
@@ -473,14 +539,14 @@ test('a later incremental build keeps the partial files an earlier one admitted'
     ],
     { commit: 'c0ffee', builtAt: 'T1' },
   )
-  // The first incremental run dropped `reads` because its data file changed. The
+  // The first incremental run dropped `reads` because the source it used changed. The
   // second recorded nothing, so it cannot heal what the first one admitted it did
   // not know — the marker has to survive the chain, or a change to the data file
   // would answer with a subset that silently omits the test.
   const second = carryMap(
     base,
     mergeShards([shard('s2', [])], { commit: 'beef', builtAt: 'T2' }),
-    new Set([DATA]),
+    new Set([A]),
   )
   assert.deepEqual(second.partial, [A, DATA, SPEC].sort())
 

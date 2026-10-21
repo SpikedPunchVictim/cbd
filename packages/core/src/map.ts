@@ -10,6 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { testId } from './contract.js'
+import type { HunkEdit } from './changes.js'
 import { projectPath } from './projection.js'
 import { FileCache } from './line-index.js'
 import { resolveShard, type ResolvedShard, type ResolvedTest } from './resolve.js'
@@ -469,12 +470,13 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
 /**
  * Carries the tests an incremental build did not re-run into the new map.
  *
- * **Only evidence that is provably still true is carried.** A test is carried when
- * every file it touched, read or listed is unchanged between the base commit and
- * the new one — then its line ranges still describe the same bytes. A test that
- * used a changed file is not carried, because its old ranges may have moved; it
- * must have been selected by that change and therefore re-recorded, and if it was
- * not, the map says so instead of guessing.
+ * **Only evidence that is provably still true is carried.** Unchanged evidence is
+ * carried as before. A touched function in a changed file is carried when its line
+ * range maps exactly through the diff (`relocate`); module-scope entries and
+ * functions the change overlaps are not. Reads and directory listings are
+ * path-level, so a changed read file does not invalidate them. Whatever cannot be
+ * carried is dropped and poisoned below: it must have been selected by the change
+ * and re-recorded, and if it was not, the map says so instead of guessing.
  *
  * **A dropped test poisons what it used.** Every file it touched or read, and every
  * directory it listed, is added to `partial`; a later change to any of them forces
@@ -499,10 +501,45 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
  * escalate to `all`, which is the safe direction and the price of not re-running
  * the suite.
  */
+/**
+ * Map an old-side line range through a diff when its bytes are provably unchanged.
+ *
+ * Every edit that ends above the range shifts it by `newCount - oldCount`; an edit
+ * that overlaps the range means the range's content may have changed, and an
+ * insertion point inside the range means the range grew or split. Either makes the
+ * old evidence unusable, so the answer is `null` and the caller falls back to
+ * `partial`.
+ */
+export function relocateRange(
+  edits: readonly HunkEdit[],
+  range: { start: number; end: number },
+): { start: number; end: number } | null {
+  let delta = 0
+  for (const edit of edits) {
+    if (edit.oldCount === 0) {
+      // A pure insertion after `oldStart` (0 = before the first line).
+      if (edit.oldStart < range.start) {
+        delta += edit.newCount
+        continue
+      }
+      if (edit.oldStart < range.end) return null
+      continue
+    }
+    const oldEnd = edit.oldStart + edit.oldCount - 1
+    if (edit.oldStart <= range.end && oldEnd >= range.start) return null
+    if (oldEnd < range.start) delta += edit.newCount - edit.oldCount
+  }
+  return { start: range.start + delta, end: range.end + delta }
+}
+
 export function carryMap(
   base: CoverageMap,
   next: CoverageMap,
   changed: ReadonlySet<string>,
+  relocate?: (
+    file: string,
+    range: { start: number; end: number },
+  ) => { start: number; end: number } | null,
 ): CoverageMap {
   const keyOf = (test: TestEntry): string =>
     `${test.file ?? ''}\u0000${test.title}\u0000${String(test.ordinal ?? 0)}`
@@ -533,18 +570,36 @@ export function carryMap(
     for (const index of indices) addTo(dirByTest, index, dir)
   }
 
-  const changedList = [...changed]
-  const under = (path: string, dir: string): boolean =>
-    path === dir || path.startsWith(dir.endsWith('/') ? dir : `${dir}/`)
-
-  const isChanged = (test: TestEntry, index: number): boolean => {
-    if (test.file !== null && changed.has(test.file)) return true
-    for (const file of touchedByTest.get(index) ?? []) if (changed.has(file)) return true
-    for (const file of readByTest.get(index) ?? []) if (changed.has(file)) return true
-    for (const dir of dirByTest.get(index) ?? []) {
-      if (changedList.some((path) => under(path, dir))) return true
+  /**
+   * Whether this test's evidence can be carried, and if so where it moved.
+   *
+   * The spec itself and line-based touches are the parts a change can invalidate.
+   * A touched function on a changed file is carried only when its range maps
+   * exactly; module-scope entries cannot (their range is the whole file). Reads and
+   * directory listings are path-level: a test that read a changed file still
+   * depends on it, so they do not block a carry.
+   */
+  const relocated = new Map<
+    number,
+    Array<{ file: string; key: string; startLine: number; endLine: number }>
+  >()
+  const canCarry = (test: TestEntry, index: number): boolean => {
+    if (test.file !== null && changed.has(test.file)) return false
+    const moved: Array<{ file: string; key: string; startLine: number; endLine: number }> = []
+    for (const file of touchedByTest.get(index) ?? []) {
+      if (!changed.has(file)) continue
+      const functions = base.files[file]
+      if (functions === undefined) return false
+      for (const [key, entry] of Object.entries(functions)) {
+        if (!entry.tests.includes(index)) continue
+        if (key.startsWith('<module>')) return false
+        const range = relocate?.(file, { start: entry.startLine, end: entry.endLine })
+        if (range === undefined || range === null) return false
+        moved.push({ file, key, startLine: range.start, endLine: range.end })
+      }
     }
-    return false
+    relocated.set(index, moved)
+    return true
   }
 
   const carried: number[] = []
@@ -575,7 +630,7 @@ export function carryMap(
   const partial = new Set([...(base.partial ?? []), ...(next.partial ?? [])])
   for (const [index, test] of base.tests.entries()) {
     if (nextKeys.has(keyOf(test))) continue
-    if (!isChanged(test, index)) {
+    if (canCarry(test, index)) {
       carried.push(index)
       continue
     }
@@ -610,22 +665,38 @@ export function carryMap(
   const files: Record<string, Record<string, FunctionEntry>> = {}
   for (const [file, functions] of Object.entries(next.files)) files[file] = cloneFunctions(functions)
 
+  const addEntry = (
+    file: string,
+    key: string,
+    startLine: number,
+    endLine: number,
+    at: number,
+  ): void => {
+    const target = (files[file] ??= {})
+    const existing = target[key]
+    if (existing === undefined) {
+      target[key] = { startLine, endLine, tests: [at] }
+      return
+    }
+    existing.startLine = Math.min(existing.startLine, startLine)
+    existing.endLine = Math.max(existing.endLine, endLine)
+    if (!existing.tests.includes(at)) existing.tests.push(at)
+  }
+
   for (const [index, at] of newIndex) {
+    const moved = relocated.get(index) ?? []
     for (const file of touchedByTest.get(index) ?? []) {
-      // A carried test never touches a changed file; the check is the guard that
-      // keeps a future change to `isChanged` from silently mixing coordinates.
-      if (changed.has(file)) continue
+      if (changed.has(file)) {
+        for (const entry of moved) {
+          if (entry.file === file) addEntry(file, entry.key, entry.startLine, entry.endLine, at)
+        }
+        continue
+      }
       const functions = base.files[file]
       if (functions === undefined) continue
       for (const [key, entry] of Object.entries(functions)) {
         if (!entry.tests.includes(index)) continue
-        const target = (files[file] ??= {})
-        const existing = target[key]
-        if (existing === undefined) {
-          target[key] = { startLine: entry.startLine, endLine: entry.endLine, tests: [at] }
-        } else if (!existing.tests.includes(at)) {
-          existing.tests.push(at)
-        }
+        addEntry(file, key, entry.startLine, entry.endLine, at)
       }
     }
   }
@@ -638,9 +709,8 @@ export function carryMap(
     for (const [path, indices] of Object.entries(from ?? {})) out[path] = [...indices]
     for (const [index, at] of newIndex) {
       for (const path of byTest.get(index) ?? []) {
-        // A read path is a changed file exactly when the test would have been
-        // dropped, so this only guards the same invariant as above.
-        if (changed.has(path)) continue
+        // Read and directory evidence is path-level: a test that read a changed
+        // file still depends on it. Only line-based evidence needs relocation.
         ;(out[path] ??= []).push(at)
       }
     }

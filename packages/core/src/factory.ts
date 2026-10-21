@@ -26,6 +26,7 @@ import {
   functionsInFile,
   carryMap,
   loadMap,
+  relocateRange,
   saveMap,
   testsForFunction,
   testsForLine,
@@ -616,16 +617,21 @@ export function createCbd(config: CbdConfig): Cbd {
           // exactly what the recording just covered.
           const stateRoot = resolve(root, stateDir)
           const changed = new Set<string>()
+          const edits = new Map<string, NonNullable<Change['hunkEdits']>>()
           for (const change of toAbsolute(changesSince({ root, since: base }))) {
             if (inside(change.path, stateRoot)) continue
             changed.add(change.path)
+            edits.set(change.path, change.hunkEdits ?? [])
             // A rename reports only its new path, which never existed at the base
             // commit. The old path is gone, so a test carried with evidence for it
             // would describe a file that no longer exists; treating it as changed
             // drops that evidence instead of resurrecting it.
             if (change.from !== undefined) changed.add(change.from)
           }
-          out = carryMap(earlier.map, map, changed)
+          out = carryMap(earlier.map, map, changed, (file, range) => {
+            const fileEdits = edits.get(file)
+            return fileEdits === undefined ? null : relocateRange(fileEdits, range)
+          })
           incremental = {
             base,
             carried: out.carried?.tests ?? 0,

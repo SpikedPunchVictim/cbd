@@ -21,6 +21,15 @@ export interface LineRange {
 
 export type ChangeStatus = 'A' | 'M' | 'D' | 'R' | 'C' | 'T'
 
+/** One `@@` header's old and new extents, paired. */
+export interface HunkEdit {
+  /** First old-side line; for a pure insertion, the line it follows (0 = start). */
+  oldStart: number
+  oldCount: number
+  newStart: number
+  newCount: number
+}
+
 export interface Change {
   path: string
   status: ChangeStatus
@@ -67,6 +76,15 @@ export interface Change {
    * Optional so a caller-built `Change` from before this field stays valid.
    */
   newInsertions?: number[]
+  /**
+   * The paired extents of each `@@` header.
+   *
+   * `hunks`, `newHunks`, `insertions` and `newInsertions` are flat views for the
+   * selector and the oracle. Incremental carry needs the pairing: to relocate an
+   * unchanged function across a diff, it sums each above-hunk's
+   * `newCount - oldCount`, which the flat lists cannot express.
+   */
+  hunkEdits?: HunkEdit[]
 }
 
 export interface ChangesOptions {
@@ -115,6 +133,7 @@ export function mergeChanges(
         ...(change.newInsertions === undefined
           ? {}
           : { newInsertions: [...change.newInsertions] }),
+        ...(change.hunkEdits === undefined ? {} : { hunkEdits: [...change.hunkEdits] }),
       })
       return
     }
@@ -126,6 +145,16 @@ export function mergeChanges(
     const newInsertions = [...(existing.newInsertions ?? []), ...(change.newInsertions ?? [])]
     if (newInsertions.length > 0) {
       existing.newInsertions = [...new Set(newInsertions)].sort((x, y) => x - y)
+    }
+    const edits = [...(existing.hunkEdits ?? []), ...(change.hunkEdits ?? [])]
+    if (edits.length > 0) {
+      const seenEdit = new Set<string>()
+      existing.hunkEdits = edits.filter((edit) => {
+        const key = `${String(edit.oldStart)}:${String(edit.oldCount)}:${String(edit.newStart)}:${String(edit.newCount)}`
+        if (seenEdit.has(key)) return false
+        seenEdit.add(key)
+        return true
+      })
     }
     // A deletion on one side and a modification on the other means the file is
     // not simply gone; keeping the modification lets the function rules answer.
@@ -207,6 +236,7 @@ function applyHunk(change: Change, hunk: RegExpExecArray): void {
   } else {
     change.newInsertions?.push(newStart)
   }
+  change.hunkEdits?.push({ oldStart, oldCount: oldLines, newStart, newCount: newLines })
 }
 
 /**
@@ -242,6 +272,7 @@ export function parseUnifiedDiff(diff: string): Change[] {
         newHunks: [],
         insertions: [],
         newInsertions: [],
+        hunkEdits: [],
       }
       if (oldPath !== undefined) current.from = oldPath
       continue
