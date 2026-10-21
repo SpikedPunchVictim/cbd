@@ -155,6 +155,13 @@ recorded before this release still loads, with the safe fallback described below
   outside every function selects those tests plus the function index's. A shard marked
   `role: 'service'` attributes load only to the tests that actually touched the
   service. Maps without the fields fall back to `mode: all`.
+- **A load-touched file with a read answer still selects its loaders.** A re-export
+  barrel has a load touch but no function index; a change to it selected only the
+  tests that read it as data and skipped the load observers, so removing an export
+  could leave every other test that imported the module unselected. The load answer
+  now runs alongside the read answer and unions the two; deleting a load-touched
+  module gets the same treatment. Maps without `loadShards` still fall back to
+  `mode: all`.
 - **Helpers that define tests are test files.** A helper whose `test(...)` calls are made
   through a function a spec invokes is now detected by a static registration scan, so
   `testFilePolicy` applies and its added-test warning fires. Under `known` it selects the

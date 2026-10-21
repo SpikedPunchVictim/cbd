@@ -211,6 +211,49 @@ test('rule 5: a file in @teardown gets the same outside-function answer', () => 
   assert.deepEqual(reasonKinds(result), ['all:load'])
 })
 
+// A re-export barrel has a load touch but no function index. A change to it used
+// to stop at the file's observed readers: removing an export breaks every test
+// that imported the module, whether or not it also read the file as text.
+test('rule 2: a read-answered @load barrel still selects the tests that loaded it', () => {
+  const BARREL = '/repo/src/barrel.ts'
+  const map = makeMap({
+    load: [[BARREL, '<module>@0', 0, 9]],
+    reads: { [BARREL]: [1] },
+    loadShards: { [BARREL]: [0] },
+    shardTests: [[0, 1, 2]],
+  })
+  const result = select(map, [change(BARREL, [{ start: 5, end: 6 }])])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0, 1, 2])
+  assert.deepEqual(reasonKinds(result), ['read', 'file'])
+})
+
+test('rule 2: deleting a read-answered @load barrel selects the load observers', () => {
+  const BARREL = '/repo/src/barrel.ts'
+  const map = makeMap({
+    load: [[BARREL, '<module>@0', 0, 9]],
+    reads: { [BARREL]: [1] },
+    loadShards: { [BARREL]: [0] },
+    shardTests: [[0, 1, 2]],
+  })
+  const result = select(map, [change(BARREL, [], 'D')])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0, 1, 2])
+})
+
+test('rule 8: deleting a @load module selects the tests that loaded it', () => {
+  const map = makeMap({
+    load: [[SRC, '<module>@0', 0, 30]],
+    loadShards: { [SRC]: [0] },
+    shardTests: [[0, 1, 2]],
+  })
+  // The function index names 0 and 1; test 2 never called into SRC but loaded it.
+  const result = select(map, [change(SRC, [], 'D')])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0, 1, 2])
+  assert.deepEqual(reasonKinds(result), ['file'])
+})
+
 // --- rule 3 -----------------------------------------------------------------
 test('rule 3: a changed test file selects its known tests and warns about the gap', () => {
   // The map can name this file's existing tests, but not a test the edit added.

@@ -428,6 +428,39 @@ export function select(
   }
 
   /**
+   * The tests that shared a module instance with `path` at load or teardown time.
+   *
+   * `undefined` means the map predates per-shard attribution and cannot say; the
+   * caller answers `all` rather than guess.
+   */
+  const loadObservers = (path: string): number[] | undefined => {
+    const shards = map.loadShards?.[path]
+    if (shards === undefined || map.shardTests === undefined) return undefined
+    return uniqueSorted(shards.flatMap((index) => map.shardTests![index] ?? []))
+  }
+
+  /**
+   * Select the tests that loaded `path`, plus `extra`.
+   *
+   * A read answer is not a substitute: the module's exports belong to the
+   * instance every test in the shard loaded, so removing one can break a test
+   * that never read the file as text. A barrel has no function index, which is
+   * how a read answer used to suppress the load answer entirely — the change
+   * selected the file's readers and missed every other test that imported it.
+   */
+  const selectLoadObservers = (path: string, extra: number[]): void => {
+    const observers = loadObservers(path)
+    if (observers === undefined || observers.length === 0) {
+      unmapped.push(path)
+      forceAll('load', path)
+      return
+    }
+    const tests = uniqueSorted([...observers, ...extra])
+    for (const index of tests) selected.add(index)
+    reasons.push({ kind: 'file', file: path, tests })
+  }
+
+  /**
    * Tests defined in a file, from the test registry rather than the function
    * index. §8.3 rule 3 wants *every test in that file*, and a spec's own
    * functions only appear in `map.files` if the spec was itself recorded as
@@ -451,8 +484,7 @@ export function select(
    */
   const noTouches = (path: string): void => {
     if (loadFiles.has(path) || teardownFiles.has(path)) {
-      unmapped.push(path)
-      forceAll('load', path)
+      selectLoadObservers(path, [])
     } else if (betweenFiles.has(path)) {
       unmapped.push(path)
       if (betweenPolicy === 'all') forceAll('between', path)
@@ -585,9 +617,15 @@ export function select(
     if (change.status === 'D') {
       if (inMap) {
         const tests = testsTouchingFile(path)
-        for (const index of tests) selected.add(index)
-        reasons.push({ kind: 'file', file: path, tests })
-      } else if (!answeredByRead) {
+        if (loadFiles.has(path) || teardownFiles.has(path)) {
+          // The module is gone: every test that loaded it can observe the
+          // removal, not just the ones that executed one of its functions.
+          selectLoadObservers(path, tests)
+        } else {
+          for (const index of tests) selected.add(index)
+          reasons.push({ kind: 'file', file: path, tests })
+        }
+      } else if (!answeredByRead || loadFiles.has(path) || teardownFiles.has(path)) {
         noTouches(path)
       }
       continue
@@ -621,21 +659,7 @@ export function select(
         // the module instance and are the honest answer. A map built before that
         // attribution existed has no answer, and falls back to rule 2's `all`.
         if (loadFiles.has(path) || teardownFiles.has(path)) {
-          const shards = map.loadShards?.[path]
-          const observers =
-            shards === undefined || map.shardTests === undefined
-              ? undefined
-              : shards.flatMap((index) => map.shardTests![index] ?? [])
-          if (observers === undefined || observers.length === 0) {
-            unmapped.push(path)
-            forceAll('load', path)
-          } else {
-            // The union with the function index matters when one process loaded
-            // the module and another called into it: both sets can observe it.
-            const tests = uniqueSorted([...observers, ...testsTouchingFile(path)])
-            for (const index of tests) selected.add(index)
-            reasons.push({ kind: 'file', file: path, tests })
-          }
+          selectLoadObservers(path, testsTouchingFile(path))
         } else if (betweenFiles.has(path) && betweenPolicy === 'all') {
           unmapped.push(path)
           forceAll('between', path)
@@ -650,10 +674,11 @@ export function select(
       continue
     }
 
-    // Rules 2, 9, 7, 6 — see `noTouches`. A read answer is an answer: the file
-    // need not be in the map, and escalating it would throw away the precise
-    // readers.
-    if (!answeredByRead) noTouches(path)
+    // Rules 2, 9, 7, 6 — see `noTouches`. A read answer is an answer for a file
+    // the map never loaded; for one the suite did load, the load answer must
+    // still run, because the read answer names only the tests that read the file
+    // as data (see `selectLoadObservers`).
+    if (!answeredByRead || loadFiles.has(path) || teardownFiles.has(path)) noTouches(path)
   }
 
   // Always-select — tests that cannot appear in coverage, such as an oracle that
