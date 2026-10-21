@@ -20,6 +20,7 @@ export type Command =
   | 'explain'
   | 'reaches'
   | 'stats'
+  | 'flaky'
   | 'collect'
   | 'gc'
   | 'version'
@@ -84,6 +85,7 @@ const COMMANDS = new Set<string>([
   'explain',
   'reaches',
   'stats',
+  'flaky',
   'collect',
   'gc',
   'help',
@@ -132,6 +134,7 @@ const ALLOWED: Record<Command, readonly string[]> = {
   explain: [],
   reaches: ['commit', 'file', 'batch'],
   stats: ['commit'],
+  flaky: [],
   collect: ['select', 'build', 'shard', 'incremental', 'base'],
   gc: ['keep'],
   help: [],

@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
+import { MAP_VERSION, saveMap, type CoverageMap } from '@spikedpunch/cbd'
 import { defaultRoot } from '../src/args.js'
 import { EXIT } from '../src/cli.js'
 import { tempRepo } from './support/git.js'
@@ -1283,6 +1284,66 @@ test.group('the command line itself', () => {
       assert.match(missing.err.join('\n'), /config file not found/)
     } finally {
       cleanup()
+    }
+  })
+})
+
+test.group('cbd flaky', () => {
+  const mapAt = (
+    root: string,
+    commit: string,
+    builtAt: string,
+    status: 'passed' | 'failed',
+  ): CoverageMap => ({
+    version: MAP_VERSION,
+    commit,
+    builtAt,
+    tests: [{ title: 't', file: join(root, 'tests/a.spec.ts'), status }],
+    files: { [join(root, 'src/a.ts')]: { 'f@0': { startLine: 1, endLine: 2, tests: [0] } } },
+    load: [],
+    between: [],
+    teardown: [],
+    seen: [join(root, 'src/a.ts'), join(root, 'tests/a.spec.ts')],
+    shards: ['shard'],
+  })
+
+  test('reports a flip only when nothing the test reached changed', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    try {
+      repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      repo.write('README.md', 'one\n')
+      const a = repo.commit('a')
+      repo.write('README.md', 'two\n')
+      const b = repo.commit('b')
+      repo.write('src/a.ts', 'export function f() {\n  return 2;\n}\n')
+      repo.write('README.md', 'three\n')
+      const c = repo.commit('c')
+
+      saveMap(root, mapAt(root, a, '2026-01-01T00:00:00.000Z', 'passed'))
+      saveMap(root, mapAt(root, b, '2026-01-02T00:00:00.000Z', 'failed'))
+      saveMap(root, mapAt(root, c, '2026-01-03T00:00:00.000Z', 'passed'))
+
+      const json = invoke(root, 'flaky', '--format', 'json')
+      assert.equal(json.code, EXIT.ok)
+      const parsed = JSON.parse(json.out.join('\n')) as {
+        maps: number
+        flaky: Array<{ title: string; flips: Array<{ from: { commit: string }; to: { commit: string } }> }>
+      }
+      assert.equal(parsed.maps, 3)
+      assert.equal(parsed.flaky.length, 1)
+      assert.equal(parsed.flaky[0]!.title, 't')
+      assert.equal(parsed.flaky[0]!.flips.length, 1, 'the flip with a changed source is not flaky')
+      assert.equal(parsed.flaky[0]!.flips[0]!.from.commit, a)
+      assert.equal(parsed.flaky[0]!.flips[0]!.to.commit, b)
+
+      const text = invoke(root, 'flaky')
+      assert.equal(text.code, EXIT.ok)
+      assert.match(text.out[0]!, /^flaky: 1 test changed outcome with no relevant change across 3 maps$/)
+      assert.match(text.out[1]!, /tests\/a\.spec\.ts > t: passed at [0-9a-f]{7} -> failed at [0-9a-f]{7}/)
+    } finally {
+      repo.cleanup()
     }
   })
 })

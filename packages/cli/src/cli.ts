@@ -41,6 +41,7 @@ import {
 import { UsageError, parseArgs, type ParsedArgs } from './args.js'
 import { collect } from './collect.js'
 import { EXIT } from './exit.js'
+import { findFlaky, type FlakyResult } from './flaky.js'
 import { DEFAULT_KEEP, gc, type GcResult } from './gc.js'
 import { versions } from './version.js'
 import {
@@ -81,6 +82,7 @@ Usage:
   cbd reaches <test-title> <file>[:<line>] [--file <test-file>] [--format json]
   cbd reaches --batch <rows.json> [--format json]
   cbd stats   [--commit <sha>] [--root <dir>] [--format json]
+  cbd flaky   [--root <dir>] [--format json]
   cbd collect [--no-select] [--no-build] [--shard <path>] [--incremental]
               -- <test command>
   cbd gc      [--keep <n>] [--root <dir>] [--format json]
@@ -466,6 +468,28 @@ function runStats(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
   return EXIT.ok
 }
 
+function runFlaky(config: CbdConfig, parsed: ParsedArgs, io: Io): number {
+  const result: FlakyResult = findFlaky({
+    root: config.root,
+    ...(config.stateDir === undefined ? {} : { stateDir: config.stateDir }),
+    ...(config.mapsDir === undefined ? {} : { mapsDir: config.mapsDir }),
+  })
+  const lines = [
+    `flaky: ${plural(result.flaky.length, 'test')} changed outcome with no relevant change ` +
+      `across ${plural(result.maps, 'map')}`,
+    ...result.flaky.flatMap((test) =>
+      test.flips.map(
+        (flip) =>
+          `${test.file === null ? '(no file)' : relative(parsed.root, test.file)} > ${test.title}: ` +
+          `${flip.from.status} at ${flip.from.commit.slice(0, 7)} -> ` +
+          `${flip.to.status} at ${flip.to.commit.slice(0, 7)}`,
+      ),
+    ),
+  ]
+  output(parsed, result, lines, io)
+  return EXIT.ok
+}
+
 function runGc(config: CbdConfig, parsed: ParsedArgs, io: Io): number {
   const result: GcResult = gc({
     root: config.root,
@@ -537,6 +561,8 @@ export function run(argv: string[], options: RunOptions): number {
         return runReaches(cbd, parsed, options)
       case 'stats':
         return runStats(cbd, parsed, options)
+      case 'flaky':
+        return runFlaky(config, parsed, options)
       case 'collect':
         return runCollect(cbd, config, parsed, options)
       case 'gc':

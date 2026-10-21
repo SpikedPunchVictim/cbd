@@ -50,6 +50,10 @@ until a tag is pushed and the publish workflow runs.
   added under a listed directory. The SQL-migration shape is documented, and a test covers an
   added migration outside `include` selecting the declared suite. Reads at spec load and directory
   listings remain observed; an input no recorded process opened needs this declaration.
+- **`cbd flaky` reads the maps' history.** It compares adjacent maps in recording order and reports
+  a test whose status flips only when neither map's touched files nor the test's own file changed
+  between their commits. The report names the two commits and statuses, and tests added or removed
+  between maps are not compared. It reports; it does not quarantine.
 
 ## 0.0.4 — 2026-10-20
 
