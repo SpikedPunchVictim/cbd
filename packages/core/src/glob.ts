@@ -26,7 +26,19 @@ function toRegExp(pattern: string): RegExp {
       }
     } else if (char === '?') {
       out += '[^/]'
-    } else if ('\\^$.|+()[]{}'.includes(char)) {
+    } else if (char === '[') {
+      const end = pattern.indexOf(']', i + 1)
+      if (end === -1 || end === i + 1) {
+        out += '\\['
+      } else {
+        let body = pattern.slice(i + 1, end)
+        const negated = body.startsWith('!')
+        if (negated) body = `^${body.slice(1)}`
+        // A negated class must not cross a separator; a positive class is safe.
+        out += `[${body}${negated ? '/' : ''}]`
+        i = end
+      }
+    } else if ('\\^$.|+(){}'.includes(char)) {
       out += `\\${char}`
     } else {
       out += char
@@ -35,15 +47,33 @@ function toRegExp(pattern: string): RegExp {
   return new RegExp(`^${out}$`)
 }
 
+/** Braces group alternatives: `*.{ts,tsx}` is two globs. */
+function expandBraces(pattern: string): string[] {
+  const match = /\{([^{}]+)\}/.exec(pattern)
+  if (match === null) return [pattern]
+  const before = pattern.slice(0, match.index)
+  const after = pattern.slice(match.index + match[0].length)
+  return (match[1] ?? '')
+    .split(',')
+    .flatMap((part) => expandBraces(`${before}${part}${after}`))
+}
+
+/** The same pattern on either separator spelling. */
+const normalize = (path: string): string => path.replaceAll('\\', '/')
+
 const cache = new Map<string, RegExp>()
 
 export function matchesGlob(path: string, pattern: string): boolean {
-  let regex = cache.get(pattern)
-  if (regex === undefined) {
-    regex = toRegExp(pattern)
-    cache.set(pattern, regex)
+  const candidate = normalize(path)
+  for (const expanded of expandBraces(normalize(pattern))) {
+    let regex = cache.get(expanded)
+    if (regex === undefined) {
+      regex = toRegExp(expanded)
+      cache.set(expanded, regex)
+    }
+    if (regex.test(candidate)) return true
   }
-  return regex.test(path)
+  return false
 }
 
 export function matchesAnyGlob(path: string, patterns: string[]): string | null {

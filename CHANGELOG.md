@@ -66,6 +66,12 @@ until a tag is pushed and the publish workflow runs.
   headers is refused. Map writes are atomic. Declared reads are realpath-canonicalized, an explicit
   `--root` is canonicalized, and an empty or escaping `stateDir` is rejected before `gc` can touch
   the repository.
+- **Adapter and config surface fixes.** Jest reads the v2 selection both writers emit; a value flag
+  refuses a following flag instead of swallowing it; globs accept brace alternatives, character
+  classes, and either path separator; an empty `include`/`exclude` is rejected rather than matching
+  nothing; empty projection/relocation environment values are unset; `serviceShardPath` recognizes
+  Windows separators; and per-suite output sweeps a suite that disappeared from the invocation via
+  a manifest.
 
 ## 0.0.4 — 2026-10-20
 

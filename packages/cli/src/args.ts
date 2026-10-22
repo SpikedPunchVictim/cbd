@@ -207,6 +207,12 @@ function takeFlag(
   if (!VALUE_FLAGS.has(name)) throw new UsageError(`unknown flag --${name}`)
   const value = inline ?? argv[index + 1]
   if (value === undefined || value === '') throw new UsageError(`--${name} needs a value`)
+  // `--commit --partial` must not read the next flag as the commit; a value that
+  // really starts with a dash is written inline (`--name=-value`). A negative
+  // number is a value (and its own validator explains why it is refused).
+  if (inline === undefined && value.startsWith('-') && !/^-\d/.test(value)) {
+    throw new UsageError(`--${name} needs a value, not another flag ("${value}")`)
+  }
   if (REPEATABLE.has(name)) {
     const list = repeated.get(name) ?? []
     list.push(value)

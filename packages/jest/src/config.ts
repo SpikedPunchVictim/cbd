@@ -20,17 +20,32 @@ const escapePart = (part: string): string => part.replace(REGEX_SPECIALS, '\\$&'
 /** The `testNamePattern` for `CBD_SELECTION`, or `undefined` when no selection is set. */
 export function selectionPattern(path: string | undefined = process.env.CBD_SELECTION): string | undefined {
   if (path === undefined || path === '') return undefined
-  const parsed = JSON.parse(readFileSync(path, 'utf8')) as { titles?: unknown }
-  const titles = parsed.titles
-  if (!Array.isArray(titles) || titles.some((title) => typeof title !== 'string')) {
-    throw new Error('cbd: the selection must contain { "titles": string[] }')
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as {
+    titles?: unknown
+    tests?: unknown
+  }
+  // The CLI's `--emit-selection` and `cbd collect` write v2; the older reader
+  // accepted only v1, so every subset bridge into Jest aborted.
+  let titles: string[]
+  if (Array.isArray(parsed.tests)) {
+    const entries = parsed.tests as Array<{ title?: unknown } | null>
+    if (entries.some((entry) => entry === null || typeof entry !== 'object' || typeof entry.title !== 'string')) {
+      throw new Error('cbd: the v2 selection needs { "tests": [{ "file", "title" }] }')
+    }
+    titles = entries.map((entry) => (entry as { title: string }).title)
+  } else if (Array.isArray(parsed.titles) && parsed.titles.every((title) => typeof title === 'string')) {
+    titles = parsed.titles as string[]
+  } else {
+    throw new Error(
+      'cbd: the selection must contain { "titles": string[] } or { "version": 2, "tests": [...] }',
+    )
   }
   if (titles.length === 0) {
     throw new Error('cbd: the selection is empty; run without CBD_SELECTION rather than nothing')
   }
   // Anchored: Jest's pattern is unanchored, and `Should throw an error` would
   // otherwise also match `Should throw an error 2`.
-  const alternatives = (titles as string[]).map(
+  const alternatives = titles.map(
     (title) => title.split(' > ').map(escapePart).join('\\s+'),
   )
   return `^(?:${alternatives.join('|')})$`

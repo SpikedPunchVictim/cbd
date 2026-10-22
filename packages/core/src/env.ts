@@ -38,11 +38,13 @@ import type { ScanOptions } from './normalize.js'
 export const INCLUDE_SELF_ENV = 'CBD_INCLUDE_SELF'
 
 export function scanFromEnv(env: NodeJS.ProcessEnv = process.env): ScanOptions | undefined {
-  const from = env.CBD_PROJECTION_FROM
-  const to = env.CBD_PROJECTION_TO
-  const relocateFrom = env.CBD_RELOCATE_FROM
-  const relocateTo = env.CBD_RELOCATE_TO
-  const include = env.CBD_INCLUDE
+  const value = (raw: string | undefined): string | undefined =>
+    raw === undefined || raw === '' ? undefined : raw
+  const from = value(env.CBD_PROJECTION_FROM)
+  const to = value(env.CBD_PROJECTION_TO)
+  const relocateFrom = value(env.CBD_RELOCATE_FROM)
+  const relocateTo = value(env.CBD_RELOCATE_TO)
+  const include = value(env.CBD_INCLUDE)
   const includeSelf = env[INCLUDE_SELF_ENV]
 
   const scan: ScanOptions = {}

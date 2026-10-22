@@ -140,7 +140,7 @@ interface Wiring {
  */
 export function serviceShardPath(shard: string): string {
   const dot = shard.lastIndexOf('.')
-  const slash = shard.lastIndexOf('/')
+  const slash = Math.max(shard.lastIndexOf('/'), shard.lastIndexOf('\\'))
   if (dot === -1 || dot < slash) return `${shard}.service`
   return `${shard.slice(0, dot)}.service${shard.slice(dot)}`
 }

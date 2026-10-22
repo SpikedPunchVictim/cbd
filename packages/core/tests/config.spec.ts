@@ -260,3 +260,13 @@ test('stateDir must name a directory under the root', () => {
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('an empty include or exclude is refused instead of matching nothing', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-include-')))
+  try {
+    assert.throws(() => parseConfig({ include: [] }, root), /"include" must not be empty/)
+    assert.throws(() => parseConfig({ exclude: [] }, root), /"exclude" must not be empty/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

@@ -115,3 +115,14 @@ test.group('recordersFor', () => {
     }
   })
 })
+
+test('serviceShardPath treats a Windows backslash as a separator', () => {
+  assert.equal(
+    serviceShardPath('C:\\repo\\.cbd\\shards\\run'),
+    'C:\\repo\\.cbd\\shards\\run.service',
+  )
+  assert.equal(
+    serviceShardPath('C:\\repo\\.cbd\\shards\\run.ndjson'),
+    'C:\\repo\\.cbd\\shards\\run.service.ndjson',
+  )
+})

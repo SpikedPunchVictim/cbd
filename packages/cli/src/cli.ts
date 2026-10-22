@@ -16,8 +16,8 @@
  * one line per reason when everything runs. Warnings go to stderr so they cannot be
  * mistaken for selected tests by a pipe.
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'node:fs'
-import { relative, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, relative, resolve, sep } from 'node:path'
 import {
   createCbd,
   headCommit,
@@ -222,6 +222,11 @@ function emitSelection(parsed: ParsedArgs, result: SelectResult, io: Io): void {
  * suite rather than run it with nothing. A mode-all or empty answer removes every
  * file this command manages.
  */
+/** A file name this command wrote: a suite name plus .json, or _other.json. */
+function isManagedSuiteFile(name: unknown): name is string {
+  return typeof name === 'string' && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*|_other)\.json$/.test(name)
+}
+
 function emitSuiteSelections(parsed: ParsedArgs, result: SelectResult, io: Io): void {
   const dir = parsed.emitSelectionDir!
   const suites = parsed.suites!
@@ -230,14 +235,34 @@ function emitSuiteSelections(parsed: ParsedArgs, result: SelectResult, io: Io): 
   const other = resolve(dir, '_other.json')
   const managed = [...files.map((file) => file.path), other]
 
+  // A suite removed from the invocation leaves a file this run would never
+  // overwrite. A manifest lets the next run sweep it without guessing which
+  // files in the directory belong to CBD.
+  const manifest = resolve(dir, '.cbd-suites.json')
+  const previous = new Set<string>()
+  try {
+    const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { files?: unknown }
+    if (Array.isArray(parsed.files)) {
+      for (const name of parsed.files) if (isManagedSuiteFile(name)) previous.add(name)
+    }
+  } catch {
+    // No manifest, or an unreadable one: this run only knows the names it was given.
+  }
+  const writtenNames = new Set<string>()
+  const remove = (name: string): number => {
+    const path = resolve(dir, name)
+    if (!isManagedSuiteFile(name) || !existsSync(path)) return 0
+    unlinkSync(path)
+    return 1
+  }
+
   if (result.selection.mode === 'all' || result.selected.length === 0) {
     const why = result.selection.mode === 'all' ? 'selection is all' : 'no tests are selected'
     let removed = 0
-    for (const path of managed) {
-      if (!existsSync(path)) continue
-      unlinkSync(path)
-      removed += 1
+    for (const name of [...previous, ...files.map((file) => basename(file.path)), '_other.json']) {
+      removed += remove(name)
     }
+    writeFileSync(manifest, JSON.stringify({ files: [] }))
     io.err(
       `cbd: ${why}; ` +
         (removed === 0
@@ -276,16 +301,22 @@ function emitSuiteSelections(parsed: ParsedArgs, result: SelectResult, io: Io): 
       continue
     }
     writeSelection(file.path, tests)
+    writtenNames.add(basename(file.path))
     wrote += 1
   }
   if (unmatched.length > 0) {
     writeSelection(other, unmatched)
+    writtenNames.add('_other.json')
     wrote += 1
     io.err(`cbd: ${plural(unmatched.length, 'selected test')} matched no suite; wrote ${other}`)
   } else if (existsSync(other)) {
     unlinkSync(other)
     removed += 1
   }
+  for (const name of previous) {
+    if (!writtenNames.has(name)) removed += remove(name)
+  }
+  writeFileSync(manifest, JSON.stringify({ files: [...writtenNames].sort() }))
   io.err(
     `cbd: wrote ${plural(wrote, 'suite selection file')} to ${dir}` +
       (removed === 0 ? '' : `; removed ${plural(removed, 'stale file')}`),

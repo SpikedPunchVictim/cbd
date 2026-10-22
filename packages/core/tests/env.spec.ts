@@ -165,3 +165,14 @@ test.group(INCLUDE_SELF_ENV, () => {
     )
   })
 })
+
+test('empty projection and relocation values are unset', () => {
+  assert.equal(
+    scanFromEnv({ CBD_PROJECTION_FROM: '', CBD_PROJECTION_TO: '/repo' }),
+    undefined,
+  )
+  assert.equal(
+    scanFromEnv({ CBD_RELOCATE_FROM: '', CBD_RELOCATE_TO: '/repo' }),
+    undefined,
+  )
+})

@@ -1361,3 +1361,42 @@ test('an explicit --root is canonicalized', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('a value flag does not swallow the next flag', () => {
+  const { root, cleanup } = prepared()
+  try {
+    const build = invoke(root, 'build', '--commit', '--partial')
+    assert.equal(build.code, EXIT.usage)
+    assert.match(build.err.join('\n'), /--commit needs a value, not another flag/)
+
+    const select = invoke(root, 'select', '--since', '--strict')
+    assert.equal(select.code, EXIT.usage)
+    assert.match(select.err.join('\n'), /--since needs a value, not another flag/)
+  } finally {
+    cleanup()
+  }
+})
+
+test('a suite removed from the invocation loses its stale file', () => {
+  const { repo, root, cleanup } = prepared()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-suite-manifest-'))
+  try {
+    assert.equal(invoke(root, 'build').code, EXIT.ok)
+    repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+    assert.equal(
+      invoke(root, 'select', '--emit-selection-dir', dir, '--suite', 'one=tests/a.spec.ts').code,
+      EXIT.ok,
+    )
+    assert.equal(existsSync(join(dir, 'one.json')), true)
+
+    assert.equal(
+      invoke(root, 'select', '--emit-selection-dir', dir, '--suite', 'renamed=tests/a.spec.ts').code,
+      EXIT.ok,
+    )
+    assert.equal(existsSync(join(dir, 'one.json')), false)
+    assert.equal(existsSync(join(dir, 'renamed.json')), true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+    cleanup()
+  }
+})

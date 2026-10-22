@@ -311,6 +311,14 @@ function unknownPolicyFor(
 function selectFrom(file: Record<string, unknown>, root: string, path: string): SelectConfig {
   const include = strings(file.include, 'include', path)
   const exclude = strings(file.exclude, 'exclude', path)
+  // An empty list compiles to a predicate that rejects every path: a subset with
+  // no tests and exit 0, rather than "no restriction".
+  if (include !== undefined && include.length === 0) {
+    throw new Error(`cbd: ${path} "include" must not be empty; omit it to consider every path`)
+  }
+  if (exclude !== undefined && exclude.length === 0) {
+    throw new Error(`cbd: ${path} "exclude" must not be empty; omit it to exclude nothing`)
+  }
   const alwaysAll = strings(file.alwaysAll, 'alwaysAll', path)
   const alwaysSelected = alwaysSelect(file.alwaysSelect, root, path)
   const unknownPolicyOverrides = unknownPolicyFor(file.unknownPolicyFor, root, path)
