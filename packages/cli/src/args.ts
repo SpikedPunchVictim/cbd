@@ -455,7 +455,7 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
       ? resolve(cwd)
       : explicitRoot === undefined
         ? defaultRoot(cwd)
-        : resolve(cwd, explicitRoot)
+        : canonical(resolve(cwd, explicitRoot))
   return {
     command,
     format: formatOf(flags, command),

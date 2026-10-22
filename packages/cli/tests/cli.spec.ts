@@ -19,6 +19,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
@@ -27,7 +28,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import { MAP_VERSION, saveMap, type CoverageMap } from '@spikedpunch/cbd'
-import { defaultRoot } from '../src/args.js'
+import { defaultRoot, parseArgs } from '../src/args.js'
 import { EXIT } from '../src/cli.js'
 import { tempRepo } from './support/git.js'
 import { invoke, prepared, shardText } from './support/repo.js'
@@ -1346,4 +1347,17 @@ test.group('cbd flaky', () => {
       repo.cleanup()
     }
   })
+})
+
+test('an explicit --root is canonicalized', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-root-'))
+  const link = `${dir}-link`
+  try {
+    symlinkSync(dir, link)
+    const parsed = parseArgs(['--root', link, 'select'], dir)
+    assert.equal(parsed.root, realpathSync(dir))
+  } finally {
+    rmSync(link, { force: true })
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

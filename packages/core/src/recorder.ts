@@ -572,6 +572,7 @@ export class Recorder {
   #source: Source
   #projector: Projector
   #commit: string
+  #sink: ShardSink
   #pid: number
   #role: 'service' | undefined
   #now: () => number
@@ -601,6 +602,7 @@ export class Recorder {
 
   constructor(options: RecorderOptions) {
     this.#commit = options.commit
+    this.#sink = options.sink
     this.#pid = options.pid ?? process.pid
     this.#role = options.role
     this.#now = options.now ?? Date.now
@@ -701,6 +703,9 @@ export class Recorder {
    * empty window and silently mis-file the entire load phase as `@between`.
    */
   runStart(): void {
+    // A new recording owns its path; a second run at the same path must not
+    // inherit the first run's header, tests or footer.
+    this.#sink.reset?.()
     this.#windows.commit({
       type: 'shard',
       version: SHARD_VERSION,

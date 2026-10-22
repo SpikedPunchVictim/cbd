@@ -20,7 +20,7 @@
  * silently ignored.
  */
 import { readFileSync, realpathSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve } from 'node:path'
 import type { CbdConfig } from './factory.js'
 import { matchesAnyGlob } from './glob.js'
 import type { AlwaysSelectEntry, SelectConfig } from './select.js'
@@ -152,6 +152,24 @@ export function parseConfig(raw: unknown, root: string): CbdConfig {
   const file = asObject(raw, path)
   checkKnownKeys(file, path)
   checkScalars(file, path)
+  const stateDir = file.stateDir
+  if (typeof stateDir === 'string') {
+    const resolved = resolve(canonical, stateDir)
+    const rel = relative(canonical, resolved)
+    // The state directory is the pool `gc` deletes from; empty or escaping the
+    // root would make it a repository cleaner.
+    if (
+      stateDir === '' ||
+      isAbsolute(stateDir) ||
+      rel === '' ||
+      rel.startsWith('..') ||
+      isAbsolute(rel)
+    ) {
+      throw new Error(
+        `cbd: ${path} "stateDir" must name a non-empty directory under the root, not "${stateDir}"`,
+      )
+    }
+  }
   const select = selectFrom(file, canonical, path)
   return {
     root: canonical,

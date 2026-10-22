@@ -23,8 +23,8 @@
  * is complete".
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, dirname, extname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
   SELECTION_ENV,
@@ -176,33 +176,54 @@ function buildAfterRun(
  * The names are unique per run for the base shard, but an older run's files must
  * still be distinguishable from this one's when the build picks its inputs.
  */
-function shardSizes(dir: string): Map<string, number> {
-  const sizes = new Map<string, number>()
+interface ShardStamp {
+  size: number
+  mtimeMs: number
+}
+
+/** Stamps of the shards present before a run, by file name. */
+function shardSizes(dir: string): Map<string, ShardStamp> {
+  const stamps = new Map<string, ShardStamp>()
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.ndjson')) continue
     try {
-      sizes.set(entry.name, statSync(join(dir, entry.name)).size)
+      const stat = statSync(join(dir, entry.name))
+      stamps.set(entry.name, { size: stat.size, mtimeMs: stat.mtimeMs })
     } catch {
       // A file that disappeared between the listing and the stat is simply not a
       // pre-existing shard.
     }
   }
-  return sizes
+  return stamps
 }
 
 /** The shard files this run created or appended to, sorted for stable provenance. */
-function shardsWrittenSince(dir: string, before: ReadonlyMap<string, number>): string[] {
+function shardsWrittenSince(
+  dir: string,
+  before: ReadonlyMap<string, ShardStamp>,
+  runStem: string,
+  baseName: string,
+): string[] {
   const written: string[] = []
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith('.ndjson')) continue
+    // Adapters derive per-file and service names beside the base, sharing its
+    // stem. Another concurrent run's shards have a different stem and are not
+    // this run's evidence.
+    if (entry.name !== baseName && !entry.name.startsWith(`${runStem}.`)) continue
     const path = join(dir, entry.name)
-    let size: number
+    let stat
     try {
-      size = statSync(path).size
+      stat = statSync(path)
     } catch {
       continue
     }
-    if (!before.has(entry.name) || before.get(entry.name) !== size) written.push(path)
+    const prior = before.get(entry.name)
+    // Size alone misses a same-path rerun that recorded fewer bytes; the mtime
+    // catches it without treating an untouched older shard as this run's.
+    if (prior === undefined || prior.size !== stat.size || prior.mtimeMs !== stat.mtimeMs) {
+      written.push(path)
+    }
   }
   return written.sort()
 }
@@ -210,25 +231,27 @@ function shardsWrittenSince(dir: string, before: ReadonlyMap<string, number>): s
 export function collect(options: CollectOptions): number {
   const { out, err } = options
   const stateDir = options.config.stateDir ?? '.cbd'
-  const selectionPath = join(options.root, stateDir, 'selection.json')
   const shard = options.shard ?? join(options.root, stateDir, 'shards', collectShardName())
+  const shardDir = dirname(shard)
+  const runStem = basename(shard, extname(shard))
+  // Per-run, so two collects cannot overwrite each other's selection between
+  // the write and the adapter's read; removed when the run ends.
+  const selectionPath = join(options.root, stateDir, `selection-${runStem}.json`)
 
   const plan: SelectionPlan = options.select
     ? planSelection(options, selectionPath)
     : { changed: 0 }
   if (plan.titles !== undefined && plan.titles.length === 0) {
     out(`nothing to run: 0 tests selected for ${plural(plan.changed, 'changed file')}`)
+    rmSync(selectionPath, { force: true })
     return EXIT.ok
   }
 
-  const shardDir = dirname(shard)
   mkdirSync(shardDir, { recursive: true })
   // A run can write several shards: one per test file (Jest, Vitest, node:test),
   // a service shard (japa), or one at the base path (mocha, japa). Snapshot the
   // directory so the build takes the ones this run touched, not an older run's.
   const shardsBefore = shardSizes(shardDir)
-  const existedBefore = existsSync(shard)
-  const sizeBefore = existedBefore ? statSync(shard).size : 0
   const started = performance.now()
   const result = spawnSync(options.exec[0]!, options.exec.slice(1), {
     cwd: options.cwd,
@@ -240,6 +263,7 @@ export function collect(options: CollectOptions): number {
   const elapsedMs = Math.round(performance.now() - started)
 
   if (result.error !== undefined) {
+    rmSync(selectionPath, { force: true })
     err(`cbd: could not run ${options.exec[0]}: ${result.error.message}`)
     return EXIT.error
   }
@@ -248,14 +272,16 @@ export function collect(options: CollectOptions): number {
   // before the runner started leaves no file at all. Printing "recorded to" for
   // a path that does not exist, and then failing to build it, told the user two
   // contradictory things in a row.
-  const wroteShard = existsSync(shard) && (!existedBefore || statSync(shard).size > sizeBefore)
+  const written = shardsWrittenSince(shardDir, shardsBefore, runStem, basename(shard))
+  const wroteShard = written.length > 0
   out(
     wroteShard
-      ? `recorded to ${shown(options.root, shard)} in ${elapsedMs} ms`
+      ? `recorded ${plural(written.length, 'shard')} in ${shown(options.root, shardDir)} in ${elapsedMs} ms`
       : 'no tests ran; nothing recorded',
   )
 
   if (result.signal !== null) {
+    rmSync(selectionPath, { force: true })
     err(
       `cbd: the test command was killed by ${result.signal}; its shard has no footer, ` +
         'so no map was built',
@@ -264,10 +290,11 @@ export function collect(options: CollectOptions): number {
   }
 
   if (options.build && wroteShard) {
-    const failure = buildAfterRun(options, stateDir, shardsWrittenSince(shardDir, shardsBefore), out, err)
+    const failure = buildAfterRun(options, stateDir, written, out, err)
     if (failure !== null) return failure
   }
 
+  rmSync(selectionPath, { force: true })
   const status = result.status ?? EXIT.error
   if (status !== 0) err(`cbd: the test command exited ${status}`)
   return status

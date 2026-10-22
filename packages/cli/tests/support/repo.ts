@@ -129,12 +129,15 @@ export const RUNNER = `import { appendFileSync, readFileSync, statSync, writeFil
 import { pathToFileURL } from 'node:url'
 
 const [logPath, src, spec, exitCode = '0', signal] = process.argv.slice(2)
+const selectionPath = process.env.CBD_SELECTION
+const selectionText = selectionPath === undefined ? null : readFileSync(selectionPath, 'utf8')
 appendFileSync(
   logPath,
   JSON.stringify({
     shard: process.env.CBD_SHARD ?? null,
     commit: process.env.CBD_COMMIT ?? null,
-    selection: process.env.CBD_SELECTION ?? null,
+    selection: selectionPath ?? null,
+    selectionContent: selectionText,
   }) + '\\n',
 )
 
@@ -148,10 +151,7 @@ if (signal !== undefined) {
   process.kill(process.pid, signal)
 }
 
-const selection =
-  process.env.CBD_SELECTION === undefined
-    ? undefined
-    : JSON.parse(readFileSync(process.env.CBD_SELECTION, 'utf8'))
+const selection = selectionText === null ? undefined : JSON.parse(selectionText)
 // The adapter-neutral v2 file first, the older title-only file for a caller that
 // still writes one; this stand-in runner reads what a real adapter reads.
 const titles =

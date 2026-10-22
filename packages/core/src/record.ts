@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 
 /**
@@ -71,8 +72,14 @@ export function recordSink(): RecordSink | null {
 function absolute(path: string): string {
   // The recorder's read tracker already sees resolved paths; a helper may pass a
   // path relative to its own working directory, which is the natural thing to
-  // write. `resolve` gives both the only shape the map accepts.
-  return isAbsolute(path) ? path : resolve(path)
+  // write. The map's keys are realpaths (the build canonicalizes its root), so a
+  // declared dependency through a symlink has to be canonicalized too.
+  const resolved = isAbsolute(path) ? path : resolve(path)
+  try {
+    return realpathSync(resolved)
+  } catch {
+    return resolved
+  }
 }
 
 /**

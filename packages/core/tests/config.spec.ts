@@ -245,3 +245,18 @@ test.group('cbd.config.json', () => {
     }
   })
 })
+
+test('stateDir must name a directory under the root', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-state-')))
+  try {
+    for (const stateDir of ['', '.', '..', '/tmp/elsewhere']) {
+      assert.throws(
+        () => parseConfig({ stateDir }, root),
+        /"stateDir" must name a non-empty directory under the root/,
+        stateDir,
+      )
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

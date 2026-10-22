@@ -7,7 +7,7 @@
  * of that is severe: the share of changes that can be answered at all falls from
  * ~66% at a one-commit window to ~2.4% at ten.
  */
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { testId } from './contract.js'
 import type { HunkEdit } from './changes.js'
@@ -945,7 +945,11 @@ export function saveMap(
   mkdirSync(dir, { recursive: true })
   const path = join(dir, 'map.json')
   const json = JSON.stringify(mapPaths(map, canonicalRoot(root), storePath))
-  writeFileSync(path, json)
+  // Write beside the target and rename: a kill mid-write must not truncate the
+  // only copy of the commit's map.
+  const temporary = `${path}.${String(process.pid)}.tmp`
+  writeFileSync(temporary, json)
+  renameSync(temporary, path)
   return { path, bytes: Buffer.byteLength(json) }
 }
 

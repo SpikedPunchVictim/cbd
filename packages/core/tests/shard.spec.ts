@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from '@japa/runner'
 import {
+  FileSink,
   IncompleteShardError,
   parseShard,
   ShardVersionError,
@@ -104,4 +108,23 @@ test('summarizeShard separates tests, the buckets and the tables', () => {
     summary.functions.map((fn) => fn.start),
     [0, 10],
   )
+})
+
+test('a shard with a second header is refused', () => {
+  const one = [HEADER, TEST_A, FOOTER].join('\n')
+  assert.throws(() => parseShard(`${one}\n${one}`), /second shard header/)
+})
+
+test('FileSink.reset starts a new run at the same path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-sink-'))
+  const path = join(dir, 'run.ndjson')
+  try {
+    writeFileSync(path, 'old-run\n')
+    const sink = new FileSink(path)
+    sink.reset()
+    sink.append('{"type":"shard"}')
+    assert.equal(readFileSync(path, 'utf8'), '{"type":"shard"}\n')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

@@ -7,8 +7,8 @@
  * and diff → selection file → child environment → shard → map.
  */
 import assert from 'node:assert/strict'
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { test } from '@japa/runner'
 import { EXIT } from '../src/cli.js'
 import { invoke, prepared } from './support/repo.js'
@@ -17,6 +17,7 @@ interface Logged {
   shard: string
   commit: string
   selection: string | null
+  selectionContent: string | null
 }
 
 function logOf(path: string): Logged {
@@ -51,9 +52,9 @@ test.group('cbd collect', () => {
       const logged = logOf(log)
       assert.equal(logged.commit, repo.head())
       assert.equal(typeof logged.selection, 'string')
-      assert.match(logged.selection!, /\.cbd\/selection\.json$/)
+      assert.match(logged.selection!, /\.cbd\/selection-collect-[^/]+\.json$/)
       assert.equal(logged.shard.startsWith(`${join(root, '.cbd', 'shards')}/`), true)
-      const selection = JSON.parse(readFileSync(logged.selection!, 'utf8')) as {
+      const selection = JSON.parse(logged.selectionContent!) as {
         version: number
         tests: Array<{ id: string; file: string | null; title: string }>
       }
@@ -294,4 +295,70 @@ test.group('cbd collect', () => {
       cleanup()
     }
   })
+})
+
+test('builds when the adapter writes a derived shard path', () => {
+  const { repo, root, a, spec, runner, cleanup } = prepared()
+  try {
+    repo.write(
+      'derived.mjs',
+      `import { execFileSync } from 'node:child_process'
+import { renameSync } from 'node:fs'
+const [runner, ...args] = process.argv.slice(2)
+execFileSync(process.execPath, [runner, ...args], { stdio: 'inherit' })
+const base = process.env.CBD_SHARD
+renameSync(base, base.replace(/\\.ndjson$/, '.derived.ndjson'))
+`,
+    )
+    const log = join(root, 'derived.log')
+    const shard = join(root, '.cbd', 'shards', 'custom.ndjson')
+    const result = invoke(
+      root,
+      'collect',
+      '--no-select',
+      '--shard',
+      shard,
+      '--',
+      process.execPath,
+      join(root, 'derived.mjs'),
+      join(root, runner),
+      log,
+      a,
+      spec,
+    )
+    assert.equal(result.code, EXIT.ok)
+    assert.match(result.out.join('\n'), /^recorded 1 shard/m)
+    assert.match(result.out.join('\n'), /^map /m)
+    assert.equal(existsSync(shard), false, 'only the derived path was written')
+  } finally {
+    cleanup()
+  }
+})
+
+test('detects a smaller complete rerun at the same shard path', () => {
+  const { repo, root, a, spec, runner, cleanup } = prepared()
+  try {
+    const log = join(root, 'shrink.log')
+    const shard = join(root, '.cbd', 'shards', 'fixed.ndjson')
+    mkdirSync(dirname(shard), { recursive: true })
+    writeFileSync(shard, 'x'.repeat(200_000))
+    const result = invoke(
+      root,
+      'collect',
+      '--no-select',
+      '--shard',
+      shard,
+      '--',
+      process.execPath,
+      join(root, runner),
+      log,
+      a,
+      spec,
+    )
+    assert.equal(result.code, EXIT.ok)
+    assert.match(result.out.join('\n'), /^recorded 1 shard/m)
+    assert.match(result.out.join('\n'), /^map /m)
+  } finally {
+    cleanup()
+  }
 })

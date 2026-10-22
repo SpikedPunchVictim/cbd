@@ -60,6 +60,12 @@ until a tag is pushed and the publish workflow runs.
   incremental carries poison base bucket-only files and propagate a dirty base; directory listings
   survive a file `include` that rejects the directory itself; and module-scope widening reads each
   hunk's own line-count change instead of the file-wide total. Regression tests cover each shape.
+- **Collect and map integrity.** Collect detects derived per-file and service shards, plus a
+  same-path rerun that recorded fewer bytes, using a size+mtime stamp scoped to the run's stem; it
+  writes a per-run selection file. A new recording truncates its shard, and a shard with two
+  headers is refused. Map writes are atomic. Declared reads are realpath-canonicalized, an explicit
+  `--root` is canonicalized, and an empty or escaping `stateDir` is rejected before `gc` can touch
+  the repository.
 
 ## 0.0.4 — 2026-10-20
 

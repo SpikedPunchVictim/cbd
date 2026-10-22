@@ -35,7 +35,7 @@
  *   Version 1 is refused rather than misread. Its touch tuples would be parsed as
  *   script ids and offsets and produce a confident, empty map.
  */
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, writeFileSync } from 'node:fs'
 import type { DriftStats } from './types.js'
 
 export const SHARD_VERSION = 2
@@ -266,6 +266,14 @@ export class ShardVersionError extends Error {
 /** Somewhere to append lines. A file in production, a string in tests. */
 export interface ShardSink {
   append(line: string): void
+  /**
+   * Start a new run at this sink's path.
+   *
+   * A shard is append-only within a run, but a second `cbd collect` at the same
+   * path must not inherit the first run's records. The recorder calls this at
+   * `runStart`.
+   */
+  reset?(): void
 }
 
 export class FileSink implements ShardSink {
@@ -276,12 +284,18 @@ export class FileSink implements ShardSink {
   append(line: string): void {
     appendFileSync(this.#path, `${line}\n`)
   }
+  reset(): void {
+    writeFileSync(this.#path, '')
+  }
 }
 
 export class StringSink implements ShardSink {
   lines: string[] = []
   append(line: string): void {
     this.lines.push(line)
+  }
+  reset(): void {
+    this.lines = []
   }
   get text(): string {
     return this.lines.length === 0 ? '' : `${this.lines.join('\n')}\n`
@@ -333,6 +347,14 @@ export function parseShard(
     )
   }
   const last = records[records.length - 1]
+  for (let index = 1; index < records.length; index += 1) {
+    if (records[index]?.type === 'shard') {
+      throw new IncompleteShardError(
+        `${source} contains a second shard header at record ${String(index + 1)}; ` +
+          'two runs were appended to one path, so the coverage cannot be attributed to one run',
+      )
+    }
+  }
   if (last?.type !== 'end' && options.allowIncomplete !== true) {
     throw new IncompleteShardError(
       `${source} has no end record — the run was interrupted, so its coverage is partial`,
