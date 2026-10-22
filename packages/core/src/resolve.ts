@@ -50,6 +50,8 @@ export interface ResolvedTest {
   /** Repeated-title discriminator from the shard; absent for the first. */
   ordinal?: number
   status: ShardTest['status']
+  /** Request-correlated coverage: touches without an outcome. */
+  attributed?: true
   durationMs: number
   /** Title path and definition site, when the adapter supplied them. */
   titlePath?: string[]
@@ -487,6 +489,7 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
       file: test.file,
       ...(test.ordinal === undefined ? {} : { ordinal: test.ordinal }),
       status: test.status,
+      ...(test.attributed === true ? { attributed: true } : {}),
       durationMs: test.durationMs,
       ...(test.titlePath === undefined ? {} : { titlePath: test.titlePath }),
       ...(test.line === undefined ? {} : { line: test.line }),

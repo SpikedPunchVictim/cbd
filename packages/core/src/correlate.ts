@@ -56,6 +56,8 @@ export { CORRELATION_ENV, CORRELATION_HEADER, CORRELATION_HEADER_ENV }
 export interface CorrelatedTest {
   title: string
   file: string | null
+  /** The repeated-title discriminator the recorder assigned to this window. */
+  ordinal?: number
 }
 
 /** The question the recorder asks of a correlation id. */
@@ -75,6 +77,7 @@ export interface OwnerIndex {
  */
 export class Correlator implements OwnerIndex {
   readonly #owners = new Map<string, CorrelatedTest>()
+  readonly #ordinals = new Map<string, number>()
   #current: string | undefined
   #next = 0
   #release: (() => void) | null = null
@@ -91,7 +94,12 @@ export class Correlator implements OwnerIndex {
     if (this.#current !== undefined) return this.#current
     this.#next += 1
     const id = `${String(process.pid)}-${String(this.#next)}`
-    this.#owners.set(id, { title, file })
+    // Mirror the recorder's ordinal: the map keys a test by file, title and
+    // ordinal, and a correlated record without one merges into the first duplicate.
+    const key = `${title}\u0000${file ?? ''}`
+    const ordinal = this.#ordinals.get(key) ?? 0
+    this.#ordinals.set(key, ordinal + 1)
+    this.#owners.set(id, { title, file, ...(ordinal === 0 ? {} : { ordinal }) })
     this.#current = id
     return id
   }
@@ -161,8 +169,18 @@ export class Correlator implements OwnerIndex {
       ): Promise<Response> {
         const id = correlator.current()
         if (id === undefined) return originalFetch(input, init)
-        const headers = new Headers(init?.headers)
+        // A Request carries its own header list; `new Headers(init?.headers)`
+        // alone would replace it with correlation only. Merge both sources.
+        const base =
+          typeof Request === 'function' && input instanceof Request ? input.headers : undefined
+        const headers = new Headers(base)
+        if (init?.headers !== undefined) {
+          new Headers(init.headers).forEach((value, key) => headers.set(key, value))
+        }
         if (!headers.has(header)) headers.set(header, id)
+        if (typeof Request === 'function' && input instanceof Request) {
+          return originalFetch(new Request(input, { ...init, headers }))
+        }
         return originalFetch(input, { ...init, headers })
       }
       globalThis.fetch = patchedFetch
@@ -202,8 +220,16 @@ function inject(args: unknown[], header: string, id: string): unknown[] {
   const first = args[0]
   if (typeof first === 'string' || first instanceof URL) {
     const second = args[1]
-    if (typeof second === 'function' || second === undefined) {
+    if (typeof second === 'function') {
       return [first, { headers: { [header]: id } }, ...args.slice(1)]
+    }
+    if (second === undefined) {
+      // `(url, undefined, cb)` keeps the callback in the third slot; passing the
+      // undefined through would make Node read it as the options object and drop
+      // the callback entirely.
+      const rest = args.slice(1)
+      if (rest[0] === undefined) rest.shift()
+      return [first, { headers: { [header]: id } }, ...rest]
     }
     if (isOptions(second)) {
       return [first, withHeader(second, header, id), ...args.slice(2)]

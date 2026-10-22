@@ -329,6 +329,25 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     return index
   }
 
+  const attributedTests: ResolvedTest[] = []
+  const addTouches = (index: number, touches: ResolvedTest['touches']): void => {
+    for (const ref of touches) {
+      let byKey = files.get(ref[0])
+      if (byKey === undefined) {
+        byKey = new Map()
+        files.set(ref[0], byKey)
+      }
+      const existing = byKey.get(ref[1])
+      if (existing === undefined) {
+        byKey.set(ref[1], { startLine: ref[2], endLine: ref[3], tests: [index] })
+        continue
+      }
+      existing.startLine = Math.min(existing.startLine, ref[2])
+      existing.endLine = Math.max(existing.endLine, ref[3])
+      if (!existing.tests.includes(index)) existing.tests.push(index)
+    }
+  }
+
   for (const resolved of shards) {
     const shardIndex = included.length
     included.push(resolved.name)
@@ -339,6 +358,10 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     const allTests: number[] = []
     const touchedTests: number[] = []
     for (const test of resolved.tests) {
+      if (test.attributed === true) {
+        attributedTests.push(test)
+        continue
+      }
       if (!options.includeNonGreen && test.status !== 'passed') continue
       const index = indexOfTest(test)
       allTests.push(index)
@@ -371,21 +394,7 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
           set.add(index)
         }
       }
-      for (const ref of test.touches) {
-        let byKey = files.get(ref[0])
-        if (byKey === undefined) {
-          byKey = new Map()
-          files.set(ref[0], byKey)
-        }
-        const existing = byKey.get(ref[1])
-        if (existing === undefined) {
-          byKey.set(ref[1], { startLine: ref[2], endLine: ref[3], tests: [index] })
-          continue
-        }
-        existing.startLine = Math.min(existing.startLine, ref[2])
-        existing.endLine = Math.max(existing.endLine, ref[3])
-        if (!existing.tests.includes(index)) existing.tests.push(index)
-      }
+      addTouches(index, test.touches)
     }
 
     // Import-phase reads: a helper called at spec load read a file before any
@@ -437,6 +446,15 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
       }
       indices.add(shardIndex)
     }
+  }
+
+  // Correlated touches belong to the owner's test entry. If the owner was
+  // non-green it is not in the map; do not invent a passing entry for it.
+  for (const test of attributedTests) {
+    const key = `${test.title}\u0000${test.file ?? ''}\u0000${String(test.ordinal ?? 0)}`
+    const index = testIndex.get(key)
+    if (index === undefined) continue
+    addTouches(index, test.touches)
   }
 
   const sortedFiles: Record<string, Record<string, FunctionEntry>> = {}

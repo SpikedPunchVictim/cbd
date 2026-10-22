@@ -138,3 +138,61 @@ test.group('Correlator', () => {
     assert.equal(http.request, before)
   })
 })
+
+test('a Request keeps its headers inside a correlation window', async () => {
+  const server = await listening()
+  const correlator = new Correlator()
+  correlator.install()
+  try {
+    correlator.begin('t', null)
+    const response = await fetch(
+      new Request(server.url, { headers: { authorization: 'Bearer x', 'x-custom': 'y' } }),
+    )
+    await response.text()
+    assert.equal(server.received[0]!.headers.authorization, 'Bearer x')
+    assert.equal(server.received[0]!.headers['x-custom'], 'y')
+    assert.ok(server.received[0]!.headers[CORRELATION_HEADER])
+  } finally {
+    correlator.release()
+    await server.close()
+  }
+})
+
+test('http.request(url, undefined, callback) keeps its callback', async () => {
+  const server = await listening()
+  const correlator = new Correlator()
+  correlator.install()
+  try {
+    correlator.begin('t', null)
+    const status = await new Promise<number>((resolve, reject) => {
+      // Node accepts (url, undefined, callback) at runtime; its typings do not.
+      const request = (
+        http.request as unknown as (
+          url: string,
+          options: undefined,
+          callback: (response: http.IncomingMessage) => void,
+        ) => http.ClientRequest
+      )(server.url, undefined, (response) => {
+        response.resume()
+        resolve(response.statusCode ?? 0)
+      })
+      request.on('error', reject)
+      request.end()
+    })
+    assert.equal(status, 200)
+    assert.ok(server.received[0]!.headers[CORRELATION_HEADER])
+  } finally {
+    correlator.release()
+    await server.close()
+  }
+})
+
+test('begin mirrors the recorder ordinal for repeated titles', () => {
+  const correlator = new Correlator()
+  const first = correlator.begin('dup', '/f')
+  correlator.end()
+  const second = correlator.begin('dup', '/f')
+  correlator.end()
+  assert.equal(correlator.ownerOf(first)!.ordinal, undefined)
+  assert.equal(correlator.ownerOf(second)!.ordinal, 1)
+})

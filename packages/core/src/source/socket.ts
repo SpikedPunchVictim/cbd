@@ -359,7 +359,14 @@ async function openOne(
   try {
     const response = await client.request('hello')
     if (!response.ok) throw new SocketSourceError(`the instrument module refused hello: ${response.error}`)
-    return { client, hello: (response as { result: HelloResult }).result }
+    const hello = (response as { result: HelloResult }).result
+    if (hello.protocol !== INSTRUMENT_PROTOCOL) {
+      throw new SocketSourceError(
+        `the instrument at ${path} speaks protocol ${String(hello.protocol)}; this collector reads ` +
+          `${String(INSTRUMENT_PROTOCOL)}. Rebuild the package the service imports.`,
+      )
+    }
+    return { client, hello }
   } catch (error) {
     client.close()
     throw error

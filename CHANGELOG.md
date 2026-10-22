@@ -72,6 +72,11 @@ until a tag is pushed and the publish workflow runs.
   nothing; empty projection/relocation environment values are unset; `serviceShardPath` recognizes
   Windows separators; and per-suite output sweeps a suite that disappeared from the invocation via
   a manifest.
+- **Correlation correctness.** The patched `fetch` preserves a `Request`'s headers; the
+  `http.request(url, undefined, callback)` overload keeps its callback; correlated request coverage
+  carries the owner's ordinal and is merged into the owner's real test entry instead of inventing a
+  passing one; and the collector refuses an instrument whose wire protocol differs instead of
+  misreading it.
 
 ## 0.0.4 — 2026-10-20
 

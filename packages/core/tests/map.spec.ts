@@ -856,3 +856,84 @@ test('a listed directory survives a file include that rejects it', () => {
   })
   assert.deepEqual(merged.dirReads, { '/repo/src': [0] })
 })
+
+test('correlated coverage never fabricates a passing test', () => {
+  const spec = '/repo/t.spec.ts'
+  const file = '/repo/src/a.ts'
+  const failed: ResolvedTest = {
+    title: 't',
+    file: spec,
+    status: 'failed',
+    durationMs: 1,
+    touches: [[file, 'f@0', 1, 2]],
+  }
+  const attributed: ResolvedTest = {
+    title: 't',
+    file: spec,
+    status: 'passed',
+    attributed: true,
+    durationMs: 0,
+    touches: [[file, 'g@0', 3, 4]],
+  }
+  const merged = mergeShards(
+    [
+      {
+        name: 's',
+        header: header(),
+        tests: [failed, attributed],
+        load: [],
+        between: [],
+        teardown: [],
+        loadReads: [],
+      },
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.equal(merged.tests.length, 0)
+  assert.equal(merged.files[file], undefined)
+})
+
+test('correlated coverage unions into the green owner, by ordinal', () => {
+  const spec = '/repo/t.spec.ts'
+  const file = '/repo/src/a.ts'
+  const owner: ResolvedTest = {
+    title: 'dup',
+    file: spec,
+    status: 'passed',
+    durationMs: 1,
+    touches: [[file, 'f@0', 1, 2]],
+  }
+  const second: ResolvedTest = {
+    title: 'dup',
+    file: spec,
+    ordinal: 1,
+    status: 'passed',
+    durationMs: 1,
+    touches: [[file, 'h@0', 5, 6]],
+  }
+  const attributed: ResolvedTest = {
+    title: 'dup',
+    file: spec,
+    ordinal: 1,
+    status: 'passed',
+    attributed: true,
+    durationMs: 0,
+    touches: [[file, 'g@0', 3, 4]],
+  }
+  const merged = mergeShards(
+    [
+      {
+        name: 's',
+        header: header(),
+        tests: [owner, second, attributed],
+        load: [],
+        between: [],
+        teardown: [],
+        loadReads: [],
+      },
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.equal(merged.tests.length, 2)
+  assert.deepEqual(merged.files[file]?.['g@0']?.tests, [1], 'the correlated touch belongs to ordinal 1')
+})

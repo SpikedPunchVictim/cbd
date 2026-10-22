@@ -142,6 +142,14 @@ export interface ShardTest {
   ordinal?: number
   /** A non-green test's window is not trustworthy; the map builder drops these. */
   status: 'passed' | 'failed' | 'skipped'
+  /**
+   * Coverage credited by request correlation, not the owner's own window.
+   *
+   * It carries touches only; its status is not an outcome. The builder unions the
+   * touches into the owner's test entry when that entry is in the map and never
+   * creates one from this record.
+   */
+  attributed?: true
   durationMs: number
   /**
    * The test's title path, when the adapter exposes one. Optional because the

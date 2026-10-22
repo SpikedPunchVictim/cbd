@@ -661,16 +661,18 @@ export class Recorder {
       for (const id of group.ids) {
         const owner: CorrelatedTest | undefined = this.#owners?.ownerOf(id)
         if (owner === undefined) continue
-        const key = `${owner.title}\u0000${owner.file ?? ''}`
+        const key = `${owner.title}\u0000${owner.file ?? ''}\u0000${String(owner.ordinal ?? 0)}`
         const existing = byOwner.get(key)
         if (existing === undefined) {
           byOwner.set(key, {
             type: 'test',
             title: owner.title,
             file: owner.file,
-            // A request whose window closed did complete its work. The owner's own
-            // record still carries its real outcome; this one exists so the
-            // touches are not lost when that outcome was not green.
+            ...(owner.ordinal === undefined ? {} : { ordinal: owner.ordinal }),
+            // Request coverage, not the owner's outcome. The builder unions the
+            // touches into the owner's real test entry and never invents one from
+            // this record, so a failed test cannot enter the map as passed.
+            attributed: true,
             status: 'passed',
             durationMs: 0,
             touches: {},
