@@ -323,7 +323,7 @@ test('a failed untracked listing refuses the selection instead of dropping new f
   const diff =
     'diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-one\n+TWO\n'
   const exec = (args: string[]): string => {
-    if (args[0] === 'diff') return diff
+    if (args.includes('diff')) return diff
     throw new Error('simulated failure')
   }
 
@@ -376,4 +376,51 @@ test('mergeChanges deduplicates the same hunk seen from both sides', () => {
   const one: Change = { path: '/r/a.ts', status: 'M', hunks: [{ start: 2, end: 2 }] }
   const merged = mergeChanges([one], [{ ...one, hunks: [{ start: 2, end: 2 }] }])
   assert.deepEqual(merged[0]?.hunks, [{ start: 2, end: 2 }])
+})
+
+test('a non-ASCII path survives the diff and the untracked list', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('src/café.ts', 'const x = 1\n')
+    repo.write('src/plain.ts', 'const p = 1\n')
+    const base = repo.commit('base')
+    repo.write('src/café.ts', 'const x = 2\n')
+    repo.write('src/naïve.ts', 'const n = 1\n')
+
+    const changes = changesSince({ root: repo.root, since: base })
+    assert.deepEqual(
+      changes.map((entry) => [entry.path, entry.status]).sort(),
+      [
+        ['src/café.ts', 'M'],
+        ['src/naïve.ts', 'A'],
+      ],
+    )
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('--no-worktree reads the range from the map to HEAD', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('src/a.ts', 'a1\na2\na3\na4\na5\n')
+    const base = repo.commit('A')
+    repo.write('src/a.ts', 'n1\nn2\na1\na2\nX\na4\na5\n')
+    repo.write('src/added.ts', 'x\n')
+    repo.commit('B')
+
+    const changes = changesSince({ root: repo.root, since: base, worktree: false })
+    const modified = changes.find((entry) => entry.path === 'src/a.ts')!
+    const added = changes.find((entry) => entry.path === 'src/added.ts')!
+    // A→B: the edit is at the map's line 3 and B's line 5; the reverse direction
+    // would report hunks 1-2 (the insertion as a deletion) and mark added.ts D.
+    assert.deepEqual(modified.hunks, [{ start: 3, end: 3 }])
+    assert.deepEqual(modified.newHunks, [
+      { start: 1, end: 2 },
+      { start: 5, end: 5 },
+    ])
+    assert.equal(added.status, 'A')
+  } finally {
+    repo.cleanup()
+  }
 })

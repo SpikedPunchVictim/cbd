@@ -169,6 +169,15 @@ export interface MapBuildOptions {
    */
   keepRead?: (path: string) => boolean
   /**
+   * Whether a directory a test listed belongs in the map.
+   *
+   * Kept apart from `keepRead` because a directory never matches a file glob
+   * such as `src/**`; selection's `isUnder` check is what makes a change under a
+   * listed directory reach the lister. The default keeps every directory outside
+   * `node_modules`, matching `resolve.ts`.
+   */
+  keepDir?: (path: string) => boolean
+  /**
    * Whether to include tests that did not pass. Default false: a test that
    * aborted early executed *less* than it should have, so its touches
    * under-select — silently. Such a window must not reach the map.
@@ -250,6 +259,8 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
 
   const keepRead = (path: string): boolean =>
     !underNodeModules(path) && (options.keepRead?.(path) ?? true)
+  const keepDir = (path: string): boolean =>
+    !underNodeModules(path) && (options.keepDir?.(path) ?? true)
 
   const readCandidates = new Map<string, string[]>()
   /**
@@ -274,6 +285,21 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     const kept = [...candidates].filter(keepRead)
     readCandidates.set(path, kept)
     return kept
+  }
+
+  /**
+   * Where a listed directory belongs.
+   *
+   * A directory never matches a file glob, so `keepDir` (not `keepRead`'s
+   * include) decides scope. A projection rule still names the source directory a
+   * deployed listing corresponds to; the projected path is the one to keep.
+   */
+  const dirPaths = (dir: string): string[] => {
+    if (underNodeModules(dir)) return []
+    const projection = options.scan?.projection
+    const projected = projection === undefined ? null : projectPath(dir, projection)
+    const candidate = projected ?? dir
+    return keepDir(candidate) ? [candidate] : []
   }
 
   const indexOfTest = (test: ResolvedTest): number => {
@@ -336,11 +362,11 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
         }
       }
       for (const dir of test.dirReads ?? []) {
-        for (const path of readPaths(dir)) {
-          let set = dirReads.get(path)
+        for (const kept of dirPaths(dir)) {
+          let set = dirReads.get(kept)
           if (set === undefined) {
             set = new Set()
-            dirReads.set(path, set)
+            dirReads.set(kept, set)
           }
           set.add(index)
         }
@@ -384,8 +410,8 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
           for (const index of targets) set.add(index)
         }
       }
-      for (const path of record.dirReads) {
-        for (const kept of readPaths(path)) {
+      for (const dir of record.dirReads) {
+        for (const kept of dirPaths(dir)) {
           let set = dirReads.get(kept)
           if (set === undefined) {
             set = new Set()
@@ -641,6 +667,29 @@ export function carryMap(
     if (opaqueByTest.has(index)) opaqueKept.push(index)
   }
 
+  // A file the base knew only through a load/teardown/between bucket has no
+  // per-test evidence to carry. The buckets are not carried, so leaving it in
+  // `seen` would answer a later change as "untested" (nothing runs) instead of
+  // the safe `all`; poison it.
+  const baseBucketFiles = new Set(
+    [...base.load, ...base.between, ...base.teardown].map((ref) => ref[0]),
+  )
+  const nextBucketFiles = new Set(
+    [...next.load, ...next.between, ...next.teardown].map((ref) => ref[0]),
+  )
+  for (const file of base.seen) {
+    if (next.seen.includes(file) || nextBucketFiles.has(file)) continue
+    if (baseBucketFiles.has(file)) partial.add(file)
+  }
+  if (base.dirty === true) {
+    // Relocation compares base.commit with the worktree, but a dirty base's
+    // ranges describe the dirty tree at that commit; a carried range can be
+    // shifted twice. Poison the files rather than claim clean evidence.
+    for (const moved of relocated.values()) {
+      for (const entry of moved) partial.add(entry.file)
+    }
+  }
+
   const tests: TestEntry[] = [...next.tests]
   const newIndex = new Map<number, number>()
   for (const index of carried) {
@@ -735,7 +784,7 @@ export function carryMap(
     version: next.version,
     commit: next.commit,
     builtAt: next.builtAt,
-    ...(next.dirty === true ? { dirty: true } : {}),
+    ...((next.dirty === true || base.dirty === true) ? { dirty: true } : {}),
     tests,
     files,
     ...(Object.keys(opaque).length === 0 ? {} : { opaque }),

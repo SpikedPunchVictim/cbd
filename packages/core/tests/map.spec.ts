@@ -29,6 +29,7 @@ import {
   testsForFunction,
   testsForLine,
   relocateRange,
+  type CoverageMap,
 } from '../src/map.js'
 import type { ResolvedShard, ResolvedTest } from '../src/resolve.js'
 import type { ShardHeader, TouchRef } from '../src/shard.js'
@@ -792,4 +793,66 @@ test('same title and file stay distinct with an ordinal', () => {
   // second does not pull the first into the answer.
   assert.deepEqual(testsForFunction(map, A, 'a@0').map((entry) => entry.ordinal), [undefined])
   assert.deepEqual(testsForFunction(map, A, 'b@0').map((entry) => entry.ordinal), [1])
+})
+
+test('carryMap poisons a base load-only file instead of calling it untested', () => {
+  const LOAD_ONLY = '/repo/src/load-only.ts'
+  const entry = { title: 't', file: '/repo/t.spec.ts' }
+  const base: CoverageMap = {
+    version: 1,
+    commit: 'a',
+    builtAt: 'T0',
+    tests: [entry],
+    files: {},
+    load: [[LOAD_ONLY, '<module>@0', 0, 5]],
+    between: [],
+    teardown: [],
+    seen: [entry.file, LOAD_ONLY],
+    shards: ['s'],
+    dirty: true,
+  }
+  const next: CoverageMap = {
+    version: 1,
+    commit: 'b',
+    builtAt: 'T1',
+    tests: [entry],
+    files: {},
+    load: [],
+    between: [],
+    teardown: [],
+    seen: [entry.file],
+    shards: ['t'],
+  }
+  const carried = carryMap(base, next, new Set())
+  assert.ok(carried.partial?.includes(LOAD_ONLY), 'the dropped load bucket must poison the file')
+  assert.equal(carried.dirty, true, 'a dirty base is not clean evidence')
+  const result = select(carried, [{ path: LOAD_ONLY, status: 'M', hunks: [{ start: 1, end: 1 }] }])
+  assert.equal(result.mode, 'all')
+})
+
+test('a listed directory survives a file include that rejects it', () => {
+  const resolved: ResolvedShard = {
+    name: 's',
+    header: header(),
+    tests: [
+      {
+        title: 't',
+        file: '/repo/t.spec.ts',
+        status: 'passed',
+        durationMs: 1,
+        touches: [],
+        dirReads: ['/repo/src'],
+      },
+    ],
+    load: [],
+    between: [],
+    teardown: [],
+    loadReads: [],
+  }
+  const merged = mergeShards([resolved], {
+    commit: 'c0ffee',
+    keepRead: () => false,
+    keepDir: (path) => path === '/repo/src',
+  })
+  assert.deepEqual(merged.dirReads, { '/repo/src': [0] })
 })

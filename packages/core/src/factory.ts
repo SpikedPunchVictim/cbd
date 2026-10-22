@@ -618,6 +618,9 @@ export function createCbd(config: CbdConfig): Cbd {
         // reach the test through a selection diff, which is scoped by root and
         // include. `node_modules` is dropped again inside the build.
         keepRead: (path) => inside(path, root) && (config.select?.include?.(path) ?? true),
+        // A directory never matches a file glob; keep the ones under the root so
+        // a change under a listed directory still reaches its lister.
+        keepDir: (path) => inside(path, root),
       })
       let out = map
       let incremental: BuildResult['incremental']

@@ -54,6 +54,12 @@ until a tag is pushed and the publish workflow runs.
   a test whose status flips only when neither map's touched files nor the test's own file changed
   between their commits. The report names the two commits and statuses, and tests added or removed
   between maps are not compared. It reports; it does not quarantine.
+- **Selection and diff-input fixes.** Git-quoted paths (non-ASCII names) are decoded instead of
+  silently ignored; `--no-worktree` diffs from the map commit to HEAD instead of the reverse; a
+  load-only helper that defines tests hands off to the load rule rather than selecting nothing;
+  incremental carries poison base bucket-only files and propagate a dirty base; directory listings
+  survive a file `include` that rejects the directory itself; and module-scope widening reads each
+  hunk's own line-count change instead of the file-wide total. Regression tests cover each shape.
 
 ## 0.0.4 — 2026-10-20
 

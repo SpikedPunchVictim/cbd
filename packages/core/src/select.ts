@@ -308,13 +308,22 @@ function functionsHit(
   // at the new commit to place it, so widen (`cbd-73r.1`).
   const oldLines = change.hunks.reduce((n, hunk) => n + (hunk.end - hunk.start + 1), 0)
   const newLines = change.newHunks?.reduce((n, hunk) => n + (hunk.end - hunk.start + 1), 0)
-  const lineCountChanged = newLines !== undefined && newLines !== oldLines
+  const fileLineCountChanged = newLines !== undefined && newLines !== oldLines
+  const edits = new Map<string, { oldCount: number; newCount: number }>()
+  for (const edit of change.hunkEdits ?? []) {
+    edits.set(`${String(edit.oldStart)}:${String(edit.oldCount)}`, edit)
+  }
 
   for (const hunk of change.hunks) {
     for (const range of allRanges) {
       if (intersects(hunk, range)) hit.add(range.key)
     }
     if (!fullyCovered(hunk.start, hunk.end, functionRanges)) outsideEveryFunction = true
+    // The file-wide totals cancel when one hunk deletes and another inserts
+    // (`cbd-73r.1`); a hunk's own edit is what says it moved module scope.
+    const edit = edits.get(`${String(hunk.start)}:${String(hunk.end - hunk.start + 1)}`)
+    const lineCountChanged =
+      edit === undefined ? fileLineCountChanged : edit.newCount !== edit.oldCount
     if (
       lineCountChanged &&
       functionRanges.some((range) => hunk.start <= range.start && range.start <= hunk.end)
@@ -356,6 +365,7 @@ function testFileChange(
   selected: Set<number>,
   reasons: Reason[],
   warnings: string[],
+  onLoadOnly: (path: string) => void,
 ): boolean {
   if (matchesAnyGlob(path, testFiles) === null) return false
   const direct = testsDefinedIn(path)
@@ -368,6 +378,13 @@ function testFileChange(
   // otherwise every test that executed code in the defining file. That includes
   // tests registered elsewhere, which is over-selection — the safe direction.
   const tests = direct.length > 0 ? direct : testsTouchingFile(path)
+  // A helper that defines tests but was only ever loaded has no per-test
+  // evidence. Returning an empty `test-file` answer would skip the load rule and
+  // select nothing; hand it back so the load observers (or `all`) answer instead.
+  if (indirect && tests.length === 0) {
+    onLoadOnly(path)
+    return true
+  }
 
   if (policy === 'all') {
     // Not `unmapped`: the map can answer for the tests it knows. The policy
@@ -607,6 +624,7 @@ export function select(
         selected,
         reasons,
         warnings,
+        (helper) => noTouches(helper),
       )
     ) {
       continue

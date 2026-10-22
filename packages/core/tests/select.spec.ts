@@ -862,3 +862,67 @@ test('verify ignores tests whose touches are nowhere near a changed range', () =
   assert.equal(result.checked, 0)
   assert.deepEqual(result.misses, [])
 })
+
+test('a load-only helper that defines tests hands off to the load rule', () => {
+  const HELPER = '/repo/tests/helpers/contract.ts'
+  const base = makeMap()
+  const map = makeMap({
+    load: [[HELPER, '<module>@0', 0, 5]],
+    seen: [...base.seen, HELPER],
+  })
+  const changed = change(HELPER, [{ start: 1, end: 1 }])
+
+  const fallback = select(map, [changed], { definesTests: () => true })
+  assert.equal(fallback.mode, 'all')
+  assert.deepEqual(reasonKinds(fallback), ['all:load'])
+
+  const attributed = select(
+    makeMap({
+      load: [[HELPER, '<module>@0', 0, 5]],
+      seen: [...base.seen, HELPER],
+      loadShards: { [HELPER]: [0] },
+      shardTests: [[0, 1]],
+    }),
+    [changed],
+    { definesTests: () => true },
+  )
+  assert.equal(attributed.mode, 'subset')
+  assert.deepEqual(attributed.tests, [0, 1])
+  assert.deepEqual(reasonKinds(attributed), ['file'])
+})
+
+test('compensating hunks do not cancel the module-scope widening', () => {
+  const map = makeMap({
+    files: {
+      [SRC]: {
+        'f@0': { startLine: 1, endLine: 6, tests: [0] },
+        'g@0': { startLine: 8, endLine: 10, tests: [1] },
+        'h@0': { startLine: 12, endLine: 14, tests: [2] },
+      },
+    },
+  })
+  // One line deleted inside f, one inserted above g: file totals are equal, but
+  // g's own hunk changed its line count and may have moved module scope.
+  const result = select(map, [
+    {
+      path: SRC,
+      status: 'M',
+      hunks: [
+        { start: 2, end: 3 },
+        { start: 8, end: 8 },
+      ],
+      newHunks: [
+        { start: 2, end: 2 },
+        { start: 8, end: 9 },
+      ],
+      insertions: [],
+      newInsertions: [],
+      hunkEdits: [
+        { oldStart: 2, oldCount: 2, newStart: 2, newCount: 1 },
+        { oldStart: 8, oldCount: 1, newStart: 8, newCount: 2 },
+      ],
+    },
+  ])
+  assert.equal(result.mode, 'subset')
+  assert.ok(result.tests.includes(2), 'the module-scope reader (test 2) must be selected')
+})

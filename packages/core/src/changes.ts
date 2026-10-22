@@ -200,9 +200,58 @@ const HUNK = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
  * only place its path appears. Quoted paths (git quotes anything unusual) are
  * left to the `---`/`+++` lines rather than parsed wrongly here.
  */
+/**
+ * Git's C-style quoted path, decoded.
+ *
+ * `core.quotePath=false` handles the common non-ASCII case, but a control
+ * character (or a quote/backslash in the name) is still quoted. Undecoded, the
+ * path matches neither `include` nor the map, and the change is silently dropped.
+ */
+function unquoteGitPath(raw: string): string {
+  if (raw.length < 2 || raw[0] !== '"' || raw.at(-1) !== '"') return raw
+  const body = raw.slice(1, -1)
+  const bytes: number[] = []
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index]!
+    if (char !== '\\') {
+      bytes.push(...Buffer.from(char, 'utf8'))
+      continue
+    }
+    const next = body[index + 1]
+    if (next === undefined) break
+    if (/[0-7]/.test(next)) {
+      bytes.push(Number.parseInt(body.slice(index + 1, index + 4), 8))
+      index += 3
+      continue
+    }
+    index += 1
+    const simple: Record<string, string> = {
+      n: '\n',
+      t: '\t',
+      r: '\r',
+      b: '\b',
+      f: '\f',
+      v: '\v',
+      '\\': '\\',
+      '"': '"',
+    }
+    const value = simple[next]
+    if (value !== undefined) bytes.push(...Buffer.from(value))
+  }
+  return Buffer.from(bytes).toString('utf8')
+}
+
 function pathsFromHeader(line: string): { oldPath?: string; path?: string } {
   const rest = line.slice('diff --git '.length)
-  if (rest.startsWith('"')) return {}
+  if (rest.startsWith('"')) {
+    // Two C-quoted tokens. The `a/`/`b/` prefix is inside the quotes.
+    const match = /^"((?:\\.|[^"\\])*)" "((?:\\.|[^"\\])*)"/.exec(rest)
+    if (match === null) return {}
+    return {
+      oldPath: unquoteGitPath(`"${match[1] ?? ''}"`).replace(/^a\//, ''),
+      path: unquoteGitPath(`"${match[2] ?? ''}"`).replace(/^b\//, ''),
+    }
+  }
   const boundary = rest.indexOf(' b/')
   if (!rest.startsWith('a/') || boundary === -1) return {}
   return { oldPath: rest.slice(2, boundary), path: rest.slice(boundary + 3) }
@@ -284,22 +333,22 @@ export function parseUnifiedDiff(diff: string): Change[] {
     } else if (line.startsWith('deleted file mode')) {
       current.status = 'D'
     } else if (line.startsWith('rename from ')) {
-      current.from = line.slice('rename from '.length)
+      current.from = unquoteGitPath(line.slice('rename from '.length))
       current.status = 'R'
     } else if (line.startsWith('rename to ')) {
-      current.path = line.slice('rename to '.length)
+      current.path = unquoteGitPath(line.slice('rename to '.length))
     } else if (line.startsWith('copy from ')) {
-      current.from = line.slice('copy from '.length)
+      current.from = unquoteGitPath(line.slice('copy from '.length))
       current.status = 'C'
     } else if (line.startsWith('copy to ')) {
-      current.path = line.slice('copy to '.length)
+      current.path = unquoteGitPath(line.slice('copy to '.length))
     } else if (line.startsWith('--- ')) {
-      const path = line.slice(4)
+      const path = unquoteGitPath(line.slice(4))
       if (current.path === '' && path !== '/dev/null') {
         current.path = path.replace(/^a\//, '')
       }
     } else if (line.startsWith('+++ ')) {
-      const path = line.slice(4)
+      const path = unquoteGitPath(line.slice(4))
       if (path !== '/dev/null') current.path = path.replace(/^b\//, '')
     } else {
       const hunk = HUNK.exec(line)
@@ -327,7 +376,7 @@ export function parseUnifiedDiff(diff: string): Change[] {
 function untrackedChanges(exec: (args: string[]) => string, root: string): Change[] {
   let out: string
   try {
-    out = exec(['ls-files', '--others', '--exclude-standard'])
+    out = exec(['-c', 'core.quotePath=false', 'ls-files', '-z', '--others', '--exclude-standard'])
   } catch (error) {
     // The diff was readable but the untracked list was not. Answering without it
     // could omit a new file — the most common change in a worktree — and a
@@ -338,7 +387,7 @@ function untrackedChanges(exec: (args: string[]) => string, root: string): Chang
     )
   }
   return out
-    .split('\n')
+    .split('\u0000')
     .map((line) => line.trim())
     .filter((line) => line !== '')
     .map((path) => ({ path, status: 'A', hunks: [], insertions: [0] }) as Change)
@@ -362,6 +411,8 @@ function untrackedChanges(exec: (args: string[]) => string, root: string): Chang
 export function changesSince(options: ChangesOptions): Change[] {
   const exec = options.exec ?? ((args: string[]) => defaultExec(options.root, args))
   const args = [
+    '-c',
+    'core.quotePath=false',
     'diff',
     '--unified=0',
     '--find-renames',
@@ -371,7 +422,7 @@ export function changesSince(options: ChangesOptions): Change[] {
     options.since,
   ]
   if (options.to !== undefined) args.push(options.to)
-  else if (options.worktree === false) args.splice(1, 0, 'HEAD')
+  else if (options.worktree === false) args.push('HEAD')
   let changes: Change[]
   try {
     changes = parseUnifiedDiff(exec(args))
