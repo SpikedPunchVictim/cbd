@@ -10,7 +10,7 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { createCbd } from '../src/factory.js'
-import { loadMap } from '../src/map.js'
+import { loadMap, saveMap, type CoverageMap } from '../src/map.js'
 import type { Change } from '../src/changes.js'
 import type { Selection } from '../src/select.js'
 import type { TouchRef } from '../src/shard.js'
@@ -810,4 +810,35 @@ test.group('createCbd', () => {
       cleanup()
     }
   })
+})
+
+test('stats survives a map with more functions than the argument limit', () => {
+  const repo = tempRepo()
+  const root = realpathSync(repo.root)
+  try {
+    repo.write('src/a.ts', 'export function f() {}\n')
+    const commit = repo.commit('base')
+    const functions: Record<string, { startLine: number; endLine: number; tests: number[] }> = {}
+    for (let index = 0; index < 130_000; index += 1) {
+      functions[`f${String(index)}@0`] = { startLine: index + 1, endLine: index + 1, tests: [0] }
+    }
+    const map: CoverageMap = {
+      version: 1,
+      commit,
+      builtAt: 'T0',
+      tests: [{ title: 't', file: join(root, 'tests/a.spec.ts') }],
+      files: { [join(root, 'src/a.ts')]: functions },
+      load: [],
+      between: [],
+      teardown: [],
+      seen: [join(root, 'src/a.ts'), join(root, 'tests/a.spec.ts')],
+      shards: ['s'],
+    }
+    saveMap(root, map)
+    const stats = createCbd({ root }).stats()
+    assert.equal(stats.functions, 130_000)
+    assert.equal(stats.functionsPerFile.max, 130_000)
+  } finally {
+    repo.cleanup()
+  }
 })

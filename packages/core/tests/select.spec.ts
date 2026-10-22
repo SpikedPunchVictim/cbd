@@ -9,7 +9,7 @@ import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
 import type { Change } from '../src/changes.js'
 import type { CoverageMap } from '../src/map.js'
-import { fileDefinesTests, select, verify } from '../src/select.js'
+import { fileDefinesTests, select, verify, type Selection } from '../src/select.js'
 
 const SRC = '/repo/src/a.ts'
 const HELPER = '/repo/src/helper.ts'
@@ -925,4 +925,51 @@ test('compensating hunks do not cancel the module-scope widening', () => {
   ])
   assert.equal(result.mode, 'subset')
   assert.ok(result.tests.includes(2), 'the module-scope reader (test 2) must be selected')
+})
+
+test('verify reads the new side and checks a pure insertion', () => {
+  const map = makeMap()
+  const info = { commit: 'c0ffee', distance: 0, dirty: false, builtAt: 'T0' }
+  const notSelected: Selection = {
+    mode: 'subset',
+    reasons: [],
+    tests: [0],
+    unmapped: [],
+    untested: [],
+    ignored: [],
+    warnings: [],
+    map: info,
+  }
+  const insertion: Change = {
+    path: SRC,
+    status: 'M',
+    hunks: [],
+    newHunks: [],
+    insertions: [8],
+    newInsertions: [9],
+  }
+  const missed = verify(
+    notSelected,
+    map,
+    [insertion],
+    new Map([['multiplies', [[SRC, 'multiply@0', 9, 9]]]]),
+  )
+  assert.equal(missed.checked, 1, 'a pure insertion is checked, not skipped')
+  assert.deepEqual(missed.misses.map((miss) => miss.test), ['multiplies'])
+
+  const shifted: Change = {
+    path: SRC,
+    status: 'M',
+    hunks: [{ start: 5, end: 5 }],
+    newHunks: [{ start: 9, end: 9 }],
+  }
+  const selected: Selection = { ...notSelected, tests: [1] }
+  const ok = verify(
+    selected,
+    map,
+    [shifted],
+    new Map([['multiplies', [[SRC, 'multiply@0', 9, 9]]]]),
+  )
+  assert.equal(ok.checked, 1)
+  assert.deepEqual(ok.misses, [])
 })

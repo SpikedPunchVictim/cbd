@@ -486,10 +486,18 @@ const quantile = (values: number[], q: number): number => {
   return sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(q * sorted.length) - 1))]!
 }
 
+const maxOf = (values: number[]): number => {
+  // Not Math.max(...values): a large map has one entry per function, and the
+  // argument limit throws on maps worth summarizing.
+  let max = 0
+  for (const value of values) if (value > max) max = value
+  return max
+}
+
 const quantilesOf = (values: number[]): Quantiles => ({
   median: quantile(values, 0.5),
   p90: quantile(values, 0.9),
-  max: values.length === 0 ? 0 : Math.max(...values),
+  max: maxOf(values),
 })
 
 const titles = (entries: TestEntry[]): string[] => entries.map((entry) => entry.title)

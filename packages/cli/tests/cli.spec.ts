@@ -1400,3 +1400,49 @@ test('a suite removed from the invocation loses its stale file', () => {
     cleanup()
   }
 })
+
+test.group('cbd flaky reads', () => {
+  const mapAt = (
+    root: string,
+    commit: string,
+    builtAt: string,
+    status: 'passed' | 'failed',
+    reads: Record<string, number[]>,
+  ): CoverageMap => ({
+    version: MAP_VERSION,
+    commit,
+    builtAt,
+    tests: [{ title: 't', file: join(root, 'tests/a.spec.ts'), status }],
+    files: { [join(root, 'src/a.ts')]: { 'f@0': { startLine: 1, endLine: 2, tests: [0] } } },
+    reads,
+    load: [],
+    between: [],
+    teardown: [],
+    seen: [join(root, 'src/a.ts'), join(root, 'tests/a.spec.ts')],
+    shards: ['shard'],
+  })
+
+  test('a changed file the test read explains the flip', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    try {
+      repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      repo.write('data/schema.json', 'v1\n')
+      const a = repo.commit('a')
+      repo.write('data/schema.json', 'v2\n')
+      const b = repo.commit('b')
+
+      const reads = { [join(root, 'data/schema.json')]: [0] }
+      saveMap(root, mapAt(root, a, '2026-01-01T00:00:00.000Z', 'passed', reads))
+      saveMap(root, mapAt(root, b, '2026-01-02T00:00:00.000Z', 'failed', reads))
+
+      const json = invoke(root, 'flaky', '--format', 'json')
+      assert.equal(json.code, EXIT.ok)
+      const parsed = JSON.parse(json.out.join('\n')) as { flaky: unknown[] }
+      assert.deepEqual(parsed.flaky, [], 'a changed read is a relevant change')
+    } finally {
+      repo.cleanup()
+    }
+  })
+})

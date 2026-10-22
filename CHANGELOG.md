@@ -77,6 +77,10 @@ until a tag is pushed and the publish workflow runs.
   carries the owner's ordinal and is merged into the owner's real test entry instead of inventing a
   passing one; and the collector refuses an instrument whose wire protocol differs instead of
   misreading it.
+- **Verification and history.** `verify` reads the new-side hunks and insertion points its ground
+  truth is recorded in; `stats` survives maps larger than the argument limit; and `flaky` treats a
+  changed read or listed directory, and any opaque dependency, as a relevant change, so a
+  fixture-driven flip is not called flaky.
 
 ## 0.0.4 — 2026-10-20
 

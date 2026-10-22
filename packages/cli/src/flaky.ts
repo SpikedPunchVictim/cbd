@@ -13,7 +13,7 @@
  * evidence, and a test that is flaky on CI may be perfectly stable here.
  */
 import { readdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import {
   changesSince,
   loadMap,
@@ -72,6 +72,26 @@ function touchedByTest(map: CoverageMap): Map<number, Set<string>> {
   return touched
 }
 
+/** Files each test read, and directories it listed: both are selection relevance. */
+function readByTest(map: CoverageMap, kind: 'reads' | 'dirReads'): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>()
+  for (const [path, indices] of Object.entries(map[kind] ?? {})) {
+    for (const index of indices) {
+      const set = out.get(index) ?? new Set<string>()
+      set.add(path)
+      out.set(index, set)
+    }
+  }
+  return out
+}
+
+/** Tests with an invisible dependency: any in-scope change can explain a flip. */
+function opaqueTests(map: CoverageMap): Set<number> {
+  const out = new Set<number>()
+  for (const indices of Object.values(map.opaque ?? {})) for (const index of indices) out.add(index)
+  return out
+}
+
 const observation = (commit: string, builtAt: string, test: TestEntry): FlakyObservation => ({
   commit,
   builtAt,
@@ -127,6 +147,12 @@ export function findFlaky(options: FlakyOptions): FlakyResult {
 
     const touchedBefore = touchedByTest(before)
     const touchedAfter = touchedByTest(after)
+    const readsBefore = readByTest(before, 'reads')
+    const readsAfter = readByTest(after, 'reads')
+    const dirsBefore = readByTest(before, 'dirReads')
+    const dirsAfter = readByTest(after, 'dirReads')
+    const opaqueBefore = opaqueTests(before)
+    const opaqueAfter = opaqueTests(after)
     const prior = new Map<string, { test: TestEntry; index: number }>()
     before.tests.forEach((test, at) => prior.set(keyOf(test), { test, index: at }))
 
@@ -141,10 +167,20 @@ export function findFlaky(options: FlakyOptions): FlakyResult {
 
       const relevant = (files: Set<string> | undefined): boolean =>
         files !== undefined && [...files].some((file) => changed.has(file))
+      // A listed directory is relevant when any changed path is under it.
+      const underListed = (dirs: Set<string> | undefined): boolean =>
+        dirs !== undefined &&
+        [...dirs].some((dir) => [...changed].some((file) => file === dir || file.startsWith(`${dir}${sep}`)))
       const spec = test.file === null ? undefined : resolve(options.root, test.file)
       if (
+        opaqueBefore.has(earlier.index) ||
+        opaqueAfter.has(at) ||
         relevant(touchedBefore.get(earlier.index)) ||
         relevant(touchedAfter.get(at)) ||
+        relevant(readsBefore.get(earlier.index)) ||
+        relevant(readsAfter.get(at)) ||
+        underListed(dirsBefore.get(earlier.index)) ||
+        underListed(dirsAfter.get(at)) ||
         (spec !== undefined && changed.has(spec))
       ) {
         return

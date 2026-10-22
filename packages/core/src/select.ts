@@ -20,7 +20,7 @@
  *   policy knob, because out-of-window activity is common and often harmless.
  */
 import { isAbsolute, relative } from 'node:path'
-import { intersects, type Change } from './changes.js'
+import { intersects, type Change, type LineRange } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
 import type { CoverageMap, FunctionEntry } from './map.js'
 import type { TouchRef } from './shard.js'
@@ -821,9 +821,14 @@ export function verify(
     return { misses: [], checked: 0, ranEverything: true }
   }
 
-  const changedWithHunks = new Map<string, Change>()
+  const changedWithHunks = new Map<string, { ranges: LineRange[]; points: number[] }>()
   for (const change of changes) {
-    if (change.hunks.length > 0) changedWithHunks.set(change.path, change)
+    // The ground truth is from the run at the NEW commit, so the oracle reads the
+    // new side (the selector's `hunks` are deliberately the old side).
+    const ranges = change.newHunks ?? change.hunks
+    const points = change.newInsertions ?? change.insertions ?? []
+    if (ranges.length === 0 && points.length === 0) continue
+    changedWithHunks.set(change.path, { ranges, points })
   }
 
   const indexOfTitle = new Map<string, number>()
@@ -839,7 +844,13 @@ export function verify(
     for (const [file, key, startLine, endLine] of touches) {
       const change = changedWithHunks.get(file)
       if (change === undefined) continue
-      if (!change.hunks.some((hunk) => intersects(hunk, { start: startLine, end: endLine }))) {
+      const range = { start: startLine, end: endLine }
+      const hit =
+        change.ranges.some((hunk) => intersects(hunk, range)) ||
+        // A new-side insertion point names content after that line; the boundary
+        // belongs to the range it touches.
+        change.points.some((point) => point >= startLine - 1 && point <= endLine)
+      if (!hit) {
         continue
       }
       checked += 1
