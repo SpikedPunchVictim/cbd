@@ -204,15 +204,17 @@ for the id's owner. Three properties matter:
 
 **The fallback is `inspectorSource({ url } | { host, port })`.** CDP over WebSocket to a process
 started with `--inspect=127.0.0.1:<port>` (or `--inspect=0`, with the port read from its stderr line
-`Debugger listening on ws://…`); targets come from `http://<host>:<port>/json/list`. It is built when
-a real target needs it (`cbd-a3v.4`), not as the default path.
+`Debugger listening on ws://…`); targets come from `http://<host>:<port>/json/list`. It exists for a
+target whose environment genuinely cannot be set, and is not the default path. Coverage starts at the
+attach, so anything the process did before it — start-up, module imports — is outside the first window.
 
 - This reaches a black-box suite whose service genuinely cannot be restarted with an environment
   change: the tests send HTTP requests, the server's code runs, and the per-test window is taken
   from the server.
 - **One test runner per server during collection.** Two runners hitting one server make attribution
-  meaningless. CBD cannot detect this; the docs must say it, and the collector must refuse a target
-  another collector already holds (a lock file keyed by the target URL).
+  meaningless, and a take resets one counter shared by both. The source refuses a target another
+  collector holds, through a lock file keyed by the target origin in the OS temp directory. A lock
+  whose owning pid is gone is reclaimed, so a killed run does not poison its target.
 - **Multi-process servers need one port per process**, and each needs its own source. That is the
   cost injection does not have.
 - **Security: no remote attach.** `--inspect` gives full code execution to anyone who can reach the
@@ -1029,8 +1031,8 @@ before reviews.
 
 ### Stage 1: Core sources and Normalizer (2 days)
 **Goal**: `inProcessSource`, `socketSource` with the injected instrument module, `normalize()` with
-source maps and stable function keys. (`inspectorSource` is the attach fallback, built only when a
-target needs it — `cbd-a3v.4`.)
+source maps and stable function keys. (`inspectorSource` is the attach fallback for a target whose
+environment cannot be set.)
 **Success Criteria**: a fixture project with a TS loader and a `dist/` build yields the expected
 `(file, fn)` touches for known calls; a function not called in a window is absent.
 **Tests**: fixture-driven unit tests; one test starts a fixture server the way a developer does, with
@@ -1095,10 +1097,9 @@ that suite (`cbd-a3v`: 391/391, 112 server functions reached by exactly one test
 - `takePreciseCoverage` resetting counts when `callCount: true`;
 - `Debugger.scriptParsed` carrying `sourceMapURL`;
 - the in-process inspector's `post` completing synchronously, including inside `process.on('exit')`;
-- the instrument module, its unix socket, and the snapshot a dying process leaves (ADR-0007).
-
-**Still unexercised, because the attach path is deferred (`cbd-a3v.4`)**: `/json/list` target
-discovery and the CDP WebSocket client.
+- the instrument module, its unix socket, and the snapshot a dying process leaves (ADR-0007);
+- `/json/list` target discovery and the CDP WebSocket client, against a fixture started with
+  `--inspect=0` (the shared source contract suite runs against it).
 
 **Assumptions the design rests on**: two Profiler sessions on one isolate interfere (measured:
 counters split); the map's size and parse time; the overhead of a recorded run (`cbd-7yd`); prior

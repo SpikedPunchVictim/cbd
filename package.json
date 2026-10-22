@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@11.17.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "dogfood:record": "node scripts/dogfood.mjs record",

@@ -121,6 +121,82 @@ export async function withSource(
   })
 }
 
+export interface RunningInspectorService {
+  proc: ChildProcess
+  /** Resolves once the service has announced itself on stdout. */
+  ready: Promise<void>
+  /** The debugger URL Node prints when it opens the inspector. */
+  url: Promise<string>
+  output(): string
+  run(command: string): void
+  stop(): void
+}
+
+/**
+ * The same fixture, started with `--inspect=0` instead of the instrument.
+ *
+ * The port is OS-assigned and announced on stderr (`Debugger listening on
+ * ws://…`), which is also how a real caller discovers it. `NODE_OPTIONS` is
+ * removed so a suite that is itself being recorded does not instrument this child
+ * and give the test two collectors on one process.
+ */
+export function launchInspectorService(): RunningInspectorService {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env }
+  delete childEnv.NODE_OPTIONS
+  delete childEnv.CBD_SOCKET_DIR
+
+  const proc = spawn(process.execPath, ['--inspect=0', SERVICE], {
+    cwd: PACKAGE_ROOT,
+    env: childEnv,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+
+  let output = ''
+  let settled = false
+  let resolveUrl: (url: string) => void = () => {}
+  let rejectUrl: (error: Error) => void = () => {}
+  const url = new Promise<string>((resolve, reject) => {
+    resolveUrl = (found) => {
+      settled = true
+      resolve(found)
+    }
+    rejectUrl = (error) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+  })
+  // A caller that never awaits `url` (a launch that fails early) must not crash the
+  // suite with an unhandled rejection.
+  url.catch(() => {})
+
+  const ready = new Promise<void>((resolve) => {
+    proc.stdout?.setEncoding('utf8')
+    proc.stderr?.setEncoding('utf8')
+    proc.stdout?.on('data', (chunk: string) => {
+      output += chunk
+      if (output.includes('ready')) resolve()
+    })
+    proc.stderr?.on('data', (chunk: string) => {
+      output += chunk
+      const match = /Debugger listening on (ws:\/\/\S+)/.exec(output)
+      if (match?.[1] !== undefined) resolveUrl(match[1].replace(/\/$/, ''))
+    })
+  })
+  proc.once('exit', (code) => {
+    rejectUrl(new Error(`the inspector service exited (${String(code)}): ${output}`))
+  })
+
+  return {
+    proc,
+    ready,
+    url,
+    output: () => output,
+    run: (command) => proc.stdin?.write(`${command}\n`),
+    stop: () => proc.kill('SIGKILL'),
+  }
+}
+
 export async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

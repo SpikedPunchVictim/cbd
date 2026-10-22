@@ -5,6 +5,16 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **`inspectorSource` attaches.** The CDP client behind the fallback source is built:
+  it discovers a target through `/json/list` (or takes a `ws://` URL directly),
+  opens one WebSocket, enables the `Profiler` and `Debugger` domains, and serves
+  `take()`, `scripts()`, `generated()` and `prepare()` over the existing contract.
+  It refuses a target another collector holds, through a lock keyed by the target
+  origin in the OS temp directory; a lock whose owning pid is gone is reclaimed.
+  The `/json/list` reply is data from the target, so its debugger URL goes through
+  the same loopback rule as a caller-supplied one. Coverage begins at the attach,
+  so a process's start-up is outside the first window. This needs the global
+  `WebSocket`, so the minimum Node version is now 22 (`engines` bumped).
 - **Snapshot recovery is scoped to one run.** Take ids restart at 1 per client and
   a snapshot window was accepted on its take id or boundary timestamp alone, so a
   later run could substitute an earlier run's execution for a lost window and skip

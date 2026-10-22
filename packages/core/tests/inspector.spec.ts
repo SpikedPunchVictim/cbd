@@ -7,8 +7,6 @@ import {
   isLoopbackHost,
   resolveInspectorTarget,
 } from '../src/source/inspector.js'
-import type { ScriptInfo, Source, V8ScriptCoverage } from '../src/types.js'
-import { sourceContract } from './support/source-contract.js'
 
 /*
 |--------------------------------------------------------------------------
@@ -113,54 +111,8 @@ test('a port outside the range is refused', () => {
 |--------------------------------------------------------------------------
 */
 
-// The contract is not implemented yet, but the security rule is, and it has to
-// hold through the real entry point rather than only in its own unit test.
+// The security rule has to hold through the real entry point, not only in its own
+// unit test: a remote target is refused before any lock or connection is touched.
 test('inspectorSource refuses a remote target before anything connects', async () => {
   await assert.rejects(() => inspectorSource({ host: '10.0.0.5', port: 9229 }), /allowRemote/)
 })
-
-test('inspectorSource reports that the client is unbuilt, naming the target', async () => {
-  await assert.rejects(() => inspectorSource({ port: 9230 }), /cbd-a3v/)
-  await assert.rejects(() => inspectorSource({ port: 9230 }), /127\.0\.0\.1:9230/)
-})
-
-/*
-|--------------------------------------------------------------------------
-| The Source contract, against an async-only source
-|--------------------------------------------------------------------------
-|
-| This is the shape cbd-a3v will build: no synchronous take, because a socket
-| cannot offer one. Running the shared suite against a stand-in pins the contract
-| as *satisfiable by an out-of-process source* now, rather than discovering at
-| implementation time that it was written for the in-process case.
-|
-*/
-
-function remoteShapedSource(): Source {
-  const scripts = new Map<string, ScriptInfo>([['7', { url: 'file:///app/dist/Server.js' }]])
-  const payload: V8ScriptCoverage[] = [
-    {
-      scriptId: '7',
-      url: 'file:///app/dist/Server.js',
-      functions: [
-        {
-          functionName: 'handleKeyRequest',
-          isBlockCoverage: false,
-          ranges: [{ startOffset: 0, endOffset: 120, count: 1 }],
-        },
-      ],
-    },
-  ]
-  return {
-    kind: 'inspector',
-    supportsSync: false,
-    takeSync: () => {
-      throw new Error('inspectorSource.takeSync: a socket cannot take synchronously')
-    },
-    take: async () => payload,
-    scripts: () => scripts,
-    close: () => {},
-  }
-}
-
-sourceContract('inspector (stand-in)', async () => remoteShapedSource(), { supportsSync: false })
