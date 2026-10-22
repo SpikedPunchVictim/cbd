@@ -21,6 +21,8 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import { SocketSourceError, discoverSockets, socketSource } from '../src/adapter.js'
+import { recoverFromSnapshot } from '../src/source/socket.js'
+import { INSTRUMENT_PROTOCOL } from '../src/instrument-protocol.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { sourceContract } from './support/source-contract.js'
 import {
@@ -538,4 +540,20 @@ test.group('socketSource dispatch', (group) => {
       assert.throws(() => source.dispatch(), /closed/)
     })
   })
+})
+
+test('a matched snapshot window with no coverage is still recovered', () => {
+  const file = {
+    protocol: INSTRUMENT_PROTOCOL,
+    pid: 1,
+    startedAtUs: 0,
+    atUs: 1,
+    scripts: [],
+    windows: [{ takeId: 2, coverage: [], requests: [], scripts: [] }],
+  }
+  const recovered = recoverFromSnapshot(file, 2, 0)
+  assert.ok(recovered !== null, 'an empty matched window must be acknowledged, not dropped')
+  assert.equal(recovered.matched, true)
+  assert.deepEqual(recovered.coverage, [])
+  assert.equal(recoverFromSnapshot(file, 3, 0), null, 'no window and no fallback is null')
 })

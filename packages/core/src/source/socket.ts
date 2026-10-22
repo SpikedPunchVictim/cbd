@@ -387,7 +387,7 @@ async function openOne(
  * where the instrument was restarted at the same pid and numbered its takes again;
  * the boundary is a value the collector chose, so it cannot collide.
  */
-interface Recovered {
+export interface Recovered {
   coverage: V8ScriptCoverage[]
   scripts: ScriptRow[]
   /** The correlation tags the lost reply carried, so recovery does not drop them. */
@@ -414,7 +414,17 @@ async function recoverWindow(
   } catch {
     return null
   }
-  if (file.protocol !== INSTRUMENT_PROTOCOL || file.pid !== pid) return null
+  if (file.pid !== pid) return null
+  return recoverFromSnapshot(file, takeId, sentAtUs)
+}
+
+/** The snapshot window for `takeId`, or null when the file carries no evidence. */
+export function recoverFromSnapshot(
+  file: SnapshotFile,
+  takeId: number,
+  sentAtUs: number,
+): Recovered | null {
+  if (file.protocol !== INSTRUMENT_PROTOCOL) return null
 
   const coverage: V8ScriptCoverage[] = []
   const ids: string[] = []
@@ -444,7 +454,10 @@ async function recoverWindow(
     coverage.push(...(file.untaken ?? []))
     requests.push(...(file.pendingRequests ?? []))
   }
-  if (coverage.length === 0 && requests.length === 0) return null
+  // A matched window with no coverage is still evidence: the window existed, its
+  // script rows must be absorbed, and its take must be acknowledged so the
+  // snapshot stops offering it. Only "no window and no fallback" is a null.
+  if (coverage.length === 0 && requests.length === 0 && !matched) return null
   return { coverage, scripts: file.scripts, ids, requests, matched }
 }
 

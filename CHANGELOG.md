@@ -81,6 +81,10 @@ until a tag is pushed and the publish workflow runs.
   truth is recorded in; `stats` survives maps larger than the argument limit; and `flaky` treats a
   changed read or listed directory, and any opaque dependency, as a relevant change, so a
   fixture-driven flip is not called flaky.
+- **An empty recovered window is acknowledged.** A snapshot window that matched a take but carried
+  no coverage was treated as missing: its script rows were dropped and the snapshot kept offering
+  it. It is now returned, absorbed and acknowledged; only a window with no match and no fallback
+  reports a loss.
 
 ## 0.0.4 — 2026-10-20
 
