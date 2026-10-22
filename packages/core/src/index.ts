@@ -105,6 +105,8 @@ export {
   select,
   verify,
   type AllWhy,
+  type GroundTruth,
+  type GroundTruthTest,
   type MapInfo,
   type Miss,
   type Reason,

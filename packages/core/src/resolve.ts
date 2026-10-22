@@ -24,12 +24,12 @@
  *   change to it then reaches §8.3's unknown-file rule and runs everything — the
  *   safe direction.
  */
-import { readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { FileCache, sameLineStarts } from './line-index.js'
 import { displayName, type ScanOptions } from './normalize.js'
-import { canonicalProjectionRules } from './projection.js'
+import { canonicalPath, canonicalProjectionRules } from './projection.js'
 import { createRelocator } from './relocate.js'
 import { createScriptResolver, sourceMapUrlOf } from './source-maps.js'
 import {
@@ -76,6 +76,17 @@ export interface ResolvedShard {
   teardown: TouchRef[]
   /** Import-phase reads, already relocated/filtered by the build's scan. */
   loadReads: Array<{ file: string | null; reads: string[]; dirReads: string[] }>
+  /**
+   * Files whose generated text the recording could not produce.
+   *
+   * Only a file with a source map of its own: a loader-transformed script's offsets
+   * describe text that is not on disk, so the build cannot answer for that file and
+   * a change to it must run everything. A script with no map falls back to its file,
+   * which is its source.
+   */
+  partialFiles?: string[]
+  /** Boundaries the recording could not take; see `ShardHealth`. */
+  failedTakes?: number
 }
 
 export interface ResolveOptions {
@@ -405,7 +416,7 @@ function checkReferences(
 
 /** Resolve a whole shard. */
 export function resolveShard(input: ShardInput, options: ResolveOptions = {}): ResolvedShard {
-  const { header, tests, load, between, teardown, loadReads, scripts, functions } =
+  const { header, tests, load, between, teardown, loadReads, health, scripts, functions } =
     summarizeShard(input.records)
   const scriptRows = scriptTable(scripts, input.name)
   const functionRows = functionTable(functions, input.name)
@@ -448,6 +459,34 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
     dirReads: dirPaths(record.dirReads),
   }))
   const cache = options.cache ?? new FileCache()
+
+  /**
+   * Files whose generated text the recording could not produce.
+   *
+   * A loader-transformed script's offsets are into text V8 compiled, not the file
+   * on disk. Without that text the build cannot convert them, and indexing the file
+   * anyway would attribute ranges to whatever occupies those bytes. The presence of
+   * a map — carried on the row, declared by the file, or sitting beside it — is what
+   * says the file on disk is not the script. A script with no map is its own file,
+   * so the fallback is its source and is left alone.
+   */
+  const partialFiles = new Set<string>()
+  for (const record of health) {
+    for (const scriptId of record.generatedMissing ?? []) {
+      const script = scriptRows.get(scriptId)
+      if (script === undefined) continue
+      const path = stablePath(script.url, relocate)
+      if (path === null) continue
+      const hasMap =
+        script.sourceMapURL !== undefined ||
+        sourceMapUrlOf(cache.text(path) ?? '') !== undefined ||
+        existsSync(`${path}.map`)
+      // Canonical like every other path that will be compared with a change: a map
+      // recorded behind a symlinked tmpdir must still match the checkout's spelling.
+      if (hasMap) partialFiles.add(canonicalPath(path))
+    }
+  }
+
   const identities = new Map<string, Map<string, Identity>>()
   for (const [scriptId, script] of scriptRows) {
     const path = stablePath(script.url, relocate)
@@ -503,5 +542,7 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
     between: between.flatMap(touchesOf),
     teardown: teardown.flatMap(touchesOf),
     loadReads: resolvedLoadReads,
+    partialFiles: [...partialFiles].sort(),
+    failedTakes: health.reduce((total, record) => total + (record.failedTakes ?? 0), 0),
   }
 }

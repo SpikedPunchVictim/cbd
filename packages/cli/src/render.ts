@@ -297,6 +297,10 @@ export function statsLines(result: StatsResult, root: string): string[] {
       )
     }
   }
+  if (result.unhealthy !== undefined && result.unhealthy.length > 0) {
+    lines.push('the recording is incomplete, so select runs everything for an in-scope change:')
+    for (const reason of result.unhealthy) lines.push(`  ${reason}`)
+  }
   if (result.duplicateTests.length > 0) {
     lines.push('duplicate titles (distinguished by ordinal in the map):')
     for (const group of result.duplicateTests.slice(0, 5)) {

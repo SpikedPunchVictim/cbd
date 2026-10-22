@@ -80,6 +80,7 @@
  * about a caller that named no pid and would otherwise be choosing by accident, and it
  * stays, because a source opened once cannot read a process that arrived after it.
  */
+import { randomUUID } from 'node:crypto'
 import { readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import net from 'node:net'
@@ -232,9 +233,10 @@ class SocketClient {
     op: 'hello' | 'close' | 'correlate',
     sentAtUs?: number,
     header?: string,
+    session?: string,
   ): Promise<InstrumentResponse> {
     const id = this.#nextId++
-    return this.#send(id, op, sentAtUs, header)
+    return this.#send(id, op, sentAtUs, header, undefined, session)
   }
 
   /** Generated line starts for scripts the recorder already saw, at end of run. */
@@ -279,6 +281,7 @@ class SocketClient {
     sentAtUs?: number,
     header?: string,
     ids?: string[],
+    session?: string,
   ): Promise<InstrumentResponse> {
     if (this.#closed) return Promise.reject(new SocketSourceError('the socket is closed'))
 
@@ -289,7 +292,7 @@ class SocketClient {
       }, this.#timeoutMs)
 
       this.#pending.set(id, { resolve, reject, timer })
-      this.#socket.write(encodeMessage(buildRequest(id, op, sentAtUs, header, ids)))
+      this.#socket.write(encodeMessage(buildRequest(id, op, sentAtUs, header, ids, session)))
     })
   }
 
@@ -315,10 +318,11 @@ function buildRequest(
   sentAtUs?: number,
   header?: string,
   ids?: string[],
+  session?: string,
 ): InstrumentRequest {
   switch (op) {
     case 'hello':
-      return { id, op: 'hello' }
+      return session === undefined ? { id, op: 'hello' } : { id, op: 'hello', session }
     case 'take':
       return { id, op: 'take', ...(sentAtUs === undefined ? {} : { sentAtUs }) }
     case 'close':
@@ -353,11 +357,12 @@ function connect(path: string, timeoutMs: number): Promise<net.Socket> {
 async function openOne(
   path: string,
   timeoutMs: number,
+  session?: string,
 ): Promise<{ client: SocketClient; hello: HelloResult }> {
   const socket = await connect(path, timeoutMs)
   const client = new SocketClient(socket, timeoutMs)
   try {
-    const response = await client.request('hello')
+    const response = await client.request('hello', undefined, undefined, session)
     if (!response.ok) throw new SocketSourceError(`the instrument module refused hello: ${response.error}`)
     const hello = (response as { result: HelloResult }).result
     if (hello.protocol !== INSTRUMENT_PROTOCOL) {
@@ -407,6 +412,7 @@ async function recoverWindow(
   pid: number,
   takeId: number,
   sentAtUs: number,
+  session: string | undefined,
 ): Promise<Recovered | null> {
   let file: SnapshotFile
   try {
@@ -415,22 +421,38 @@ async function recoverWindow(
     return null
   }
   if (file.pid !== pid) return null
-  return recoverFromSnapshot(file, takeId, sentAtUs)
+  return recoverFromSnapshot(file, takeId, sentAtUs, session)
 }
 
-/** The snapshot window for `takeId`, or null when the file carries no evidence. */
+/**
+ * The snapshot window for `takeId` in this run, or null when the file carries no
+ * evidence for it.
+ *
+ * **Only a window this run produced is evidence.** Take ids restart at 1 per client
+ * and `sentAtUs` is only comparable within one process lifetime, so both alone can
+ * name an earlier run's window. The session the source sent in the hello is what
+ * makes the match unambiguous: a window, or a file, without it is not recoverable
+ * and the caller reports a loss rather than substituting a run it cannot identify.
+ */
 export function recoverFromSnapshot(
   file: SnapshotFile,
   takeId: number,
   sentAtUs: number,
+  session: string | undefined,
 ): Recovered | null {
   if (file.protocol !== INSTRUMENT_PROTOCOL) return null
+  // No session here, or none on the file: an instrument that predates the field.
+  // A file *with* a session is not required to name this one — two collectors can
+  // share a service, and the file carries whichever last wrote — because each
+  // window is matched by its own session below.
+  if (session === undefined || file.session === undefined) return null
 
   const coverage: V8ScriptCoverage[] = []
   const ids: string[] = []
   const requests: RequestWindow[] = []
   let matched = false
   for (const window of file.windows) {
+    if (window.session !== session) continue
     if (window.takeId === takeId || window.sentAtUs === sentAtUs) {
       coverage.push(...window.coverage)
       ids.push(...(window.ids ?? []))
@@ -450,7 +472,13 @@ export function recoverFromSnapshot(
   // accumulator can be hundreds of MB). If they are absent, the instrument is
   // still alive with its accumulator intact and the next successful take carries
   // this work; the loss reported for *this* boundary is honest rather than silent.
+  //
+  // The fallback has no window and therefore no session tag, so it is offered only
+  // to the session the file names. With two collectors, the accumulator is the last
+  // writer's lifetime, and handing it to the other run would credit work that run
+  // never did.
   if (!matched) {
+    if (file.session !== session) return null
     coverage.push(...(file.untaken ?? []))
     requests.push(...(file.pendingRequests ?? []))
   }
@@ -614,7 +642,17 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
     }
   }
 
-  const { client, hello } = await openOne(path, timeoutMs)
+  const runSession = randomUUID()
+  const { client, hello } = await openOne(path, timeoutMs, runSession)
+  /**
+   * The run's identity, taken from the echo rather than from `runSession`.
+   *
+   * An instrument older than the field does not echo it, and then no snapshot window
+   * can carry it either — so recovery is disabled and a lost reply is reported as a
+   * loss instead of being satisfied by a window from an earlier run. The id was
+   * generated here; the echo is what proves the other side can tag a window with it.
+   */
+  const session = hello.session
 
   if (
     options.correlationHeader !== undefined &&
@@ -648,6 +686,14 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
    * drains its queue rather than repeating the table.
    */
   const scripts = new Map<string, ScriptInfo>()
+  /**
+   * Script ids whose generated text the target could not produce.
+   *
+   * Carried to the shard's health record: a loader-transformed script whose text is
+   * missing cannot be indexed from the file on disk, so the build must refuse to
+   * trust its offsets rather than fall back silently.
+   */
+  const missingGenerated = new Set<string>()
   let closed = false
 
   /**
@@ -769,7 +815,7 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
         // A reply that never arrived is not necessarily a window that never
         // existed: the instrument kept it until we acknowledged it. Look for the
         // exact window this take was sent for.
-        const window = await recoverWindow(path, hello.pid, take.id, sentAtUs)
+        const window = await recoverWindow(path, hello.pid, take.id, sentAtUs, session)
         if (window !== null) {
           absorb(window.scripts)
           client.ack(take.id)
@@ -856,19 +902,32 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
 
     scripts: () => scripts,
     generated: (scriptId: string) => scripts.get(scriptId)?.generated,
+    generatedMissing: () => [...missingGenerated],
     async prepare(scriptIds: readonly string[]) {
       if (closed || scriptIds.length === 0) return
       try {
         const reply = await client.generated([...scriptIds])
         if (reply.ok && reply.op === 'generated') {
-          for (const [id, generated] of Object.entries(reply.result.generated)) {
+          const { generated, missing } = reply.result
+          for (const [id, value] of Object.entries(generated)) {
             const info = scripts.get(id)
-            if (info !== undefined) info.generated = generated
+            if (info !== undefined) info.generated = value
           }
+          // The reply names what it could not produce. An instrument older than that
+          // field omits it, and there the current fallback stays: the build reads the
+          // file on disk, exactly as it did before this signal existed. Only a
+          // failure of the op itself says every script is unavailable, because then
+          // nothing was produced at all.
+          if (missing !== undefined) for (const id of missing) missingGenerated.add(id)
+        } else {
+          for (const id of scriptIds) missingGenerated.add(id)
         }
       } catch {
-        // An instrument older than this op, or a socket that died at the end:
-        // the build falls back to the file. Never make the run fail here.
+        // An instrument older than this op, or a socket that died at the end. The
+        // fetch failed, so every script's generated text is unavailable — recorded as
+        // health rather than quietly falling back to a file that may not be the text
+        // V8 compiled. Never make the run fail here.
+        for (const id of scriptIds) missingGenerated.add(id)
       }
     },
 

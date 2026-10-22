@@ -171,7 +171,31 @@ async function start(dir: string): Promise<void> {
   // few seconds, and the write is small once a client is taking (only the
   // unacknowledged window). The exit handler makes one final, exact write.
   const startedAtUs = nowUs()
-  const unacked = new Map<number, SnapshotWindow>()
+  const unacked = new Map<string, SnapshotWindow>()
+  /**
+   * Collector sessions with an open connection, and the session each connection
+   * said it was.
+   *
+   * A session is counted rather than stored once because a reconnect within one run
+   * reuses the id, and the old connection's close must not retire a session the new
+   * one is still using. The snapshot keeps only windows whose session is still
+   * open: a collector that died cannot come back for them, and leaving them on disk
+   * lets a later run substitute its predecessor's execution.
+   */
+  const openSessions = new Map<string, number>()
+  const connectionSessions = new WeakMap<net.Socket, string>()
+  /**
+   * Windows are keyed by run *and* take number.
+   *
+   * Two collectors can attach to one long-lived service, and each numbers its takes
+   * from 1. Keying by the number alone made the second collector's take replace the
+   * first's, so a lost reply would find the wrong window — or none — and an ack would
+   * release a window the other collector had not read.
+   */
+  const windowKey = (session: string | undefined, takeId: number): string =>
+    `${session ?? ''}\u0000${String(takeId)}`
+  /** The session of the most recent take, for `SnapshotFile.session`. */
+  let latestSession: string | undefined = undefined
   /** Taken since the last client take. Never handed to anyone yet. */
   let untaken = new Map<string, V8ScriptCoverage>()
   /** Serializes inspector takes: two `takePreciseCoverage` calls interleaved would split a delta. */
@@ -466,10 +490,16 @@ async function start(dir: string): Promise<void> {
       protocol: INSTRUMENT_PROTOCOL,
       pid: process.pid,
       startedAtUs,
+      ...(latestSession === undefined ? {} : { session: latestSession }),
       atUs: nowUs(),
       ...(endedAtUs === undefined ? {} : { endedAtUs }),
       scripts: [...kept.values()],
-      windows: [...unacked.values()],
+      // A window belongs to the run whose take produced it. One whose session has no
+      // open connection is a collector that died, and it is dropped rather than left
+      // for the next run to find by a take number that means nothing to it.
+      windows: [...unacked.values()].filter(
+        (window) => window.session !== undefined && openSessions.has(window.session),
+      ),
       // The accumulator and the request queue are unbounded between boundaries —
       // thousands of entries and hundreds of MB on a real service — and rewriting
       // them every 500 ms put the instrument at ~97% CPU (`cbd-n9t.2`). Only the
@@ -596,6 +626,16 @@ async function start(dir: string): Promise<void> {
     connection.setEncoding('utf8')
     // A client that vanishes mid-take is routine, not exceptional.
     connection.on('error', () => {})
+    // Retire the session with its last connection. The snapshot write that follows
+    // prunes the windows this collector will never come back for.
+    connection.on('close', () => {
+      const session = connectionSessions.get(connection)
+      if (session === undefined) return
+      connectionSessions.delete(connection)
+      const count = openSessions.get(session)
+      if (count === undefined || count <= 1) openSessions.delete(session)
+      else openSessions.set(session, count - 1)
+    })
 
     connection.on('data', (chunk: string) => {
       for (const line of splitter.push(chunk)) {
@@ -644,6 +684,8 @@ async function start(dir: string): Promise<void> {
     // that is decided by queue order, not by which event the loop happened to
     // schedule first.
     let deliveredRequests: RequestWindow[] = []
+    const session = connectionSessions.get(connection)
+    if (session !== undefined) latestSession = session
     const coverage = await exclusive(async () => {
       await accumulate()
       const payload = [...untaken.values()]
@@ -656,9 +698,10 @@ async function start(dir: string): Promise<void> {
       // Kept until the client acknowledges it. The reply below can sit in a socket
       // buffer forever, or die with the process; neither is visible from here, so
       // "we wrote it" is not evidence that it arrived.
-      unacked.set(id, {
+      unacked.set(windowKey(session, id), {
         takeId: id,
         ...(sentAtUs === undefined ? {} : { sentAtUs }),
+        ...(session === undefined ? {} : { session }),
         coverage: payload,
         scripts: delivered,
         ids,
@@ -712,6 +755,22 @@ async function start(dir: string): Promise<void> {
     try {
       switch (request.op) {
         case 'hello': {
+          const session = request.session
+          if (session !== undefined && session !== '') {
+            // Two collections of the same session (a reconnect within one run) each
+            // hold it open until their own connection closes.
+            const previous = connectionSessions.get(connection)
+            if (previous !== session) {
+              if (previous !== undefined) {
+                const count = openSessions.get(previous)
+                if (count === undefined || count <= 1) openSessions.delete(previous)
+                else openSessions.set(previous, count - 1)
+              }
+              connectionSessions.set(connection, session)
+              openSessions.set(session, (openSessions.get(session) ?? 0) + 1)
+            }
+            latestSession = session
+          }
           const result: HelloResult = {
             protocol: INSTRUMENT_PROTOCOL,
             pid: process.pid,
@@ -719,6 +778,7 @@ async function start(dir: string): Promise<void> {
             startedAt,
             scriptCount: scripts.size,
             correlating: requestCorrelation !== null,
+            ...(session === undefined || session === '' ? {} : { session }),
           }
           reply(connection, { id, op: 'hello', ok: true, result })
           return
@@ -735,12 +795,25 @@ async function start(dir: string): Promise<void> {
           // causes cannot lengthen a boundary. It is the only place the module
           // fetches generated text.
           const generated: Record<string, GeneratedScript> = {}
+          const missing: string[] = []
           for (const scriptId of request.ids) {
-            if (!scripts.has(scriptId)) continue
+            if (!scripts.has(scriptId)) {
+              // A row the collector asked for but this process never parsed. The
+              // collector has a script table row for it, so the text is unavailable,
+              // not merely unnecessary.
+              missing.push(scriptId)
+              continue
+            }
             const value = generatedFor(scriptId)
             if (value !== undefined) generated[scriptId] = value
+            else missing.push(scriptId)
           }
-          reply(connection, { id, op: 'generated', ok: true, result: { generated } })
+          reply(connection, {
+            id,
+            op: 'generated',
+            ok: true,
+            result: { generated, missing },
+          })
           return
         }
         case 'take': {
@@ -749,9 +822,15 @@ async function start(dir: string): Promise<void> {
           return
         }
         case 'ack': {
-          // Everything up to and including `ackId` has reached the collector's
-          // hands, so it must not be offered twice.
-          for (const takeId of [...unacked.keys()]) if (takeId <= request.ackId) unacked.delete(takeId)
+          // Everything up to and including `ackId` has reached *this* collector's
+          // hands, so it must not be offered again. Scoped to the connection's
+          // session: take numbers are per client, and another collector's window 3
+          // is not this one's.
+          const ackSession = connectionSessions.get(connection)
+          for (const [key, window] of [...unacked]) {
+            if (window.session !== ackSession) continue
+            if (window.takeId <= request.ackId) unacked.delete(key)
+          }
           reply(connection, { id, op: 'ack', ok: true, result: { acked: request.ackId } })
           return
         }
@@ -766,7 +845,10 @@ async function start(dir: string): Promise<void> {
           // which is the promise a collector actually needs.
           removeSocket()
           // The collector is finished with this process. A snapshot left behind
-          // after that is evidence for a run that will never look for it.
+          // after that is evidence for a run that will never look for it, and a
+          // window kept past the close is evidence the next run must not inherit.
+          unacked.clear()
+          openSessions.clear()
           removeSnapshot()
           reply(connection, { id, op: 'close', ok: true, result: { closing: true } })
           shutdown()

@@ -91,6 +91,15 @@ export interface CoverageMap {
    * dropped directory listing), and then anything under it is partial.
    */
   partial?: string[]
+  /**
+   * Shards whose recording was incomplete, one reason each.
+   *
+   * A window that could not be taken substituted an empty capture, and an empty
+   * window could have covered any file. Nothing path-level can express that, so the
+   * map says it at this level and `select` runs everything for an in-scope change.
+   * Optional: a map written before this field existed behaves exactly as it did.
+   */
+  unhealthy?: string[]
   /** Present on a map assembled by `carryMap`: what it was carried from. */
   carried?: { base: string; tests: number }
   /** Executed before the first test. Reaching it means the module was imported. */
@@ -257,6 +266,8 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   const dirReads = new Map<string, Set<number>>()
   const opaque = new Map<string, Set<number>>()
   const included: string[] = []
+  const partial = new Set<string>()
+  const unhealthy: string[] = []
 
   const keepRead = (path: string): boolean =>
     !underNodeModules(path) && (options.keepRead?.(path) ?? true)
@@ -352,6 +363,18 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   for (const resolved of shards) {
     const shardIndex = included.length
     included.push(resolved.name)
+    // A file whose transformed text the recording could not produce is partial:
+    // its offsets cannot be verified against the bytes on disk, so a change to it
+    // must run everything.
+    for (const file of resolved.partialFiles ?? []) partial.add(file)
+    // An empty window could have covered any file, so the loss is a property of the
+    // shard and cannot be expressed as a path-level partial.
+    if ((resolved.failedTakes ?? 0) > 0) {
+      unhealthy.push(
+        `${resolved.name}: ${String(resolved.failedTakes)} window(s) could not be taken; ` +
+          'its coverage is incomplete',
+      )
+    }
     mergeRefs(load, resolved.load)
     mergeRefs(between, resolved.between)
     mergeRefs(teardown, resolved.teardown)
@@ -524,6 +547,8 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     seen: [...seen].sort(),
     shards: included,
     dirty: options.dirty === true,
+    ...(partial.size === 0 ? {} : { partial: [...partial].sort() }),
+    ...(unhealthy.length === 0 ? {} : { unhealthy }),
   }
 }
 
@@ -688,6 +713,9 @@ export function carryMap(
   // forget that a file's evidence was incomplete and answer a change to it with a
   // subset — the silent under-selection the whole design forbids.
   const partial = new Set([...(base.partial ?? []), ...(next.partial ?? [])])
+  // Incompleteness cannot be healed by carrying tests forward: the missing window
+  // was in the base's recording, and nothing here re-took it.
+  const unhealthy = [...new Set([...(base.unhealthy ?? []), ...(next.unhealthy ?? [])])]
   for (const [index, test] of base.tests.entries()) {
     if (nextKeys.has(keyOf(test))) continue
     if (canCarry(test, index)) {
@@ -830,6 +858,7 @@ export function carryMap(
     seen: [...new Set([...base.seen, ...next.seen])].sort(),
     shards: [...next.shards, `carried:${base.commit}`],
     ...(partial.size === 0 ? {} : { partial: [...partial].sort() }),
+    ...(unhealthy.length === 0 ? {} : { unhealthy }),
     carried: { base: base.commit, tests: carried.length },
   }
 }

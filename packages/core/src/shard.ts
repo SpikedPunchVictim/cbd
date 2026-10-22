@@ -235,6 +235,26 @@ export interface ShardFooter {
   drift?: DriftStats
 }
 
+/**
+ * Something the run knows it could not record fully.
+ *
+ * Written before the footer, and only when there is something to say: a clean run
+ * writes no health record. Both fields are optional and additive, so a shard from
+ * before this record existed keeps the behaviour it always had.
+ *
+ * `generatedMissing` is a script id whose generated text the source could not
+ * produce at the end of the run. `failedTakes` counts boundaries that could not be
+ * taken — a dead inspector session, or a queued reply that never arrived — each of
+ * which substituted an empty window. Both make the coverage incomplete, and an
+ * empty window could have covered any file, which is why the build answers them at
+ * map level rather than at one path.
+ */
+export interface ShardHealth {
+  type: 'health'
+  generatedMissing?: string[]
+  failedTakes?: number
+}
+
 export type ShardRecord =
   | ShardHeader
   | ShardScript
@@ -242,6 +262,7 @@ export type ShardRecord =
   | ShardTest
   | ShardBucket
   | ShardLoadReads
+  | ShardHealth
   | ShardFooter
 
 /** One parsed shard, with the name it is known by in a map's provenance. */
@@ -379,6 +400,7 @@ export function summarizeShard(records: ShardRecord[]): {
   between: ShardTouch[]
   teardown: ShardTouch[]
   loadReads: ShardLoadReads[]
+  health: ShardHealth[]
   scripts: ShardScript[]
   functions: ShardFunction[]
 } {
@@ -390,6 +412,7 @@ export function summarizeShard(records: ShardRecord[]): {
   const between: ShardTouch[] = []
   const teardown: ShardTouch[] = []
   const loadReads: ShardLoadReads[] = []
+  const health: ShardHealth[] = []
   const scripts: ShardScript[] = []
   const functions: ShardFunction[] = []
   for (const record of records) {
@@ -398,8 +421,9 @@ export function summarizeShard(records: ShardRecord[]): {
     else if (record.type === 'between') between.push(record.touches)
     else if (record.type === 'teardown') teardown.push(record.touches)
     else if (record.type === 'loadReads') loadReads.push(record)
+    else if (record.type === 'health') health.push(record)
     else if (record.type === 'script') scripts.push(record)
     else if (record.type === 'function') functions.push(record)
   }
-  return { header, tests, load, between, teardown, loadReads, scripts, functions }
+  return { header, tests, load, between, teardown, loadReads, health, scripts, functions }
 }

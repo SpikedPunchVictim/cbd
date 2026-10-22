@@ -790,6 +790,14 @@ test('mode: all reports no test list, because the runner decides', () => {
   assert.deepEqual(result.tests, [])
 })
 
+// `cbd-2kr.5`: an incomplete recording cannot answer any in-scope change.
+test('an unhealthy map forces mode: all for an in-scope change', () => {
+  const map = makeMap({ unhealthy: ['s1: 1 window(s) could not be taken; its coverage is incomplete'] })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:unhealthy'])
+})
+
 // --- verify -----------------------------------------------------------------
 test('verify finds no miss when the selection covers what actually ran', () => {
   const map = makeMap()
@@ -825,6 +833,75 @@ test('verify reports a test that reached changed code but was not selected', () 
   assert.equal(result.misses.length, 1)
   assert.equal(result.misses[0]?.test, 'multiplies')
   assert.equal(result.misses[0]?.key, 'multiply@0')
+})
+
+// `cbd-2kr.2`: the map keeps identity as (file, title, ordinal), and a bare title
+// cannot name the second occurrence. Title-keyed truth must not mask it.
+const duplicateMap = (): CoverageMap =>
+  makeMap({
+    tests: [
+      { title: 'dup', file: SPEC },
+      { title: 'dup', file: SPEC, ordinal: 1 },
+    ],
+    files: {
+      [SRC]: {
+        'add@0': { startLine: 1, endLine: 3, tests: [0] },
+        'multiply@0': { startLine: 5, endLine: 7, tests: [] },
+      },
+    },
+  })
+
+test('verify reports the second duplicate when identity-aware truth misses it', () => {
+  const map = duplicateMap()
+  const changed = [change(SRC, [{ start: 2, end: 2 }])]
+  const selection = select(map, changed)
+  const result = verify(selection, map, changed, [
+    { file: SPEC, title: 'dup', touches: [[SRC, 'add@0', 1, 3]] },
+    { file: SPEC, title: 'dup', ordinal: 1, touches: [[SRC, 'add@0', 1, 3]] },
+  ])
+  assert.deepEqual(result.misses, [{ test: 'dup', file: SRC, key: 'add@0', ordinal: 1 }])
+})
+
+test('verify by id and ordinal narrows to the duplicate it names', () => {
+  const map = duplicateMap()
+  const changed = [change(SRC, [{ start: 2, end: 2 }])]
+  const selection = select(map, changed)
+  const result = verify(selection, map, changed, [
+    { id: `${SPEC}::dup`, file: SPEC, title: 'dup', ordinal: 0, touches: [[SRC, 'add@0', 1, 3]] },
+  ])
+  assert.deepEqual(result.misses, [], 'the first occurrence is selected, so it is no miss')
+})
+
+test('verify with title-keyed truth requires every duplicate and warns', () => {
+  const map = duplicateMap()
+  const changed = [change(SRC, [{ start: 2, end: 2 }])]
+  const selection = select(map, changed)
+  const result = verify(
+    selection,
+    map,
+    changed,
+    new Map([['dup', [[SRC, 'add@0', 1, 3]] as [string, string, number, number][]]]),
+  )
+  // The second occurrence is not in the selection, and a bare title cannot exempt
+  // it: over-reporting is the safe direction for an oracle.
+  assert.equal(result.misses.length, 1)
+  assert.equal(result.misses[0]?.test, 'dup')
+  assert.equal(result.misses[0]?.ordinal, 1)
+  assert.match(result.warnings?.[0] ?? '', /duplicate titles \(dup\)/)
+})
+
+test('verify keeps single-title behaviour unchanged', () => {
+  const map = makeMap()
+  const changed = [change(SRC, [{ start: 2, end: 2 }])]
+  const selection = select(map, changed)
+  const result = verify(
+    selection,
+    map,
+    changed,
+    new Map([['adds', [[SRC, 'add@0', 1, 3]] as [string, string, number, number][]]]),
+  )
+  assert.deepEqual(result.misses, [])
+  assert.equal(result.warnings, undefined)
 })
 
 test('verify has nothing to check when the answer was all', () => {

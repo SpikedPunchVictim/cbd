@@ -92,6 +92,14 @@ export interface Source {
    * cannot prepare leaves it absent and the build falls back to the file.
    */
   prepare?(scriptIds: readonly string[]): Promise<void> | void
+  /**
+   * Scripts whose generated text `prepare` could not fetch.
+   *
+   * Read after `prepare`, and written into the shard's health record. A script in
+   * this set with a source map cannot be verified against the file on disk, so the
+   * build marks its file partial instead of indexing the wrong text.
+   */
+  generatedMissing?(): readonly string[]
   close(): void
 }
 

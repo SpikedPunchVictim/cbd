@@ -38,6 +38,7 @@ import {
   fileDefinesTests,
   select as selectCore,
   verify as verifyCore,
+  type GroundTruth,
   type SelectConfig,
   type Selection,
   type Verification,
@@ -275,6 +276,13 @@ export interface StatsResult {
    * cannot answer for these" instead of wondering why every answer is `all`.
    */
   changed: { files: number; unknown: string[] }
+  /**
+   * Shards whose recording was incomplete. Absent when every shard was whole.
+   *
+   * Reported because a map built from an incomplete recording still looks
+   * well-formed; the only visible consequence is that `select` runs everything.
+   */
+  unhealthy?: string[]
 }
 
 export interface Quantiles {
@@ -324,7 +332,7 @@ export interface Cbd {
 
   stats(options?: { commit?: string }): StatsResult
   /** Pure: no suite is run, the outcomes are supplied. */
-  verify(selection: Selection, changes: Change[], outcomes: Map<string, TouchRef[]>): Verification
+  verify(selection: Selection, changes: Change[], outcomes: GroundTruth): Verification
 }
 
 function git(root: string, args: string[]): string {
@@ -1044,6 +1052,7 @@ export function createCbd(config: CbdConfig): Cbd {
         duplicateTests,
         suites,
         changed,
+        ...(map.unhealthy === undefined ? {} : { unhealthy: map.unhealthy }),
       }
     },
 

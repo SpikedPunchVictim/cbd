@@ -5,6 +5,39 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **Snapshot recovery is scoped to one run.** Take ids restart at 1 per client and
+  a snapshot window was accepted on its take id or boundary timestamp alone, so a
+  later run could substitute an earlier run's execution for a lost window and skip
+  the loss report. A source now names a run session in the hello, the instrument
+  tags every window with the session that produced it, and recovery only accepts a
+  window carrying this run's session. Windows whose collector connection has closed
+  are dropped from later snapshots, and `close` clears the unacked state. Two
+  collectors against one service no longer share take numbers or acknowledgements.
+  An older instrument does not echo the session, and then a lost window is reported
+  as a loss instead of being recovered.
+- **A failed generated-text fetch makes the affected file partial.** When the
+  end-of-run `generated` request could not produce a transformed script's text, the
+  build indexed the file on disk as if V8 had compiled it, so offsets converted
+  against the wrong bytes. The generated reply now names the script ids it could
+  not produce, the recorder writes a `health` record before the footer, and the
+  build marks a missing script's file partial when that file has a source map
+  (carried on the row, declared, or beside it). A script with no map is its own
+  source and still falls back to disk. Shards without a health record keep the old
+  behaviour.
+- **A window that could not be taken makes the map unhealthy.** A throwing
+  `takeSync` or a queued reply lost with no snapshot substituted an empty capture,
+  and the shard still looked well-formed. The recorder counts failed takes into the
+  same `health` record, the build writes `CoverageMap.unhealthy`, and `select` runs
+  everything for an in-scope change. `cbd stats` reports the reasons. An empty
+  window could have covered any file, so this is a map-level flag rather than a
+  path-level `partial`.
+- **`verify` accepts identity-aware ground truth.** Title-keyed ground truth kept
+  the first match, so a duplicate title in another file or ordinal could hide a
+  miss. `verify` now also accepts `{ id?, file, title, ordinal?, touches }[]`,
+  matching the map's identity exactly. Title-keyed input is still supported: when a
+  title is duplicated, every matching test is required and the verification warns,
+  so a bare title over-reports rather than masking a miss.
+
 - **Map test ids are stored relative to the map's root.** A test's id is
   `<file>::<title>`, but only `file` was made relative when the map was saved; the
   id kept the absolute path of the checkout that recorded it. A map copied to

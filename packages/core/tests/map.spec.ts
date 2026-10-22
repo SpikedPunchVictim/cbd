@@ -168,6 +168,32 @@ test('two shards merge, and a test appearing in both is recorded once', () => {
   assert.deepEqual(map.shards, ['s1', 's2'])
 })
 
+// A window that could not be taken is an empty window, which could have covered any
+// file. Nothing path-level says that, so the map records it per shard.
+test('a shard that lost windows makes the map unhealthy and its files partial', () => {
+  const map = mergeShards(
+    [
+      {
+        ...shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)])]),
+        partialFiles: [A],
+        failedTakes: 2,
+      },
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.partial, [A])
+  assert.equal(map.unhealthy?.length, 1)
+  assert.match(map.unhealthy?.[0] ?? '', /^s1: 2 window/)
+})
+
+test('a whole map has neither partial files nor an unhealthy marker', () => {
+  const map = mergeShards([shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)])])], {
+    commit: 'c0ffee',
+  })
+  assert.equal(map.partial, undefined)
+  assert.equal(map.unhealthy, undefined)
+})
+
 test('line ranges widen when shards disagree, and never narrow', () => {
   const map = mergeShards(
     [

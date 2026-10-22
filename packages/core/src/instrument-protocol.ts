@@ -131,6 +131,18 @@ export interface HelloResult {
    * that it does not know it.
    */
   correlating?: boolean
+  /**
+   * The collector's run session, echoed from the hello.
+   *
+   * A source makes one id per run and sends it with the hello, so a snapshot
+   * window can say which run produced it. Take ids restart at 1 per client and
+   * `sentAtUs` is meaningful only within one process lifetime, so without this a
+   * later run can substitute an earlier run's execution for a lost window. Absent
+   * from an instrument older than this field, and then the source does not recover
+   * from snapshots at all: it reports the loss instead of substituting a run it
+   * cannot identify.
+   */
+  session?: string
 }
 
 /**
@@ -187,6 +199,14 @@ export interface TakeResult {
 export interface SnapshotWindow {
   takeId: number
   sentAtUs?: number
+  /**
+   * The run session of the collector this take was served for.
+   *
+   * Recovery compares it, so a window left by a collector that died is never
+   * offered to the next run. A window without one — written by an instrument older
+   * than this field — is not recoverable either, for the same reason.
+   */
+  session?: string
   coverage: V8ScriptCoverage[]
   /**
    * The script rows this take delivered. Kept with the window until it is
@@ -210,6 +230,14 @@ export interface SnapshotFile {
   pid: number
   /** `nowUs()` when the instrument module started. Comparable across processes. */
   startedAtUs: number
+  /**
+   * The most recent collector session this process served.
+   *
+   * A file without one predates sessions, and its windows cannot be attributed to a
+   * run; recovery refuses it rather than guessing. The unnumbered fallback
+   * (`untaken`/`pendingRequests`) is similarly offered only to this session.
+   */
+  session?: string
   /** `nowUs()` when this file was written. */
   atUs: number
   /** Set only on the write made by the exit handler. */
@@ -264,7 +292,8 @@ export function snapshotPath(dir: string, pid: number): string {
 export type InstrumentOp = 'hello' | 'take' | 'close' | 'ack' | 'correlate' | 'generated'
 
 export type InstrumentRequest =
-  | { id: number; op: 'hello' }
+  /** `session` names this run; see `HelloResult.session`. */
+  | { id: number; op: 'hello'; session?: string }
   | { id: number; op: 'take'; sentAtUs?: number }
   | { id: number; op: 'close' }
   /** `ackId` is the last take the client has safely absorbed. */
@@ -299,7 +328,18 @@ export type InstrumentResponse =
       id: number
       op: 'generated'
       ok: true
-      result: { generated: Record<string, GeneratedScript> }
+      result: {
+        generated: Record<string, GeneratedScript>
+        /**
+         * Script ids whose generated text this process could not produce.
+         *
+         * A loader-transformed script's offsets cannot be converted against the file
+         * on disk, so the build needs to know that the text it wanted is missing
+         * rather than fall back silently (`cbd-x2j`). Absent from an instrument older
+         * than this field; the source derives the same set from the reply.
+         */
+        missing?: string[]
+      }
     }
   | { id: number; op: string; ok: false; error: string }
 

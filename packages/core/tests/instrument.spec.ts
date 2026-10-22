@@ -40,10 +40,12 @@ interface Client {
   request(op: InstrumentOp): Promise<InstrumentResponse>
   /** Acknowledge a take by the id the reply carried, so its snapshot rows can be dropped. */
   ack(ackId: number): Promise<InstrumentResponse>
+  /** Ask for generated line starts by script id. */
+  generated(ids: string[]): Promise<InstrumentResponse>
   close(): void
 }
 
-async function connect(socketPath: string): Promise<Client> {
+async function connect(socketPath: string, session = 'test-session'): Promise<Client> {
   const socket = await new Promise<net.Socket>((resolve, reject) => {
     const candidate = net.connect(socketPath)
     candidate.once('connect', () => resolve(candidate))
@@ -73,7 +75,7 @@ async function connect(socketPath: string): Promise<Client> {
       const id = nextId++
       return new Promise<InstrumentResponse>((resolve) => {
         waiting.set(id, resolve)
-        socket.write(encodeMessage(buildRequest(id, op)))
+        socket.write(encodeMessage(buildRequest(id, op, session)))
       })
     },
     ack(ackId) {
@@ -81,6 +83,13 @@ async function connect(socketPath: string): Promise<Client> {
       return new Promise<InstrumentResponse>((resolve) => {
         waiting.set(id, resolve)
         socket.write(encodeMessage({ id, op: 'ack', ackId }))
+      })
+    },
+    generated(ids) {
+      const id = nextId++
+      return new Promise<InstrumentResponse>((resolve) => {
+        waiting.set(id, resolve)
+        socket.write(encodeMessage({ id, op: 'generated', ids }))
       })
     },
     close: () => socket.destroy(),
@@ -92,10 +101,14 @@ async function connect(socketPath: string): Promise<Client> {
  * is a discriminated union and a value of the union's type is not one of its
  * members.
  */
-function buildRequest(id: number, op: InstrumentOp): InstrumentRequest {
+function buildRequest(
+  id: number,
+  op: InstrumentOp,
+  session = 'test-session',
+): InstrumentRequest {
   switch (op) {
     case 'hello':
-      return { id, op: 'hello' }
+      return { id, op: 'hello', session }
     case 'take':
       return { id, op: 'take' }
     case 'close':
@@ -133,8 +146,9 @@ async function portOf(service: { output: () => string }): Promise<number> {
 }
 
 interface OnDiskSnapshot {
+  session?: string
   scripts: Array<{ id: string }>
-  windows: Array<{ takeId: number; scripts?: Array<{ id: string }> }>
+  windows: Array<{ takeId: number; session?: string; scripts?: Array<{ id: string }> }>
   /** Exit-only; absent on the bounded per-take and periodic writes (`cbd-n9t.2`). */
   untaken?: unknown[]
   pendingRequests?: unknown[]
@@ -148,14 +162,19 @@ interface OnDiskSnapshot {
  * — that ordering is deliberate (the client's wait does not include the write) —
  * so a client that has just been answered has not necessarily been outrun by it.
  */
-async function snapshotFor(dir: string, pid: number, takeId: number): Promise<OnDiskSnapshot> {
+async function snapshotFor(
+  dir: string,
+  pid: number,
+  takeId: number,
+  when: (file: OnDiskSnapshot) => boolean = () => true,
+): Promise<OnDiskSnapshot> {
   const path = join(dir, `pid-${String(pid)}.coverage.json`)
   const deadline = Date.now() + 2_000
   let lastError: unknown = null
   while (Date.now() < deadline) {
     try {
       const file = JSON.parse(readFileSync(path, 'utf8')) as OnDiskSnapshot
-      if (file.windows.some((window) => window.takeId === takeId)) return file
+      if (file.windows.some((window) => window.takeId === takeId) && when(file)) return file
     } catch (error) {
       lastError = error
     }
@@ -221,6 +240,88 @@ test.group('instrument module', () => {
         assert.equal(hello.role, 'service')
         assert.equal(hello.protocol, 1)
         assert.ok(hello.scriptCount > 0, 'Debugger.enable should have replayed scriptParsed')
+      } finally {
+        client.close()
+      }
+    })
+  })
+
+  // Take ids restart at 1 per client, so the session is what tells two runs apart.
+  test('echoes the run session and tags its snapshot windows with it', async () => {
+    await withService({}, async (service) => {
+      await service.ready
+      await waitForSocket(service.socketPath)
+      const client = await connect(service.socketPath, 'run-a')
+      try {
+        const hello = (await client.request('hello') as { result: HelloResult }).result
+        assert.equal(hello.session, 'run-a')
+        await client.request('take')
+        const snapshot = await snapshotFor(service.dir, service.proc.pid as number, 2)
+        assert.equal(snapshot.session, 'run-a')
+        assert.equal(snapshot.windows.find((window) => window.takeId === 2)?.session, 'run-a')
+      } finally {
+        client.close()
+      }
+    })
+  })
+
+  // A window belongs to the run whose take produced it. A collector that has gone
+  // away can never recover it, and leaving it on disk lets the next run's take 2
+  // find its predecessor's execution.
+  test('drops a window once its collector connection closes', async () => {
+    await withService({}, async (service) => {
+      await service.ready
+      await waitForSocket(service.socketPath)
+      const first = await connect(service.socketPath, 'run-a')
+      const second = await connect(service.socketPath, 'run-b')
+      try {
+        await first.request('hello')
+        await first.request('take')
+        await second.request('hello')
+        // Both collectors are open, so both windows are evidence.
+        await second.request('take')
+        const both = await snapshotFor(
+          service.dir,
+          service.proc.pid as number,
+          2,
+          (file) => new Set(file.windows.map((window) => window.session)).size === 2,
+        )
+        assert.deepEqual(
+          [...new Set(both.windows.map((window) => window.session))].sort(),
+          ['run-a', 'run-b'],
+        )
+
+        first.close()
+        // Give the server's close handler a turn, then a write to prune on.
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        await second.request('take')
+        const after = await snapshotFor(service.dir, service.proc.pid as number, 3)
+        assert.deepEqual(
+          [...new Set(after.windows.map((window) => window.session))],
+          ['run-b'],
+          'the closed collector’s window must not survive',
+        )
+      } finally {
+        first.close()
+        second.close()
+      }
+    })
+  })
+
+  // The collector asks for generated text at the end of the run. A script it cannot
+  // produce must be named, or the build falls back to a file that may not be the text
+  // V8 compiled.
+  test('names the generated script ids it could not produce', async () => {
+    await withService({}, async (service) => {
+      await service.ready
+      await waitForSocket(service.socketPath)
+      const client = await connect(service.socketPath)
+      try {
+        const reply = await client.generated(['no-such-script'])
+        assert.equal(reply.ok, true)
+        const result = (reply as { result: { generated: Record<string, unknown>; missing?: string[] } })
+          .result
+        assert.deepEqual(result.missing, ['no-such-script'])
       } finally {
         client.close()
       }
@@ -329,8 +430,11 @@ test.group('instrument module', () => {
       await waitForSocket(service.socketPath)
       const client = await connect(service.socketPath)
       try {
+        // The hello carries the run session a snapshot window is tagged with; a take
+        // from a connection with no session is not recoverable and is not written.
+        await client.request('hello')
         const firstReply = (await client.request('take')) as { result: TakeResult }
-        const first = await snapshotFor(service.dir, service.proc.pid as number, 1)
+        const first = await snapshotFor(service.dir, service.proc.pid as number, 2)
         assert.equal(
           first.scripts.length,
           firstReply.result.scripts.length,
@@ -350,9 +454,9 @@ test.group('instrument module', () => {
           'a per-take snapshot must not carry the request queue',
         )
 
-        await client.ack(1)
+        await client.ack(2)
         const secondReply = (await client.request('take')) as { result: TakeResult }
-        const second = await snapshotFor(service.dir, service.proc.pid as number, 3)
+        const second = await snapshotFor(service.dir, service.proc.pid as number, 4)
 
         assert.deepEqual(
           second.scripts.map((row) => row.id),

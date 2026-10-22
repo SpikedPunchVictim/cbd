@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import { SocketSourceError, discoverSockets, socketSource } from '../src/adapter.js'
 import { recoverFromSnapshot } from '../src/source/socket.js'
-import { INSTRUMENT_PROTOCOL } from '../src/instrument-protocol.js'
+import { INSTRUMENT_PROTOCOL, type SnapshotFile } from '../src/instrument-protocol.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { sourceContract } from './support/source-contract.js'
 import {
@@ -542,18 +542,55 @@ test.group('socketSource dispatch', (group) => {
   })
 })
 
-test('a matched snapshot window with no coverage is still recovered', () => {
-  const file = {
+test.group('snapshot recovery identity', () => {
+  const file = (overrides: Partial<SnapshotFile> = {}): SnapshotFile => ({
     protocol: INSTRUMENT_PROTOCOL,
     pid: 1,
     startedAtUs: 0,
+    session: 'run-a',
     atUs: 1,
     scripts: [],
-    windows: [{ takeId: 2, coverage: [], requests: [], scripts: [] }],
-  }
-  const recovered = recoverFromSnapshot(file, 2, 0)
-  assert.ok(recovered !== null, 'an empty matched window must be acknowledged, not dropped')
-  assert.equal(recovered.matched, true)
-  assert.deepEqual(recovered.coverage, [])
-  assert.equal(recoverFromSnapshot(file, 3, 0), null, 'no window and no fallback is null')
+    windows: [],
+    ...overrides,
+  })
+
+  test('a matched snapshot window with no coverage is still recovered', () => {
+    const snapshot = file({
+      windows: [{ takeId: 2, session: 'run-a', coverage: [], requests: [], scripts: [] }],
+    })
+    const recovered = recoverFromSnapshot(snapshot, 2, 0, 'run-a')
+    assert.ok(recovered !== null, 'an empty matched window must be acknowledged, not dropped')
+    assert.equal(recovered.matched, true)
+    assert.deepEqual(recovered.coverage, [])
+    assert.equal(recoverFromSnapshot(snapshot, 3, 0, 'run-a'), null, 'no window and no fallback is null')
+  })
+
+  // Take ids restart at 1 per client, so a later run's take 2 is the same number an
+  // earlier run used. Only the session says whose execution the window holds.
+  test('a window from another run is not offered to this one', () => {
+    const snapshot = file({
+      windows: [{ takeId: 2, session: 'run-a', coverage: [{ scriptId: '1', url: 'file:///a.js', functions: [] }], scripts: [] }],
+    })
+    assert.equal(recoverFromSnapshot(snapshot, 2, 0, 'run-b'), null)
+    assert.notEqual(recoverFromSnapshot(snapshot, 2, 0, 'run-a'), null)
+  })
+
+  test('a snapshot without a session, or a source without one, is not recoverable', () => {
+    const legacy: SnapshotFile = {
+      protocol: INSTRUMENT_PROTOCOL,
+      pid: 1,
+      startedAtUs: 0,
+      atUs: 1,
+      scripts: [],
+      windows: [
+        { takeId: 2, coverage: [{ scriptId: '1', url: 'file:///a.js', functions: [] }], scripts: [] },
+      ],
+    }
+    assert.equal(recoverFromSnapshot(legacy, 2, 0, 'run-a'), null, 'an untagged window is not evidence')
+    assert.equal(
+      recoverFromSnapshot(file({ windows: legacy.windows }), 2, 0, undefined),
+      null,
+      'a source with no session cannot claim a window',
+    )
+  })
 })

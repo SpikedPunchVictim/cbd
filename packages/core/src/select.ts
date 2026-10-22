@@ -21,6 +21,7 @@
  */
 import { isAbsolute, relative } from 'node:path'
 import { intersects, type Change, type LineRange } from './changes.js'
+import { testId } from './contract.js'
 import { matchesAnyGlob } from './glob.js'
 import type { CoverageMap, FunctionEntry } from './map.js'
 import type { TouchRef } from './shard.js'
@@ -36,6 +37,7 @@ export type AllWhy =
   | 'always-unknown'
   | 'config-changed'
   | 'partial'
+  | 'unhealthy'
 
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
@@ -583,6 +585,14 @@ export function select(
       continue
     }
 
+    // A shard whose window could not be taken recorded an empty capture for it, and
+    // that window could have covered any file. The map cannot narrow an in-scope
+    // change, so the whole suite is the only safe answer.
+    if (map.unhealthy !== undefined && map.unhealthy.length > 0) {
+      forceAll('unhealthy', path)
+      continue
+    }
+
     // A file the test read or listed. This answers an oracle that executes no
     // code in the file it checks — a source grep, a dependency scan, a tsc run —
     // and it composes with the function and test-file rules rather than replacing
@@ -792,7 +802,31 @@ export interface Miss {
   test: string
   file: string
   key: string
+  /** The repeated-title discriminator, when the missed test has one. */
+  ordinal?: number
 }
+
+/**
+ * One test in the ground truth, identified the way the map identifies it.
+ *
+ * `id` is preferred when the caller has one (the map's canonical `<file>::<title>`).
+ * Otherwise the tuple the map uses — file, title and ordinal — names exactly one
+ * entry, which a bare title cannot do when a suite defines it twice.
+ */
+export interface GroundTruthTest {
+  id?: string
+  file: string | null
+  title: string
+  /** Absent for the first occurrence, as in `TestEntry`. */
+  ordinal?: number
+  touches: TouchRef[]
+}
+
+/**
+ * A real recording of the same commit range, as either identity-aware entries or,
+ * for callers that only have titles, a title → touches map.
+ */
+export type GroundTruth = Map<string, TouchRef[]> | readonly GroundTruthTest[]
 
 export interface Verification {
   /** Tests that touched changed code and would not have been selected. */
@@ -801,24 +835,83 @@ export interface Verification {
   checked: number
   /** True when the answer was `all`, so nothing could have been missed. */
   ranEverything: boolean
+  /**
+   * What the oracle wants the caller to know but does not fail.
+   *
+   * Today: a title-keyed truth matched more than one test. The check is then an
+   * over-report — every matching entry must be selected — which is the safe
+   * direction for an oracle, but the caller should migrate to `GroundTruthTest[]`
+   * to name the one it means.
+   */
+  warnings?: string[]
+}
+
+const tupleKey = (file: string | null, title: string, ordinal: number): string =>
+  `${file ?? ''}\u0000${title}\u0000${String(ordinal)}`
+
+const pushIndex = (map: Map<string, number[]>, key: string, index: number): void => {
+  const list = map.get(key)
+  if (list === undefined) map.set(key, [index])
+  else list.push(index)
 }
 
 /**
  * Checks a selection against what actually happened.
  *
- * `groundTruth` is a test title to its touches, from a real recording of the same
- * commit range. Any test that touched a changed range but is absent from the
- * selection is a miss — the one outcome that silently makes the suite lie. This is
- * the number the project stands or falls on.
+ * `groundTruth` is from a real recording of the same commit range. Any test that
+ * touched a changed range but is absent from the selection is a miss — the one
+ * outcome that silently makes the suite lie. This is the number the project stands
+ * or falls on.
+ *
+ * **Identity-aware truth is exact.** An entry naming an `id`, or a
+ * `(file, title, ordinal)`, matches exactly the map entry it describes, so a miss on
+ * the second of two same-titled tests is reported as its own miss.
+ *
+ * **Title-keyed truth answers in the safe direction.** A bare title cannot say which
+ * duplicate it means, so *every* map entry with that title must be selected; a
+ * missing one is a miss. That over-reports rather than masking, and a warning names
+ * the titles so the caller can move to `GroundTruthTest[]`.
  */
 export function verify(
   selection: Selection,
   map: CoverageMap,
   changes: Change[],
-  groundTruth: Map<string, TouchRef[]>,
+  groundTruth: GroundTruth,
 ): Verification {
+  const warnings: string[] = []
+  const titleKeyed = groundTruth instanceof Map
+
+  // Title-keyed truth matches by title; identity-aware truth by id, falling back to
+  // the tuple. Built before the early return so ambiguous titles are reported even
+  // when the answer was `all`.
+  const indexOfTitle = new Map<string, number[]>()
+  const indexOfId = new Map<string, number[]>()
+  const indexOfTuple = new Map<string, number[]>()
+  map.tests.forEach((test, index) => {
+    pushIndex(indexOfTitle, test.title, index)
+    pushIndex(indexOfId, test.id ?? testId(test.file, test.title), index)
+    pushIndex(indexOfTuple, tupleKey(test.file, test.title, test.ordinal ?? 0), index)
+  })
+  if (titleKeyed) {
+    const ambiguous = [...indexOfTitle]
+      .filter(([, indices]) => indices.length > 1)
+      .map(([title]) => title)
+      .sort()
+    if (ambiguous.length > 0) {
+      warnings.push(
+        `ground truth is keyed by title and the map has duplicate titles (${ambiguous.join(', ')}); ` +
+          'every matching test is required, so this check may over-report. Pass identities instead.',
+      )
+    }
+  }
+
   if (selection.mode === 'all') {
-    return { misses: [], checked: 0, ranEverything: true }
+    return {
+      misses: [],
+      checked: 0,
+      ranEverything: true,
+      ...(warnings.length === 0 ? {} : { warnings }),
+    }
   }
 
   const changedWithHunks = new Map<string, { ranges: LineRange[]; points: number[] }>()
@@ -831,17 +924,36 @@ export function verify(
     changedWithHunks.set(change.path, { ranges, points })
   }
 
-  const indexOfTitle = new Map<string, number>()
-  map.tests.forEach((test, index) => {
-    if (!indexOfTitle.has(test.title)) indexOfTitle.set(test.title, index)
-  })
+  const entries: GroundTruthTest[] = titleKeyed
+    ? [...(groundTruth as Map<string, TouchRef[]>)].map(([title, touches]) => ({
+        title,
+        file: null,
+        touches,
+      }))
+    : [...(groundTruth as readonly GroundTruthTest[])]
 
   const misses: Miss[] = []
   const seenMiss = new Set<string>()
   let checked = 0
 
-  for (const [title, touches] of groundTruth) {
-    for (const [file, key, startLine, endLine] of touches) {
+  for (const entry of entries) {
+    let matched = titleKeyed
+      ? indexOfTitle.get(entry.title)
+      : entry.id !== undefined
+        ? indexOfId.get(entry.id)
+        : indexOfTuple.get(tupleKey(entry.file, entry.title, entry.ordinal ?? 0))
+    // `TestEntry.id` is `file::title`, so duplicates share it. An entry that also
+    // names its ordinal is saying which of them it means; narrow to that one.
+    if (!titleKeyed && entry.id !== undefined && entry.ordinal !== undefined) {
+      matched = matched?.filter(
+        (index) => (map.tests[index]?.ordinal ?? 0) === entry.ordinal,
+      )
+    }
+    // An unknown test cannot be named by the selection, so it counts as missed
+    // rather than being skipped — that is what "unmapped" costs.
+    const targets = matched ?? []
+
+    for (const [file, key, startLine, endLine] of entry.touches) {
       const change = changedWithHunks.get(file)
       if (change === undefined) continue
       const range = { start: startLine, end: endLine }
@@ -850,22 +962,30 @@ export function verify(
         // A new-side insertion point names content after that line; the boundary
         // belongs to the range it touches.
         change.points.some((point) => point >= startLine - 1 && point <= endLine)
-      if (!hit) {
-        continue
-      }
+      if (!hit) continue
       checked += 1
-      const index = indexOfTitle.get(title)
-      // An unknown test cannot be named by the selection, so it counts as missed
-      // rather than being skipped — that is what "unmapped" costs.
-      if (index === undefined || !selection.tests.includes(index)) {
-        const id = `${title}\u0000${file}\u0000${key}`
-        if (!seenMiss.has(id)) {
-          seenMiss.add(id)
-          misses.push({ test: title, file, key })
-        }
+
+      const missed = targets.length === 0 ? [undefined] : targets
+      for (const index of missed) {
+        if (index !== undefined && selection.tests.includes(index)) continue
+        const ordinal = index === undefined ? entry.ordinal : map.tests[index]?.ordinal
+        const id = `${entry.title}\u0000${file}\u0000${key}\u0000${String(index ?? 'unknown')}`
+        if (seenMiss.has(id)) continue
+        seenMiss.add(id)
+        misses.push({
+          test: entry.title,
+          file,
+          key,
+          ...(ordinal === undefined ? {} : { ordinal }),
+        })
       }
     }
   }
 
-  return { misses, checked, ranEverything: false }
+  return {
+    misses,
+    checked,
+    ranEverything: false,
+    ...(warnings.length === 0 ? {} : { warnings }),
+  }
 }

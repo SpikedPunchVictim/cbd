@@ -463,9 +463,63 @@ test('a source that throws costs its window, not the run', async () => {
   recorder.runEnd()
 
   const records = parseShard(sink.text)
+  // The window is empty, not absent, so the run keeps going — but it is counted.
+  // An empty window under-selects for that test, and a silently well-formed shard
+  // would make the resulting map look trustworthy.
   assert.deepEqual(
     records.map((r) => r.type),
-    ['shard', 'test', 'end'],
+    ['shard', 'test', 'health', 'end'],
+  )
+  const health = records.find((record) => record.type === 'health')
+  assert.equal(health?.type, 'health')
+  assert.ok(
+    health?.type === 'health' && (health.failedTakes ?? 0) > 0,
+    'a lost window must be counted',
+  )
+})
+
+test('generated text the source could not produce is written as health', () => {
+  const source: Source = {
+    kind: 'fake',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => new Map(),
+    // What a socket source reports after a failed end-of-run `generated` fetch.
+    generatedMissing: () => ['7'],
+    close: () => {},
+  }
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'abc' })
+  recorder.runStart()
+  recorder.runEnd()
+
+  const records = parseShard(sink.text)
+  assert.deepEqual(
+    records.map((record) => record.type),
+    ['shard', 'health', 'end'],
+  )
+  const health = records.find((record) => record.type === 'health')
+  assert.deepEqual(health?.type === 'health' ? health.generatedMissing : undefined, ['7'])
+})
+
+test('a clean run writes no health record', () => {
+  const source: Source = {
+    kind: 'clean',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => new Map(),
+    generatedMissing: () => [],
+    close: () => {},
+  }
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'abc' })
+  recorder.runStart()
+  recorder.runEnd()
+  assert.deepEqual(
+    parseShard(sink.text).map((record) => record.type),
+    ['shard', 'end'],
   )
 })
 

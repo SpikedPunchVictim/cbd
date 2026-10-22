@@ -113,6 +113,41 @@ test('a rebuilt file with identical bytes is accepted; a changed one is not', ()
   }
 })
 
+/**
+ * A generated-text failure is only dangerous when the file on disk is not the text
+ * V8 compiled. A source map is what says so; without one the file *is* the script and
+ * the fallback is correct.
+ */
+test('a missing generated script is partial only when its file has a map', () => {
+  const mapped = makeTree()
+  const plain = makeTree()
+  try {
+    writeFileSync(`${mapped.file}.map`, '{"version":3,"sources":[],"names":[],"mappings":""}')
+    const health: ShardRecord = { type: 'health', generatedMissing: ['1'] }
+
+    const withMap = resolveShard(shard([header(), script(mapped), health, end(0)]))
+    assert.deepEqual(withMap.partialFiles, [realpathSync(mapped.file)])
+
+    const withoutMap = resolveShard(shard([header(), script(plain), health, end(0)]))
+    assert.deepEqual(withoutMap.partialFiles, [])
+  } finally {
+    mapped.cleanup()
+    plain.cleanup()
+  }
+})
+
+test('a health record carries the failed-take count into the resolution', () => {
+  const tree = makeTree()
+  try {
+    const resolved = resolveShard(
+      shard([header(), script(tree), { type: 'health', failedTakes: 2 }, end(0)]),
+    )
+    assert.equal(resolved.failedTakes, 2)
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('byte ranges resolve to the map identity and line range', () => {
   const tree = makeTree()
   try {

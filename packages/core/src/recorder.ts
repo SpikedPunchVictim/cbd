@@ -62,6 +62,7 @@ import {
   SHARD_VERSION,
   type RawRange,
   type ShardFunction,
+  type ShardHealth,
   type ShardRecord,
   type ShardScript,
   type ShardSink,
@@ -409,8 +410,17 @@ interface Windows {
   prepareAndFinish(
     prepare: () => Promise<void> | void,
     updates: () => ShardRecord[],
-    footer: () => ShardRecord,
+    footer: () => ShardRecord | ShardRecord[],
   ): void
+  /**
+   * Boundaries that produced no capture, over the run so far.
+   *
+   * A dead inspector session, a throwing `takeSync`, or a queued reply that never
+   * arrived all substitute an empty window. The window is genuinely lost, and an
+   * empty window under-selects for whatever test it belonged to, so the count goes
+   * into the shard's health record instead of being swallowed.
+   */
+  failedTakes(): number
   /** Resolves once every record has reached the sink. */
   drained(): Promise<void>
 }
@@ -445,6 +455,7 @@ function appendTable(sink: ShardSink, projected: ProjectedCapture): void {
 
 /** A source that answers in the same tick: write the record in that same tick. */
 function syncWindows(source: Source, sink: ShardSink, project: Projector): Windows {
+  let failedTakes = 0
   return {
     commit(record) {
       sink.append(JSON.stringify(record))
@@ -455,8 +466,9 @@ function syncWindows(source: Source, sink: ShardSink, project: Projector): Windo
         capture = { coverage: source.takeSync(), ids: [], requests: [] }
       } catch {
         // A dead inspector session must not take the test run down with it. An
-        // empty window under-selects for that test, which is why the run should
-        // also be reported as unhealthy rather than silently trusted.
+        // empty window under-selects for that test, so the loss is counted and the
+        // shard's health record makes the map answer `all`.
+        failedTakes += 1
         capture = EMPTY_RAW
       }
       const projected = project.project(capture)
@@ -475,8 +487,9 @@ function syncWindows(source: Source, sink: ShardSink, project: Projector): Windo
         )
       }
       for (const row of updates()) sink.append(JSON.stringify(row))
-      sink.append(JSON.stringify(footer()))
+      appendRecords(sink, footer())
     },
+    failedTakes: () => failedTakes,
     drained: () => Promise.resolve(),
   }
 }
@@ -484,6 +497,7 @@ function syncWindows(source: Source, sink: ShardSink, project: Projector): Windo
 /** A source that answers later: queue the records so they stay in boundary order. */
 function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector): Windows {
   let chain: Promise<void> = Promise.resolve()
+  let failedTakes = 0
 
   /**
    * Appends to the queue. `work` must *return* its promise — returning void from an
@@ -512,6 +526,7 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector
             ? pending.settle().then((coverage) => ({ coverage, ids: [], requests: [] }))
             : pending.settleTagged()
       } catch {
+        failedTakes += 1
         reply = Promise.resolve(EMPTY_RAW)
       }
 
@@ -520,9 +535,11 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector
         try {
           capture = await reply
         } catch {
-          // The socket died mid-run, or the target went away. Same answer as the
-          // synchronous path gives for a dead session: an empty window, which
-          // under-selects and should be visible as an unhealthy run.
+          // The socket died mid-run, or the target went away with no snapshot to
+          // recover the window from. Same answer as the synchronous path gives: an
+          // empty window, counted so the shard is visibly unhealthy rather than
+          // silently under-selecting.
+          failedTakes += 1
           capture = EMPTY_RAW
         }
         // Projected inside the chain, not when the reply landed, so the table's
@@ -537,9 +554,10 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector
       queue(async () => {
         await prepare()
         for (const row of updates()) sink.append(JSON.stringify(row))
-        sink.append(JSON.stringify(footer()))
+        appendRecords(sink, footer())
       })
     },
+    failedTakes: () => failedTakes,
     drained: () => chain,
   }
 }
@@ -910,8 +928,24 @@ export class Recorder {
       () => source.prepare?.(projector.scriptIds()),
       () => projector.finish(),
       () => {
+        // Built after `prepare`, so the generated fetch has recorded what it could
+        // not produce. A clean run has nothing to say and writes no health record.
+        const missing = source.generatedMissing?.() ?? []
+        const failed = this.#windows.failedTakes()
         const drift = driftOf(source)
-        return { type: 'end', tests, finishedAt, ...(drift === null ? {} : { drift }) }
+        const end: ShardRecord = {
+          type: 'end',
+          tests,
+          finishedAt,
+          ...(drift === null ? {} : { drift }),
+        }
+        if (missing.length === 0 && failed === 0) return end
+        const health: ShardHealth = {
+          type: 'health',
+          ...(missing.length === 0 ? {} : { generatedMissing: [...missing] }),
+          ...(failed === 0 ? {} : { failedTakes: failed }),
+        }
+        return [health, end]
       },
     )
   }
