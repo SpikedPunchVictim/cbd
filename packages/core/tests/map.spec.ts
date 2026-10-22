@@ -937,3 +937,52 @@ test('correlated coverage unions into the green owner, by ordinal', () => {
   assert.equal(merged.tests.length, 2)
   assert.deepEqual(merged.files[file]?.['g@0']?.tests, [1], 'the correlated touch belongs to ordinal 1')
 })
+
+test('a service shard keeps the owners of attributed windows as load observers', () => {
+  const spec = '/repo/t.spec.ts'
+  const handler = '/repo/src/handler.ts'
+  const server = '/repo/server.ts'
+  const owner: ResolvedTest = {
+    title: 'requests',
+    file: spec,
+    status: 'passed',
+    durationMs: 1,
+    touches: [[handler, 'handle@0', 1, 2]],
+  }
+  const attributed: ResolvedTest = {
+    title: 'requests',
+    file: spec,
+    status: 'passed',
+    attributed: true,
+    durationMs: 0,
+    touches: [[handler, 'handle@0', 1, 2]],
+  }
+  const merged = mergeShards(
+    [
+      {
+        name: 'runner',
+        header: header(),
+        tests: [owner],
+        load: [],
+        between: [],
+        teardown: [],
+        loadReads: [],
+      },
+      {
+        name: 'service',
+        header: { ...header(), role: 'service' },
+        tests: [attributed],
+        load: [[server, '<module>@0', 0, 1]],
+        between: [],
+        teardown: [],
+        loadReads: [],
+      },
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(merged.shardTests?.[1], [0], 'the service shard observed the owner')
+  assert.deepEqual(merged.loadShards?.[server], [1])
+  const result = select(merged, [{ path: server, status: 'M', hunks: [{ start: 1, end: 1 }] }])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0])
+})

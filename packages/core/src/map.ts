@@ -251,7 +251,8 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   const between = new Map<string, TouchRef>()
   const teardown = new Map<string, TouchRef>()
   const loadShards = new Map<string, Set<number>>()
-  const shardTests: number[][] = []
+  const shardObserverKeys: Array<Set<string> | null> = []
+  const shardObserverIndices: Array<Set<number> | null> = []
   const reads = new Map<string, Set<number>>()
   const dirReads = new Map<string, Set<number>>()
   const opaque = new Map<string, Set<number>>()
@@ -356,16 +357,20 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     mergeRefs(teardown, resolved.teardown)
 
     const allTests: number[] = []
-    const touchedTests: number[] = []
+    const touchedTests = new Set<string>()
     for (const test of resolved.tests) {
+      const testKey = `${test.title}\u0000${test.file ?? ''}\u0000${String(test.ordinal ?? 0)}`
       if (test.attributed === true) {
+        // The owner may be recorded in another shard; keep the key and resolve it
+        // after every shard has been indexed.
+        touchedTests.add(testKey)
         attributedTests.push(test)
         continue
       }
       if (!options.includeNonGreen && test.status !== 'passed') continue
       const index = indexOfTest(test)
       allTests.push(index)
-      if (test.touches.length > 0) touchedTests.push(index)
+      if (test.touches.length > 0) touchedTests.add(testKey)
       for (const reason of test.opaque ?? []) {
         let set = opaque.get(reason)
         if (set === undefined) {
@@ -436,8 +441,9 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     // process the tests ran in, and its recorder opened a window for every test
     // title, so only a test that actually touched the service can observe what
     // it loaded.
-    const observers = resolved.header.role === 'service' ? touchedTests : allTests
-    shardTests.push([...new Set(observers)].sort((a, b) => a - b))
+    const service = resolved.header.role === 'service'
+    shardObserverKeys.push(service ? touchedTests : null)
+    shardObserverIndices.push(service ? null : new Set(allTests))
     for (const ref of [...resolved.load, ...resolved.teardown]) {
       let indices = loadShards.get(ref[0])
       if (indices === undefined) {
@@ -447,6 +453,16 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
       indices.add(shardIndex)
     }
   }
+
+  const shardTests: number[][] = shardObserverKeys.map((keys, index) => {
+    if (keys === null) return [...(shardObserverIndices[index] ?? [])].sort((a, b) => a - b)
+    const out = new Set<number>()
+    for (const key of keys) {
+      const at = testIndex.get(key)
+      if (at !== undefined) out.add(at)
+    }
+    return [...out].sort((a, b) => a - b)
+  })
 
   // Correlated touches belong to the owner's test entry. If the owner was
   // non-green it is not in the map; do not invent a passing entry for it.
