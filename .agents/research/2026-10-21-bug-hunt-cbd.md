@@ -293,3 +293,19 @@ A non-synchronous/closed inspector makes `takeSync` throw; `syncWindows` substit
 ## Follow-up
 
 The two empirical harnesses used in refutation are reproducible in `/tmp` (git-quoted café/naïve repo; Node 22 phantom-bind socket). No source file was modified by this hunt.
+
+## Fix status (2026-10-21)
+
+Implemented and tested in five phases, with regression tests for each:
+
+- Phase 1 — diff/selector: #1, #2, #3, #4, #5, #6, F3.
+- Phase 2 — collect/map: #8, #10, #17, #19, #20, #21, #23, #24.
+- Phase 3 — adapter/config: #9, #11, #12, #13, #26, #27, #28.
+- Phase 4 — correlation: #14, #15, #16, #18, F6, plus the service-observer fix the
+  attributed-record change required.
+- Phase 5 — verification/history: #7, #25, F1.
+
+Deferred as design work; no partial patches shipped: **#22** (snapshot session epoch),
+**F2** (verify ground-truth identity API), **F4** (empty-window recovery), **F5**
+(generated-text health), **F7** (synchronous-source health). The workspace gate is green
+(core 388, CLI 77, japa 69, jest 11, and the adapters/fixture).
