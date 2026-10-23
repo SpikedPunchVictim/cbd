@@ -124,6 +124,22 @@ export {
  */
 export { SELECTION_ENV, writeSelection, type SelectionFile, type SelectionTest } from './env.js'
 
+/**
+ * The attach-target contract between `cbd collect --target` and an adapter.
+ *
+ * The CLI resolves and checks the target before spawning the suite and writes it
+ * into `CBD_INSPECT`; the adapter opens the source from the same value. Both halves
+ * go through one parser so the check the CLI makes is the check the attach makes.
+ * The source itself stays behind the adapter seam.
+ */
+export {
+  INSPECT_ALLOW_REMOTE_ENV,
+  INSPECT_ENV,
+  assertInspectorUnheld,
+  parseInspectorTarget,
+  type InspectorSourceOptions,
+} from './source/inspector.js'
+
 export {
   ADAPTER_CONTRACT_VERSION,
   testId,

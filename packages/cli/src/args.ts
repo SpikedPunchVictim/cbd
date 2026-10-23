@@ -47,6 +47,13 @@ export interface ParsedArgs {
   build: boolean
   /** `collect`: the shard to write. Defaults under the state directory. */
   shard?: string
+  /**
+   * `collect`: the process to attach to instead of an instrumented socket
+   * directory — a `ws://` debugger URL, `host:port`, or a bare port.
+   */
+  target?: string
+  /** `collect`: the target is not loopback, and attaching to it is intended. */
+  allowRemote: boolean
   /** `build`/`collect`: carry untouched tests forward from an earlier map. */
   incremental: boolean
   /** The map commit to carry from; defaults to the nearest map. */
@@ -108,6 +115,7 @@ const VALUE_FLAGS = new Set([
   'suite',
   'base',
   'order',
+  'target',
 ])
 
 /** Flags that may be given more than once; each value is kept. */
@@ -122,6 +130,7 @@ const BOOLEAN_FLAGS = new Set([
   'select',
   'build',
   'incremental',
+  'allow-remote',
 ])
 
 /** Global flags every command accepts; the rest are per command. */
@@ -135,7 +144,7 @@ const ALLOWED: Record<Command, readonly string[]> = {
   reaches: ['commit', 'file', 'batch'],
   stats: ['commit'],
   flaky: [],
-  collect: ['select', 'build', 'shard', 'incremental', 'base'],
+  collect: ['select', 'build', 'shard', 'incremental', 'base', 'target', 'allow-remote'],
   gc: ['keep'],
   help: [],
 }
@@ -444,6 +453,14 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const commit = stringOf(flags, 'commit')
   const since = stringOf(flags, 'since')
   const shard = stringOf(flags, 'shard')
+  const target = stringOf(flags, 'target')
+  const allowRemote = flags.get('allow-remote') === true
+  // A flag that only relaxes a security rule on another flag means nothing alone,
+  // and accepting it silently would let a script believe it had allowed a remote
+  // attach when it had not.
+  if (allowRemote && target === undefined) {
+    throw new UsageError('--allow-remote needs --target: there is no remote to allow')
+  }
   const file = stringOf(flags, 'file')
   const keep = positiveIntOf(flags, 'keep')
   const patch = stringOf(flags, 'patch')
@@ -470,6 +487,8 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
     ...(commit === undefined ? {} : { commit }),
     ...(since === undefined ? {} : { since }),
     ...(shard === undefined ? {} : { shard: resolve(cwd, shard) }),
+    ...(target === undefined ? {} : { target }),
+    allowRemote,
     ...(file === undefined ? {} : { file }),
     ...(keep === undefined ? {} : { keep }),
     ...(patch === undefined ? {} : { patch: resolve(cwd, patch) }),

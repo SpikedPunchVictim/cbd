@@ -5,10 +5,24 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **`cbd collect --target` attaches.** `inspectorSource` had no caller outside tests, so a run
+  against a service whose environment cannot carry the instrument could not be asked for. The
+  flag takes a `ws://` debugger URL, `host:port`, or a bare port (`--allow-remote` for a
+  non-loopback one), refuses a target another collector already holds, and hands the value to the
+  test command in `CBD_INSPECT` (`CBD_INSPECT_ALLOW_REMOTE` with the flag). The japa plugin opens
+  the service recorder from it through the same shard, pid and `role: 'service'` path it uses for a
+  socket directory, and refuses both variables set at once. A target that cannot be read is a
+  usage error; a held target is one `cbd:` line with exit 1, checked before the suite starts
+  rather than surfacing as a runner stack trace.
 - **`inspectorSource` attaches.** The CDP client behind the fallback source is built:
   it discovers a target through `/json/list` (or takes a `ws://` URL directly),
   opens one WebSocket, enables the `Profiler` and `Debugger` domains, and serves
   `take()`, `scripts()`, `generated()` and `prepare()` over the existing contract.
+  It is a `QueuedSource`, so the `Recorder` can drive it: `dispatch()` sends a
+  boundary in the tick it is called and its handle resolves in dispatch order, and
+  `drift()` reports the round-trip each boundary cost. The target's own pid is read
+  over CDP (`Runtime.evaluate`), because a shard header that named the collector
+  instead would credit the service's execution to the wrong process.
   It refuses a target another collector holds, through a lock keyed by the target
   origin in the OS temp directory; a lock whose owning pid is gone is reclaimed.
   The `/json/list` reply is data from the target, so its debugger URL goes through

@@ -84,6 +84,7 @@ Usage:
   cbd stats   [--commit <sha>] [--root <dir>] [--format json]
   cbd flaky   [--root <dir>] [--format json]
   cbd collect [--no-select] [--no-build] [--shard <path>] [--incremental]
+              [--target <host:port|ws://url> [--allow-remote]]
               -- <test command>
   cbd gc      [--keep <n>] [--root <dir>] [--format json]
 
@@ -100,6 +101,10 @@ collect runs the test command with CBD_SHARD and CBD_COMMIT set, selects first
 (unless --no-select), and builds the map in the same process afterwards
 (unless --no-build). It exits with the test command's status. An empty
 selection runs nothing instead of handing the runner an empty filter.
+--target names a service started with --inspect, for one that cannot be given
+CBD's environment: the adapter attaches over CDP instead of reading a socket
+directory. The target is loopback unless --allow-remote says otherwise; the
+collector lock is checked before anything runs.
 
 gc keeps the newest --keep runs of each kind (default 10) under the state
 directory and removes the rest. It always keeps the map select is using, and
@@ -548,6 +553,8 @@ function runCollect(
     select: parsed.select,
     build: parsed.build,
     incremental: parsed.incremental,
+    allowRemote: parsed.allowRemote,
+    ...(parsed.target === undefined ? {} : { target: parsed.target }),
     ...(parsed.base === undefined ? {} : { base: parsed.base }),
     ...(parsed.shard === undefined ? {} : { shard: parsed.shard }),
     out: options.out,

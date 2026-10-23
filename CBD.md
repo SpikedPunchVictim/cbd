@@ -211,6 +211,22 @@ attach, so anything the process did before it — start-up, module imports — i
 - This reaches a black-box suite whose service genuinely cannot be restarted with an environment
   change: the tests send HTTP requests, the server's code runs, and the per-test window is taken
   from the server.
+- **It is a `QueuedSource`, driven exactly like the injected source.** `dispatch()` sends the
+  `Profiler.takePreciseCoverage` request in the tick the boundary happens and returns a handle; the
+  handle's `settle()` resolves no earlier than the handles dispatched before it, so overlapping
+  boundaries still partition one counter in order. `drift()` reports the round trip each boundary
+  cost, which is an upper bound rather than the socket source's server-side receive time.
+- **A live service is never idle.** Background work — schedulers, heartbeats — runs inside every
+  window, including the gaps between tests. That work lands in `@between` and escalates the files it
+  touches to every test, so an attached run over-selects relative to an injected one. It is the
+  price of not controlling the target, not a defect in the window.
+- **`cbd collect --target` is how a run asks for it.** The flag resolves the target, refuses a
+  non-loopback host unless `--allow-remote`, and refuses a target another collector holds — all
+  before the suite is spawned, so a refusal is one `cbd:` line rather than a runner stack trace.
+  The value travels to the test process in `CBD_INSPECT` (with `CBD_INSPECT_ALLOW_REMOTE` when the
+  flag was given), where the japa plugin opens the service recorder from it exactly as it opens one
+  from a socket directory. Both variables set at once is refused: they name one service two ways.
+  One target per run, because one source reads one debugger port.
 - **One test runner per server during collection.** Two runners hitting one server make attribution
   meaningless, and a take resets one counter shared by both. The source refuses a target another
   collector holds, through a lock file keyed by the target origin in the OS temp directory. A lock
@@ -895,9 +911,11 @@ same map, while shards and the selection file stay local.
 ### 9.2 CLI
 
 ```
-cbd collect [--target ws://127.0.0.1:9229/… ...] [--listen <port>] -- <test command>
-      run a test command with CBD=1 and inspector targets passed through the environment;
-      print one line at the end: tests recorded, overhead, shard path
+cbd collect [--target <host:port|ws://url> [--allow-remote]] -- <test command>
+      run a test command with CBD_SHARD and CBD_COMMIT set; with --target, the
+      service coverage comes from an --inspect process reached over CDP instead
+      of an instrumented socket directory. One target per run: each process to
+      attach to is one debugger port, and one source reads one port.
 
 cbd build [--commit <sha>] [--partial] [--gzip]
       merge shards for a commit into .cbd/maps/<commit>

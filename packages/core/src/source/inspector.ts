@@ -27,18 +27,22 @@
  *     called while the window is open; the request must be *sent* immediately, so
  *     the peer's coverage reset happens at roughly the boundary the Recorder
  *     meant. The promise may settle later.
- *   - **Windows must not overlap.** japa runs one test at a time, so a run that
- *     issues the next take before the previous one has settled is a contract
- *     violation. The `Recorder` must report it rather than attribute the late
- *     result to whichever window happens to be open when it arrives.
+ *   - **Windows must not overlap in meaning, only in flight.** japa runs one test
+ *     at a time, so a run that issues the next take before the previous one has
+ *     settled is still asking for the windows in order — the counter is drained by
+ *     each take, in the order the requests reach the target. `dispatch()` sends a
+ *     boundary now and hands back a handle whose `settle()` resolves no earlier
+ *     than the handles dispatched before it. `take()` remains for callers that can
+ *     wait, and refuses a second outstanding take because a bare promise cannot say
+ *     which window its reply belongs to.
  *   - **A take is a reset.** The delta is `since the previous take of either
  *     kind` — `takeSync()` and `take()` drain the same counter. Mixing them does
  *     not give two views of one window; it gives two half-windows.
  *
- * The first two are why `take()` could not simply be wired into the Recorder and
- * left to work: for an in-process source, async is a convenience; for this one it
- * is the only option, and getting it wrong is silent misattribution, which is the
- * under-selection failure this project treats as the unacceptable one.
+ * The second is why the Recorder needs `dispatch()` and not just `take()`: for an
+ * in-process source, async is a convenience; for this one it is the only option,
+ * and getting it wrong is silent misattribution, which is the under-selection
+ * failure this project treats as the unacceptable one.
  *
  * ## One runner per server
  *
@@ -71,7 +75,15 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildLineIndex } from '../line-index.js'
-import type { GeneratedScript, ScriptInfo, Source, V8ScriptCoverage } from '../types.js'
+import { nowUs } from '../instrument-protocol.js'
+import type {
+  DriftStats,
+  GeneratedScript,
+  PendingTake,
+  QueuedSource,
+  ScriptInfo,
+  V8ScriptCoverage,
+} from '../types.js'
 
 export const DEFAULT_INSPECTOR_HOST = '127.0.0.1'
 
@@ -124,6 +136,22 @@ export interface InspectorTarget {
 /** Raised for a target that cannot or must not be attached to. */
 export class InspectorTargetError extends Error {
   override readonly name = 'InspectorTargetError'
+}
+
+/**
+ * The variable `cbd collect --target` uses to hand an attach target to the adapter.
+ *
+ * `--inspect` is remote code execution for anything that can reach the port, so this
+ * is a variable a collector sets rather than one a suite is expected to inherit.
+ */
+export const INSPECT_ENV = 'CBD_INSPECT'
+
+/** Set to `1` when the collector meant a non-loopback target. */
+export const INSPECT_ALLOW_REMOTE_ENV = 'CBD_INSPECT_ALLOW_REMOTE'
+
+/** Whether an environment value says `allowRemote`. Only `1`/`true`, never "any truthy string". */
+export function allowRemoteFromEnv(value: string | undefined): boolean {
+  return value !== undefined && /^(1|true)$/i.test(value)
 }
 
 /**
@@ -187,7 +215,7 @@ export function resolveInspectorTarget(options: InspectorSourceOptions): Inspect
     throw new InspectorTargetError(
       `inspectorSource: refusing to attach to ${host}. --inspect is remote code ` +
         'execution for anything that can reach the port; pass `allowRemote: true` ' +
-        'if that is genuinely intended.',
+        '(or --allow-remote) if that is genuinely intended.',
     )
   }
 
@@ -215,6 +243,45 @@ export function resolveInspectorTarget(options: InspectorSourceOptions): Inspect
     )
   }
   return { origin: `http://${hostForUrl(host)}:${port}`, host, port }
+}
+
+/**
+ * Reads the value `--target` was given: `ws://host:port/<uuid>`, `host:port`, or a
+ * bare port. The forms are resolved through {@link resolveInspectorTarget}, so a
+ * remote host without `allowRemote` is refused here, before anything connects.
+ */
+export function parseInspectorTarget(value: string, allowRemote = false): InspectorSourceOptions {
+  const text = value.trim()
+  if (text === '') {
+    throw new InspectorTargetError(
+      'inspectorSource: empty target. Pass a ws:// debugger URL, host:port, or a port.',
+    )
+  }
+  if (/^https?:\/\//i.test(text)) {
+    throw new InspectorTargetError(
+      `inspectorSource: ${text} is an http:// origin, which is the /json/list index ` +
+        'rather than a debugger URL. Pass host:port instead.',
+    )
+  }
+
+  // The last colon, so `[::1]:9229` keeps its host in one piece.
+  const colon = text.lastIndexOf(':')
+  const port = colon === -1 ? text : text.slice(colon + 1)
+  if (!/^wss?:\/\//i.test(text) && !/^\d+$/.test(port)) {
+    throw new InspectorTargetError(
+      `inspectorSource: "${text}" is not a target. Pass a ws:// debugger URL, ` +
+        'host:port, or a port.',
+    )
+  }
+  const options: InspectorSourceOptions = /^wss?:\/\//i.test(text)
+    ? { url: text }
+    : colon === -1
+      ? { port: Number(text) }
+      : { host: text.slice(0, colon), port: Number(port) }
+  if (allowRemote) options.allowRemote = true
+
+  resolveInspectorTarget(options)
+  return options
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +334,32 @@ function processAlive(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
+}
+
+/**
+ * The refusal a second collector gets, and the same words from the pre-flight check.
+ */
+function heldError(origin: string, pid: number): InspectorTargetError {
+  return new InspectorTargetError(
+    `inspectorSource: ${origin} is already being recorded by collector pid ` +
+      `${String(pid)}. Two collectors on one target split its coverage counter, ` +
+      'so neither map is correct; stop the other run, or use the injectable source.',
+  )
+}
+
+/**
+ * Refuses a target a live collector holds, without connecting.
+ *
+ * `cbd collect` runs this before spawning the suite, because the attach itself
+ * happens in the test process: there the same refusal would reach the user as a
+ * runner stack trace, after the suite had already started. A stale lock is left
+ * alone — {@link inspectorSource} reclaims it.
+ */
+export function assertInspectorUnheld(options: InspectorSourceOptions): InspectorTarget {
+  const target = resolveInspectorTarget(options)
+  const holder = readLock(inspectorLockPath(target.origin))
+  if (holder !== undefined && processAlive(holder.pid)) throw heldError(target.origin, holder.pid)
+  return target
 }
 
 /**
@@ -324,11 +417,7 @@ function acquireLock(origin: string): { release: () => void } {
       }
       const holder = readLock(path)
       if (holder !== undefined && processAlive(holder.pid)) {
-        throw new InspectorTargetError(
-          `inspectorSource: ${origin} is already being recorded by collector pid ` +
-            `${String(holder.pid)}. Two collectors on one target split its coverage counter, ` +
-            'so neither map is correct; stop the other run, or use the injectable source.',
-        )
+        throw heldError(origin, holder.pid)
       }
       // The holder is gone, or the file is unreadable. Re-read immediately before
       // removing it: between the observation and the unlink another collector may
@@ -610,15 +699,17 @@ async function discoverDebuggerUrl(
  *
  * Refuses a target another collector holds (see `acquireLock`), then enables the
  * `Profiler` and `Debugger` domains and starts precise coverage. The returned
- * source is `take()`-only: a socket cannot answer in the same tick, and `Recorder`
- * drives it through `QueuedSource` only once a caller that owns the run is wired up.
+ * source is a `QueuedSource`: `dispatch()` is the boundary the `Recorder` sends
+ * from a lifecycle hook it cannot await, and `settle()` reads the window later.
  *
  * **A take is a reset, exactly as for every other source.** `takePreciseCoverage`
  * returns and resets the isolate's counter, so windows partition one stream rather
  * than showing overlapping views. A second `take()` while one is outstanding is
- * refused: this interface cannot say which window a late reply belongs to.
+ * refused: a bare promise cannot say which window a late reply belongs to.
+ * `dispatch()` does not refuse — its handles carry the order the boundaries were
+ * sent in, which is the same thing the socket source's chain guarantees.
  */
-export async function inspectorSource(options: InspectorSourceOptions): Promise<Source> {
+export async function inspectorSource(options: InspectorSourceOptions): Promise<QueuedSource> {
   const target = resolveInspectorTarget(options)
   const timeoutMs = options.timeoutMs ?? DEFAULT_INSPECTOR_TIMEOUT_MS
   const allowRemote = options.allowRemote === true
@@ -633,7 +724,6 @@ export async function inspectorSource(options: InspectorSourceOptions): Promise<
     const scripts = new Map<string, ScriptInfo>()
     const missingGenerated = new Set<string>()
     let closed = false
-    let outstanding = 0
 
     // Installed before `Debugger.enable`, which replays `scriptParsed` for every
     // script already compiled. That replay is what makes the first take's table
@@ -651,23 +741,87 @@ export async function inspectorSource(options: InspectorSourceOptions): Promise<
     await connected.send('Debugger.enable')
     await connected.send('Profiler.startPreciseCoverage', { callCount: true, detailed: false })
 
-    const takeOnce = async (): Promise<V8ScriptCoverage[]> => {
+    // The shard header has to name the process the coverage came from, and a
+    // debugger port says nothing about which pid is behind it. Asking the target is
+    // the only answer that stays true when the port was forwarded or discovered.
+    // `Runtime.evaluate` needs no `Runtime.enable`.
+    const pidReply = (await connected.send('Runtime.evaluate', {
+      expression: 'process.pid',
+      returnByValue: true,
+    })) as { result?: { value?: unknown } }
+    const pid = pidReply.result?.value
+    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
+      throw new InspectorTargetError(
+        'inspectorSource: the target did not report a process id. Coverage would be ' +
+          'written to a shard that names the wrong process, so the attach is refused.',
+      )
+    }
+
+    /** Windows sent but not yet answered, and the chain keeping their order. */
+    let outstanding = 0
+    let nextSeq = 0
+    let tail: Promise<void> = Promise.resolve()
+
+    let driftWindows = 0
+    let driftTotalUs = 0
+    let driftMaxUs = 0
+    let maxDepth = 0
+    let lastSentUs: number | null = null
+    let minGapUs = 0
+
+    /**
+     * Sends a boundary now and returns the handle for its window.
+     *
+     * The send is written in this tick, so the timestamp and the boundary are the
+     * same event; only the reply is deferred. Nothing here refuses a second
+     * dispatch, because a runner that cannot wait is exactly the caller this
+     * exists for — and because the handles resolve in dispatch order, the windows
+     * stay attributable.
+     */
+    function dispatch(): PendingTake {
       if (closed) throw new InspectorTargetError('inspectorSource: the source is closed')
-      // The request is written before this promise yields, so dispatch time is the
-      // boundary; the reply may land whenever.
-      const pending = connected.send('Profiler.takePreciseCoverage')
+
+      const sentAtUs = nowUs()
+      const seq = nextSeq++
       outstanding += 1
-      try {
-        const result = (await pending) as TakePreciseCoverage
-        return result.result
-      } finally {
-        outstanding -= 1
+      if (outstanding > maxDepth) maxDepth = outstanding
+
+      // The gap belongs to what the suite asked for, so it is read at dispatch and
+      // not when the reply lands.
+      if (lastSentUs !== null) {
+        const gap = sentAtUs - lastSentUs
+        if (minGapUs === 0 || gap < minGapUs) minGapUs = gap
       }
+      lastSentUs = sentAtUs
+
+      const window = connected.send('Profiler.takePreciseCoverage').then((raw) => {
+        // The closest thing to drift this transport can measure: how long the
+        // boundary took to be answered. The socket source compares the peer's own
+        // receive time with the send time; CDP reports no receive time, so this is
+        // an upper bound rather than the same quantity.
+        const driftUs = nowUs() - sentAtUs
+        driftWindows += 1
+        driftTotalUs += driftUs
+        if (driftUs > driftMaxUs) driftMaxUs = driftUs
+        return (raw as TakePreciseCoverage).result
+      })
+
+      const settled = window.finally(() => {
+        outstanding -= 1
+      })
+      const previous = tail
+      tail = settled.then(
+        () => undefined,
+        () => undefined,
+      )
+
+      return { seq, settle: () => previous.then(() => settled) }
     }
 
     return {
       kind: 'inspector',
       supportsSync: false,
+      pid,
 
       takeSync(): V8ScriptCoverage[] {
         throw new InspectorTargetError(
@@ -677,15 +831,26 @@ export async function inspectorSource(options: InspectorSourceOptions): Promise<
       },
 
       async take(): Promise<V8ScriptCoverage[]> {
+        if (closed) throw new InspectorTargetError('inspectorSource: the source is closed')
         if (outstanding > 0) {
           throw new InspectorTargetError(
-            'inspectorSource: a take is already outstanding. This interface cannot say ' +
-              'which window a late reply belongs to, so a second one is refused rather ' +
-              'than folded into the first.',
+            'inspectorSource: a take is already outstanding. take() cannot say which window ' +
+              'a late reply belongs to, so a second one is refused rather than folded into ' +
+              'the first. Wait for it, or use dispatch(), whose handles carry the window order.',
           )
         }
-        return takeOnce()
+        return dispatch().settle()
       },
+
+      dispatch,
+
+      drift: (): DriftStats => ({
+        windows: driftWindows,
+        maxUs: driftMaxUs,
+        meanUs: driftWindows === 0 ? 0 : driftTotalUs / driftWindows,
+        maxDepth,
+        minGapUs,
+      }),
 
       scripts: () => scripts,
       generated: (scriptId: string): GeneratedScript | undefined =>

@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { test } from '@japa/runner'
 import {
   DEFAULT_INSPECTOR_HOST,
   InspectorTargetError,
+  assertInspectorUnheld,
+  inspectorLockPath,
   inspectorSource,
   isLoopbackHost,
+  parseInspectorTarget,
   resolveInspectorTarget,
 } from '../src/source/inspector.js'
 
@@ -102,6 +107,74 @@ test('url must be a debugger URL, not the /json/list origin', () => {
 test('a port outside the range is refused', () => {
   for (const port of [0, -1, 65536, 1.5, Number.NaN]) {
     assert.throws(() => resolveInspectorTarget({ port }), /port must be/)
+  }
+})
+
+/*
+|--------------------------------------------------------------------------
+| parseInspectorTarget — the value `--target` and CBD_INSPECT carry
+|--------------------------------------------------------------------------
+*/
+
+test('a debugger URL is taken verbatim', () => {
+  const ws = 'ws://127.0.0.1:9230/7f3c1e2a-0000-4000-8000-000000000000'
+  assert.deepEqual(parseInspectorTarget(ws), { url: ws })
+})
+
+test('host:port and a bare port both name a loopback target', () => {
+  assert.deepEqual(parseInspectorTarget('127.0.0.1:9230'), { host: '127.0.0.1', port: 9230 })
+  assert.deepEqual(parseInspectorTarget('9230'), { port: 9230 })
+  // Bracketed IPv6 keeps its brackets, and the last colon is the separator.
+  assert.deepEqual(parseInspectorTarget('[::1]:9230'), { host: '[::1]', port: 9230 })
+})
+
+test('the loopback rule is applied before anything connects', () => {
+  assert.throws(() => parseInspectorTarget('10.0.0.5:9229'), /allowRemote/)
+  assert.deepEqual(parseInspectorTarget('10.0.0.5:9229', true), {
+    host: '10.0.0.5',
+    port: 9229,
+    allowRemote: true,
+  })
+})
+
+test('a value that is not a target says so', () => {
+  assert.throws(() => parseInspectorTarget(''), /empty target/)
+  assert.throws(() => parseInspectorTarget('http://127.0.0.1:9229'), /host:port/)
+  assert.throws(() => parseInspectorTarget('nonsense'), /not a target/)
+  assert.throws(() => parseInspectorTarget('127.0.0.1:http'), /not a target/)
+  assert.throws(() => parseInspectorTarget('127.0.0.1:0'), /port must be/)
+})
+
+/*
+|--------------------------------------------------------------------------
+| assertInspectorUnheld — the pre-flight lock check
+|--------------------------------------------------------------------------
+*/
+
+test('a live collector is refused without connecting', () => {
+  const origin = resolveInspectorTarget({ port: 9230 }).origin
+  const path = inspectorLockPath(origin)
+  mkdirSync(dirname(path), { recursive: true })
+  try {
+    writeFileSync(path, JSON.stringify({ pid: process.pid, origin, token: 'live' }))
+    assert.throws(() => assertInspectorUnheld({ port: 9230 }), /already being recorded/)
+  } finally {
+    rmSync(path, { force: true })
+  }
+})
+
+// A killed collector leaves its lock behind; refusing forever would make a crashed
+// run poison its target.
+test('a lock whose owner is gone does not refuse', () => {
+  const origin = resolveInspectorTarget({ port: 9230 }).origin
+  const path = inspectorLockPath(origin)
+  mkdirSync(dirname(path), { recursive: true })
+  try {
+    writeFileSync(path, JSON.stringify({ pid: 2_000_000_000, origin, token: 'dead' }))
+    const target = assertInspectorUnheld({ port: 9230 })
+    assert.equal(target.origin, origin)
+  } finally {
+    rmSync(path, { force: true })
   }
 })
 

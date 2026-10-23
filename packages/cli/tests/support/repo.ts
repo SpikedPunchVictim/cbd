@@ -138,6 +138,8 @@ appendFileSync(
     commit: process.env.CBD_COMMIT ?? null,
     selection: selectionPath ?? null,
     selectionContent: selectionText,
+    inspect: process.env.CBD_INSPECT ?? null,
+    allowRemote: process.env.CBD_INSPECT_ALLOW_REMOTE ?? null,
   }) + '\\n',
 )
 

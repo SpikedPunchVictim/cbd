@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { test } from '@japa/runner'
+import { inspectorLockPath, resolveInspectorTarget } from '@spikedpunch/cbd/adapter'
 import { EXIT } from '../src/cli.js'
 import { invoke, prepared } from './support/repo.js'
 
@@ -18,6 +19,8 @@ interface Logged {
   commit: string
   selection: string | null
   selectionContent: string | null
+  inspect: string | null
+  allowRemote: string | null
 }
 
 function logOf(path: string): Logged {
@@ -292,6 +295,133 @@ test.group('cbd collect', () => {
         assert.match(result.err.join('\n'), message, argv.join(' '))
       }
     } finally {
+      cleanup()
+    }
+  })
+})
+
+test.group('cbd collect --target', () => {
+  // The recorder lives in the test process, so the target travels there in the
+  // environment the adapter already reads. The CLI's own copy of the value is only
+  // for the checks it makes before spawning.
+  test('hands the target to the test command, and allow-remote with it', () => {
+    const { root, a, spec, runner, cleanup } = prepared()
+    try {
+      const log = join(root, 'log.ndjson')
+      const result = invoke(
+        root,
+        'collect',
+        '--no-select',
+        '--no-build',
+        '--target',
+        '127.0.0.1:9230',
+        '--allow-remote',
+        '--',
+        process.execPath,
+        runner,
+        log,
+        a,
+        spec,
+      )
+      assert.equal(result.code, EXIT.ok, result.err.join('\n'))
+      const logged = logOf(log)
+      assert.equal(logged.inspect, '127.0.0.1:9230')
+      assert.equal(logged.allowRemote, '1')
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a loopback target needs no allow-remote', () => {
+    const { root, a, spec, runner, cleanup } = prepared()
+    try {
+      const log = join(root, 'log.ndjson')
+      const result = invoke(
+        root,
+        'collect',
+        '--no-select',
+        '--no-build',
+        '--target',
+        '9230',
+        '--',
+        process.execPath,
+        runner,
+        log,
+        a,
+        spec,
+      )
+      assert.equal(result.code, EXIT.ok, result.err.join('\n'))
+      assert.equal(logOf(log).inspect, '9230')
+      assert.equal(logOf(log).allowRemote, null)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('--allow-remote alone is a usage error', () => {
+    const { root, cleanup } = prepared()
+    try {
+      const result = invoke(root, 'collect', '--allow-remote', '--', process.execPath, '-e', '0')
+      assert.equal(result.code, EXIT.usage)
+      assert.match(result.err.join('\n'), /--allow-remote needs --target/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a target that cannot be read is a usage error, and nothing runs', () => {
+    const { root, a, spec, runner, cleanup } = prepared()
+    try {
+      const log = join(root, 'log.ndjson')
+      const result = invoke(
+        root,
+        'collect',
+        '--target',
+        'not-a-target',
+        '--',
+        process.execPath,
+        runner,
+        log,
+        a,
+        spec,
+      )
+      assert.equal(result.code, EXIT.usage)
+      assert.match(result.err.join('\n'), /not a target/)
+      assert.equal(existsSync(log), false, 'the suite must not be spawned')
+    } finally {
+      cleanup()
+    }
+  })
+
+  // The attach happens in the test process, where the refusal would arrive as a
+  // runner stack trace after the suite had started. Checking first is the point.
+  test('a target another collector holds is refused before anything runs', () => {
+    const { root, a, spec, runner, cleanup } = prepared()
+    const origin = resolveInspectorTarget({ port: 9230 }).origin
+    const lock = inspectorLockPath(origin)
+    mkdirSync(dirname(lock), { recursive: true })
+    try {
+      writeFileSync(lock, JSON.stringify({ pid: process.pid, origin, token: 'held' }))
+      const log = join(root, 'log.ndjson')
+      const result = invoke(
+        root,
+        'collect',
+        '--target',
+        '9230',
+        '--',
+        process.execPath,
+        runner,
+        log,
+        a,
+        spec,
+      )
+      assert.equal(result.code, EXIT.error)
+      const err = result.err.join('\n')
+      assert.match(err, /already being recorded/)
+      assert.doesNotMatch(err, /^\s+at /m, 'the refusal is one line, not a stack trace')
+      assert.equal(existsSync(log), false, 'the suite must not be spawned')
+    } finally {
+      rmSync(lock, { force: true })
       cleanup()
     }
   })

@@ -30,6 +30,12 @@
  * and it costs the consumer nothing to obey because they already set the variable
  * for the server's benefit.
  *
+ * **`CBD_INSPECT` names the same service the other way**, for a target whose
+ * environment cannot be set: `cbd collect --target` writes it, and the service
+ * recorder reads the target over CDP instead of reading sockets. Setting both is
+ * refused — they are two answers to one question, and the run can only record one
+ * of them.
+ *
  * **A configured service that cannot be reached is an error, not a shrug.** This is
  * the case the epic exists for: a map of a suite driving a separately started server
  * is blind to every server-side file, and a change to one resolves to a file the map
@@ -49,10 +55,15 @@ import {
   CORRELATION_HEADER_ENV,
   Correlator,
   FileSink,
+  INSPECT_ALLOW_REMOTE_ENV,
+  INSPECT_ENV,
   SOCKET_DIR_ENV,
+  allowRemoteFromEnv,
   inProcessSource,
+  inspectorSource,
   installProcessTracking,
   installReadTracking,
+  parseInspectorTarget,
   readSelection,
   rescanningSocketSource,
   scanFromEnv,
@@ -146,6 +157,16 @@ export function serviceShardPath(shard: string): string {
 }
 
 /**
+ * An empty environment value is unset.
+ *
+ * The 0.0.1-era plugin opened `CBD_SHARD=""` as a path, and consumers had to
+ * unset the variable rather than empty it. An empty value now means the same as
+ * an absent one.
+ */
+const envValue = (value: string | undefined): string | undefined =>
+  value === undefined || value === '' ? undefined : value
+
+/**
  * The recorders a run needs, opened in the order their windows are taken.
  *
  * Returned as a list rather than installed here, so that the decision — is there a
@@ -157,7 +178,18 @@ export async function recordersFor(
   shard: string,
   wiring: Wiring,
 ): Promise<Recorder[]> {
-  const dir = env[SOCKET_DIR_ENV]
+  const dir = envValue(env[SOCKET_DIR_ENV])
+  const inspect = envValue(env[INSPECT_ENV])
+
+  // Two names for one service. Picking one would decide which process the service
+  // shard describes, and the two candidates differ by the whole run.
+  if (dir !== undefined && inspect !== undefined) {
+    throw new Error(
+      `${SOCKET_DIR_ENV} and ${INSPECT_ENV} are both set. They name the same service two ` +
+        `ways — an instrumented directory and an --inspect target — so a run can record ` +
+        `only one. Unset ${INSPECT_ENV} to read the directory, or ${SOCKET_DIR_ENV} to attach.`,
+    )
+  }
 
   // Reached before either shard is opened, so that a service which cannot be
   // reached leaves nothing behind. Opening the test process's shard first would
@@ -174,16 +206,27 @@ export async function recordersFor(
   // window that starts them onward (ADR-0007). The install-time contract is
   // unchanged — a directory with nothing in it is still an error rather than a
   // silent empty map.
+  //
+  // `INSPECT_ENV` is the fallback for a service that cannot be restarted with an
+  // environment change: the same recorder, reading a target over CDP instead of
+  // reading sockets. There is no correlation in that mode — the tags are echoed by
+  // the injected instrument, which an attached process does not have — so the
+  // window is closed by the runner and attribution is by time, as it is for any
+  // service CBD did not start.
   const service =
-    dir === undefined || dir === ''
-      ? null
-      : await rescanningSocketSource({
-          dir,
-          // Correlation is turned on by the collector, not by the service's own
-          // environment: `recordersFor` is the collector's side of the seam, and a
-          // source it opens is a process it is about to read.
-          ...(wiring.owners === undefined ? {} : { correlationHeader: CORRELATION_HEADER }),
-        })
+    inspect !== undefined
+      ? await inspectorSource(
+          parseInspectorTarget(inspect, allowRemoteFromEnv(env[INSPECT_ALLOW_REMOTE_ENV])),
+        )
+      : dir === undefined
+        ? null
+        : await rescanningSocketSource({
+            dir,
+            // Correlation is turned on by the collector, not by the service's own
+            // environment: `recordersFor` is the collector's side of the seam, and a
+            // source it opens is a process it is about to read.
+            ...(wiring.owners === undefined ? {} : { correlationHeader: CORRELATION_HEADER }),
+          })
 
   const recorders = [
     beginShard({
@@ -211,16 +254,6 @@ export async function recordersFor(
 
   return recorders
 }
-
-/**
- * An empty environment value is unset.
- *
- * The 0.0.1-era plugin opened `CBD_SHARD=""` as a path, and consumers had to
- * unset the variable rather than empty it. An empty value now means the same as
- * an absent one.
- */
-const envValue = (value: string | undefined): string | undefined =>
-  value === undefined || value === '' ? undefined : value
 
 export function cbd(options: CbdOptions = {}): JapaPlugin {
   return async function cbdPlugin(japa): Promise<void> {

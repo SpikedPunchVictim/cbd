@@ -8,11 +8,16 @@
  * for the failure case without any service to be absent.
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
-import { SOCKET_DIR_ENV, type Recorder } from '@spikedpunch/cbd/adapter'
+import {
+  INSPECT_ENV,
+  SOCKET_DIR_ENV,
+  type Recorder,
+} from '@spikedpunch/cbd/adapter'
 import { recordersFor, serviceShardPath } from '../src/plugin.js'
 
 function readShard(path: string): { type: string; [key: string]: unknown }[] {
@@ -28,6 +33,48 @@ async function runOneTest(recorder: Recorder): Promise<void> {
   recorder.testEnd('alpha', 'passed', 7)
   await recorder.runEnd()
   await recorder.drained()
+}
+
+/**
+ * A live `--inspect` target and nothing else.
+ *
+ * The attach path is what is under test, not the target's behaviour, so an idle
+ * process with an open debugger port is the whole fixture. The port is OS-assigned
+ * and read from the line Node prints, exactly as `cbd collect --target` expects a
+ * caller to have found it.
+ *
+ * The target says `ready` before the attach: `Runtime.evaluate` needs an execution
+ * context, and a target still compiling its entry point answers without one.
+ */
+async function launchTarget(): Promise<{ url: string; pid: number; stop: () => void }> {
+  const child = spawn(
+    process.execPath,
+    ['--inspect=0', '-e', "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)"],
+    { stdio: ['ignore', 'pipe', 'pipe'] },
+  )
+  const url = await new Promise<string>((resolve, reject) => {
+    let seen = ''
+    const look = (): void => {
+      const match = /Debugger listening on (ws:\/\/\S+)/.exec(seen)
+      // Both: the port is announced before the entry point runs, and only the
+      // entry point running says the execution context exists.
+      if (match?.[1] !== undefined && seen.includes('ready')) {
+        resolve(match[1].replace(/\/$/, ''))
+      }
+    }
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
+    child.stdout?.on('data', (chunk: string) => {
+      seen += chunk
+      look()
+    })
+    child.stderr?.on('data', (chunk: string) => {
+      seen += chunk
+      look()
+    })
+    child.once('exit', (code) => reject(new Error(`the target exited (${String(code)})`)))
+  })
+  return { url, pid: child.pid as number, stop: () => child.kill('SIGKILL') }
 }
 
 test.group('serviceShardPath', () => {
@@ -110,6 +157,86 @@ test.group('recordersFor', () => {
         { commit: 'c0ffee' },
       )
       assert.equal(recorders.length, 1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // The attach fallback: the same service recorder, reading a target that cannot
+  // be told about CBD's environment.
+  test('CBD_INSPECT opens an attach recorder beside the test process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-recorders-'))
+    const target = await launchTarget()
+    try {
+      const shard = join(dir, 'run.ndjson')
+      const recorders = await recordersFor(
+        { [INSPECT_ENV]: target.url },
+        shard,
+        { commit: 'c0ffee' },
+      )
+      assert.equal(recorders.length, 2, 'the test process and the attached service')
+      try {
+        await runOneTest(recorders[0] as Recorder)
+        await recorders[1]!.runEnd()
+        await recorders[1]!.drained()
+      } finally {
+        recorders[1]!.close()
+      }
+
+      // The service shard names the process the coverage came from, not the
+      // collector — the same rule the socket source follows.
+      const service = readShard(serviceShardPath(shard))
+      assert.equal(service.at(0)?.pid, target.pid)
+    } finally {
+      target.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a target that does not parse is refused, and leaves no shard', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-recorders-'))
+    try {
+      const shard = join(dir, 'run.ndjson')
+      await assert.rejects(
+        recordersFor({ [INSPECT_ENV]: 'not-a-target' }, shard, { commit: 'c0ffee' }),
+        /not a target/,
+      )
+      assert.equal(existsSync(shard), false)
+      assert.equal(existsSync(serviceShardPath(shard)), false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a remote target needs the collector to have said so', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-recorders-'))
+    try {
+      // Refused by the loopback rule, before a lock is taken or a connection is
+      // attempted — which is also why this test costs no timeout.
+      await assert.rejects(
+        recordersFor({ [INSPECT_ENV]: '10.0.0.5:9229' }, join(dir, 'run.ndjson'), {
+          commit: 'c0ffee',
+        }),
+        /allowRemote/,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  // Two answers to one question. Picking one would silently decide which process
+  // the service shard describes.
+  test('a socket directory and an attach target together are refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-recorders-'))
+    try {
+      await assert.rejects(
+        recordersFor(
+          { [SOCKET_DIR_ENV]: dir, [INSPECT_ENV]: '9229' },
+          join(dir, 'run.ndjson'),
+          { commit: 'c0ffee' },
+        ),
+        /both set/,
+      )
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

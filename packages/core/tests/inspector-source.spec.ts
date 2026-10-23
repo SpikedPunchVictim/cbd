@@ -11,25 +11,28 @@
  */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { test } from '@japa/runner'
 import { resolveInspectorTarget, inspectorSource, inspectorLockPath } from '../src/source/inspector.js'
-import type { Source, V8ScriptCoverage } from '../src/types.js'
+import { Recorder } from '../src/recorder.js'
+import { FileSink, parseShard, type ShardTest } from '../src/shard.js'
+import type { QueuedSource, Source, V8ScriptCoverage } from '../src/types.js'
 import { sourceContract } from './support/source-contract.js'
 import { launchInspectorService, type RunningInspectorService } from './support/service.js'
 
-async function attach(service: RunningInspectorService): Promise<Source> {
+async function attach(service: RunningInspectorService): Promise<QueuedSource> {
   await service.ready
   return inspectorSource({ url: await service.url, timeoutMs: 5_000 })
 }
 
 /** One service and one source, both torn down. */
 async function withInspector(
-  body: (source: Source, service: RunningInspectorService) => Promise<void>,
+  body: (source: QueuedSource, service: RunningInspectorService) => Promise<void>,
 ): Promise<void> {
   const service = launchInspectorService()
-  let source: Source | null = null
+  let source: QueuedSource | null = null
   try {
     source = await attach(service)
     await body(source, service)
@@ -132,6 +135,94 @@ test.group('inspectorSource', (group) => {
     await withInspector(async (source) => {
       assert.throws(() => source.takeSync(), /sync/i)
     })
+  })
+
+  // The shard header names the process the coverage came from, and a debugger port
+  // says nothing about which pid is behind it.
+  test('reports the pid of the process it attached to', async () => {
+    await withInspector(async (source, service) => {
+      assert.equal(source.pid, service.proc.pid)
+    })
+  })
+
+  // Boundaries are sent from hooks that cannot wait, so more than one is in flight
+  // at the same time by design. The handles must still resolve in dispatch order.
+  test('dispatch sends a boundary now and settles windows in order', async () => {
+    await withInspector(async (source) => {
+      await source.dispatch().settle()
+
+      const first = source.dispatch()
+      const second = source.dispatch()
+      assert.equal(second.seq, first.seq + 1)
+
+      const firstPayload = await first.settle()
+      const secondPayload = await second.settle()
+      assert.ok(Array.isArray(firstPayload))
+      assert.ok(Array.isArray(secondPayload))
+
+      const drift = source.drift()
+      assert.equal(drift.windows, 3)
+      assert.ok(drift.maxDepth >= 2, `expected two boundaries in flight, saw ${String(drift.maxDepth)}`)
+    })
+  })
+
+  // The reason dispatch exists: `Recorder` refuses a source that has neither a
+  // synchronous take nor a boundary it can send. Driving the real recorder is the
+  // only check that the attach path can produce a shard and a map at all.
+  test('the Recorder can drive it as a service', async () => {
+    const service = launchInspectorService()
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-inspector-shard-'))
+    const shardPath = join(dir, 'service.jsonl')
+    const source = await attach(service)
+    try {
+      const recorder = new Recorder({
+        source,
+        sink: new FileSink(shardPath),
+        commit: 'inspector-test',
+        // The header names the process the coverage came from. A recorder defaults
+        // to its own pid, which for an attached source is the wrong process.
+        pid: source.pid,
+        role: 'service',
+        scan: {
+          prefilter: (url: string) => url.includes('/tests/service/'),
+          include: (file: string) => file.endsWith('/tests/service/main.js'),
+        },
+      })
+
+      recorder.runStart()
+      // Drain the attach itself, so the window below is about the request.
+      recorder.testStart('drain', 'spec.ts')
+      recorder.testEnd('drain', 'passed', 0)
+      await recorder.drained()
+
+      recorder.testStart('runs reverse', 'spec.ts')
+      service.run('run')
+      await settle()
+      recorder.testEnd('runs reverse', 'passed', 1)
+      await recorder.drained()
+
+      recorder.runEnd()
+      await recorder.drained()
+      recorder.close()
+
+      const records = parseShard(readFileSync(shardPath, 'utf8'), shardPath)
+      const header = records[0]
+      assert.ok(header !== undefined && header.type === 'shard')
+      assert.equal(header.pid, service.proc.pid, 'the header names the target, not this process')
+
+      const tests = records.filter((record): record is ShardTest => record.type === 'test')
+      assert.equal(tests.length, 2)
+      const ran = tests.find((record) => record.title === 'runs reverse')
+      assert.ok(ran !== undefined)
+      assert.ok(
+        Object.keys(ran.touches).length > 0,
+        'the request must be in its own window, not the drain before it',
+      )
+    } finally {
+      source.close()
+      service.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   // Two collectors on one target split one coverage counter, so neither map is

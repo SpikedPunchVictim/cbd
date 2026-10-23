@@ -21,22 +21,34 @@
  * repository has no map to select from; CBD.md §10's rule is that a missing map is
  * never a failure, and here the safe reading is "record everything so the first map
  * is complete".
+ *
+ * **An attach target is checked here, not in the suite.** `--target` names an
+ * `--inspect` process whose environment cannot carry the instrument. The recorder
+ * lives in the test process, so the target travels there in `CBD_INSPECT`; this
+ * command resolves it, refuses a target another collector already holds, and says
+ * so in its own voice — a runner would print the same refusal as a stack trace,
+ * after the suite had started.
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, extname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
+  INSPECT_ALLOW_REMOTE_ENV,
+  INSPECT_ENV,
   SELECTION_ENV,
   StaleShardError,
+  assertInspectorUnheld,
   mapPath,
   nearestMapCommit,
+  parseInspectorTarget,
   writeSelection,
   type Cbd,
   type CbdConfig,
 } from '@spikedpunch/cbd'
 import { EXIT } from './exit.js'
 import { plural, shown } from './render.js'
+import { UsageError } from './args.js'
 
 export interface CollectOptions {
   cbd: Cbd
@@ -54,6 +66,13 @@ export interface CollectOptions {
   incremental: boolean
   /** The map commit to carry from. */
   base?: string
+  /**
+   * `--target`: attach to this `--inspect` process for the service coverage,
+   * instead of reading an instrumented socket directory.
+   */
+  target?: string
+  /** `--allow-remote`: the target is not loopback, and that is intended. */
+  allowRemote: boolean
   out(line: string): void
   err(line: string): void
 }
@@ -72,6 +91,26 @@ interface SelectionPlan {
   /** Set only for a subset; `undefined` means run everything. */
   titles?: string[]
   changed: number
+}
+
+/**
+ * Resolves `--target` and refuses one another collector holds.
+ *
+ * The attach itself happens in the test process, where the Recorder lives, and the
+ * target reaches it through the environment. Checking here is what makes a
+ * malformed target a usage error and a held target one `cbd:` line, instead of a
+ * runner stack trace after the suite has already started. No connection is opened:
+ * the CLI would hold the very lock it is checking.
+ */
+function checkInspectTarget(target: string, allowRemote: boolean): void {
+  let parsed
+  try {
+    parsed = parseInspectorTarget(target, allowRemote)
+  } catch (error) {
+    // A target that cannot be read is the command's mistake, not a failed run.
+    throw new UsageError((error as Error).message)
+  }
+  assertInspectorUnheld(parsed)
 }
 
 function planSelection(options: CollectOptions, selectionPath: string): SelectionPlan {
@@ -117,6 +156,9 @@ function childEnv(
     CBD_COMMIT: options.commit,
   }
   if (titles !== undefined) env[SELECTION_ENV] = selectionPath
+  if (options.target !== undefined) env[INSPECT_ENV] = options.target
+  // Absent means "the target is loopback"; the adapter checks it again either way.
+  if (options.allowRemote) env[INSPECT_ALLOW_REMOTE_ENV] = '1'
   return env
 }
 
@@ -230,6 +272,11 @@ function shardsWrittenSince(
 
 export function collect(options: CollectOptions): number {
   const { out, err } = options
+  // Before the selection: a target that cannot be attached to is worth saying
+  // before any work, and before a suite is spawned that would spend its setup
+  // discovering it.
+  if (options.target !== undefined) checkInspectTarget(options.target, options.allowRemote)
+
   const stateDir = options.config.stateDir ?? '.cbd'
   const shard = options.shard ?? join(options.root, stateDir, 'shards', collectShardName())
   const shardDir = dirname(shard)
