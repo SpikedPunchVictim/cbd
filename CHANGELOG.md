@@ -5,6 +5,12 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **Attaching to a target that has just started waits for its pid.** A process attached to on its
+  `Debugger listening` line answers `Runtime.evaluate('process.pid')` with `undefined` until its
+  bootstrap installs the global — not with an error — so the source refused an attach that was
+  perfectly valid, which is the ordinary case for a service someone has just brought up. It now
+  repeats the question until the pid arrives or the caller's timeout expires, and the refusal it
+  can still make names both readings: still starting, or not a Node process.
 - **`cbd collect --target` attaches.** `inspectorSource` had no caller outside tests, so a run
   against a service whose environment cannot carry the instrument could not be asked for. The
   flag takes a `ws://` debugger URL, `host:port`, or a bare port (`--allow-remote` for a

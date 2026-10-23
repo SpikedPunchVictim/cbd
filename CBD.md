@@ -220,6 +220,10 @@ attach, so anything the process did before it — start-up, module imports — i
   window, including the gaps between tests. That work lands in `@between` and escalates the files it
   touches to every test, so an attached run over-selects relative to an injected one. It is the
   price of not controlling the target, not a defect in the window.
+- **A target is identified by asking it.** The shard header's pid comes from `Runtime.evaluate`,
+  because a port says nothing about the process behind it. A target attached to while it is still
+  bootstrapping answers `undefined` for a few milliseconds rather than with an error, so the
+  question is repeated until the pid is there or the timeout expires.
 - **`cbd collect --target` is how a run asks for it.** The flag resolves the target, refuses a
   non-loopback host unless `--allow-remote`, and refuses a target another collector holds — all
   before the suite is spawned, so a refusal is one `cbd:` line rather than a runner stack trace.

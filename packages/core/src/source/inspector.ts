@@ -695,6 +695,49 @@ async function discoverDebuggerUrl(
 }
 
 /**
+ * How often to ask a starting target for its pid.
+ *
+ * The gap is short because the wait is short: a target is identifiable as soon as
+ * its bootstrap has run, which is milliseconds after the debugger line it prints.
+ * Ten milliseconds costs a handful of round trips at worst and keeps an already
+ * started target's attach indistinguishable from before.
+ */
+const PID_RETRY_MS = 10
+
+/**
+ * The target's pid, waiting out the window in which it does not have one yet.
+ *
+ * A process attached to while it is still bootstrapping answers
+ * `Runtime.evaluate('process.pid')` with `undefined` rather than an error: the
+ * execution context exists, but the global `process` has not had its fields
+ * installed. There is no event that says the bootstrap finished, and attaching to
+ * a target the moment it starts is the ordinary case for a service someone has
+ * just brought up — so the question is repeated until the answer is a pid or the
+ * caller's timeout runs out. Coverage is already counting from the earlier
+ * `startPreciseCoverage`; nothing is lost by waiting.
+ */
+async function readTargetPid(client: CdpClient, timeoutMs: number): Promise<number> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    const reply = (await client.send('Runtime.evaluate', {
+      expression: 'process.pid',
+      returnByValue: true,
+    })) as { result?: { value?: unknown } }
+    const pid = reply.result?.value
+    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) return pid
+    if (Date.now() >= deadline) {
+      throw new InspectorTargetError(
+        'inspectorSource: the target did not report a process id within ' +
+          `${String(timeoutMs)}ms. Coverage would be written to a shard that names the ` +
+          'wrong process, so the attach is refused. A target that is still starting ' +
+          'may not have one yet; a target that is not a Node process never will.',
+      )
+    }
+    await new Promise((resolve) => setTimeout(resolve, PID_RETRY_MS))
+  }
+}
+
+/**
  * Attach to a Node process started with `--inspect`, and report its coverage.
  *
  * Refuses a target another collector holds (see `acquireLock`), then enables the
@@ -745,17 +788,7 @@ export async function inspectorSource(options: InspectorSourceOptions): Promise<
     // debugger port says nothing about which pid is behind it. Asking the target is
     // the only answer that stays true when the port was forwarded or discovered.
     // `Runtime.evaluate` needs no `Runtime.enable`.
-    const pidReply = (await connected.send('Runtime.evaluate', {
-      expression: 'process.pid',
-      returnByValue: true,
-    })) as { result?: { value?: unknown } }
-    const pid = pidReply.result?.value
-    if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) {
-      throw new InspectorTargetError(
-        'inspectorSource: the target did not report a process id. Coverage would be ' +
-          'written to a shard that names the wrong process, so the attach is refused.',
-      )
-    }
+    const pid = await readTargetPid(connected, timeoutMs)
 
     /** Windows sent but not yet answered, and the chain keeping their order. */
     let outstanding = 0

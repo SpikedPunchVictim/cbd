@@ -10,6 +10,7 @@
  * with the report buffered and unreadable.
  */
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -143,6 +144,35 @@ test.group('inspectorSource', (group) => {
     await withInspector(async (source, service) => {
       assert.equal(source.pid, service.proc.pid)
     })
+  })
+
+  // Attaching on the debugger line — before the target's bootstrap has installed
+  // `process.pid` — is the ordinary case for a service someone has just started.
+  // The answer is `undefined` in that window, not an error, so the source has to
+  // ask again rather than refuse.
+  test('waits for the pid of a target that is still starting', async () => {
+    const child = spawn(process.execPath, ['--inspect=0', '-e', 'setInterval(() => {}, 1000)'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    try {
+      const url = await new Promise<string>((resolve) => {
+        let seen = ''
+        child.stderr?.setEncoding('utf8')
+        child.stderr?.on('data', (chunk: string) => {
+          seen += chunk
+          const match = /Debugger listening on (ws:\/\/\S+)/.exec(seen)
+          if (match?.[1] !== undefined) resolve(match[1].replace(/\/$/, ''))
+        })
+      })
+      const source = await inspectorSource({ url, timeoutMs: 5_000 })
+      try {
+        assert.equal(source.pid, child.pid)
+      } finally {
+        source.close()
+      }
+    } finally {
+      child.kill('SIGKILL')
+    }
   })
 
   // Boundaries are sent from hooks that cannot wait, so more than one is in flight
