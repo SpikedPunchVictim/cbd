@@ -43,6 +43,7 @@ import inspector from 'node:inspector'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildLineIndex } from './line-index.js'
+import { installReadTracking } from './read-tracker.js'
 import { sourceMapUrlOf } from './source-maps.js'
 import type { GeneratedScript, V8Function, V8Range, V8ScriptCoverage } from './types.js'
 import {
@@ -145,6 +146,26 @@ async function start(dir: string): Promise<void> {
     warn(`cannot attach to the inspector (${String(error)}); this process records no coverage`)
     return
   }
+
+  /**
+   * Files this process reads, drained by each take.
+   *
+   * A service reads data the map cannot name — a routing table, a config keyed by
+   * line — and a change to it must select the tests that drove the service. The
+   * test-side tracker exists for the test process; this is the same mechanism on
+   * this side of the socket, and the paths arrive already canonical because the
+   * tracker canonicalizes them.
+   */
+  const readFiles = new Set<string>()
+  const readDirs = new Set<string>()
+  const stopReadTracking = installReadTracking({
+    noteRead: (path) => {
+      readFiles.add(path)
+    },
+    noteReadDir: (dir) => {
+      readDirs.add(dir)
+    },
+  })
 
   const call = (method: string, params: Record<string, unknown> = {}): Promise<SessionReply> =>
     new Promise((resolve, reject) => {
@@ -701,6 +722,8 @@ async function start(dir: string): Promise<void> {
     // that is decided by queue order, not by which event the loop happened to
     // schedule first.
     let deliveredRequests: RequestWindow[] = []
+    let deliveredReads: string[] = []
+    let deliveredDirReads: string[] = []
     const session = connectionSessions.get(connection)
     if (session !== undefined) latestSession = session
     const coverage = await exclusive(async () => {
@@ -708,6 +731,12 @@ async function start(dir: string): Promise<void> {
       const payload = [...untaken.values()]
       untaken = new Map()
       deliveredRequests = requestWindows.splice(0, requestWindows.length)
+      // Drained with the coverage, for the same reason: a read belongs to the window
+      // that closes here, and two takes must not split one window's reads.
+      deliveredReads = [...readFiles]
+      deliveredDirReads = [...readDirs]
+      readFiles.clear()
+      readDirs.clear()
       // Drained, not copied. `scriptParsed` fires once per script, so a row sent
       // twice would be the same row twice. Drained inside the take queue so two
       // takes cannot split the rows between them.
@@ -732,6 +761,8 @@ async function start(dir: string): Promise<void> {
       atUs,
       ids,
       requests: deliveredRequests,
+      ...(deliveredReads.length === 0 ? {} : { reads: deliveredReads }),
+      ...(deliveredDirReads.length === 0 ? {} : { dirReads: deliveredDirReads }),
     }
     // The reply goes first and the snapshot immediately after, in the same turn.
     // This window is the one a client is most likely to lose — it is in flight at
@@ -903,6 +934,7 @@ async function start(dir: string): Promise<void> {
       snapshotTimer = null
     }
     restoreEmit?.()
+    stopReadTracking()
     // The close op has already unlinked, before it replied; this is here for the
     // process-exit path, and is a swallowed ENOENT in the common case.
     removeSocket()

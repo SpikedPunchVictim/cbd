@@ -747,9 +747,14 @@ map carry `reads` (file) and `dirReads` (directory); a change to a read file, or
 listed directory, selects the readers. Directories are kept even when they do not match `include`,
 because a file under them might.
 
-The boundary is stated rather than implied: a reference captured before install, a native addon, a
-child process, or a separately started service is not seen, and reads during test-file import or
-between tests have no window to charge. `alwaysSelect` remains for those cases.
+The boundary is stated rather than implied: a reference captured before install, a native addon,
+reads during test-file import or between tests, and any process the instrument never loaded in.
+A **service or child process the collector holds** is no longer in that list: the instrument
+installs the same tracker inside the target, drains the paths with each take, and the collector
+writes them into the test record for the boundary that closes the window, beside the test
+process's own reads. An instrument older than the field reports none. `alwaysSelect` remains for
+what no observed process read — a tool that reads a file it was spawned with, a native addon, a
+process whose environment could not be set.
 
 **`unknownPolicyFor` is a per-glob unknown-file policy.** The first matching entry wins, so a narrow
 `all` can precede a broad `ignore`; a file the map knows still follows the normal rules, which is why

@@ -193,6 +193,17 @@ export interface TakeResult {
   ids?: string[]
   /** Request-boundary windows taken since the previous reply. */
   requests?: RequestWindow[]
+  /**
+   * Files the process read since the previous take.
+   *
+   * A service reads a routing table, a config, a fixture — data whose change must
+   * select the tests that drove it, and which no function in the map names. The
+   * paths are canonical, the same spelling the build keys its map by, and they are
+   * attributed to the boundary that closes here exactly as coverage is.
+   */
+  reads?: string[]
+  /** Directories the process listed since the previous take. */
+  dirReads?: string[]
 }
 
 /**

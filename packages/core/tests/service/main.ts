@@ -20,6 +20,7 @@
  * `neverCalled` is never called by anything. It is the inverse map at socket
  * scale: if it appears in a take, the delta is wrong.
  */
+import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createInterface } from 'node:readline'
 
@@ -76,6 +77,12 @@ commands.on('line', (line) => {
 
   if (command === 'store') {
     process.stdout.write(`${persistKey('GhIjKl')}\n`)
+    return
+  }
+
+  if (command.startsWith('read ')) {
+    const text = readFileSync(command.slice('read '.length), 'utf8')
+    process.stdout.write(`read ${String(text.length)}\n`)
     return
   }
 

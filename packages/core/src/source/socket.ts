@@ -888,6 +888,8 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
           coverage: result.coverage,
           ids: result.ids ?? [],
           requests: result.requests ?? [],
+          ...(result.reads === undefined ? {} : { reads: result.reads }),
+          ...(result.dirReads === undefined ? {} : { dirReads: result.dirReads }),
         }
       },
       async (error: Error) => {
@@ -928,13 +930,9 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
       seq,
       settle: () => previous.then(() => delta).then((capture) => capture.coverage),
     }
-    // Only a source that asked for correlation can produce tags. Leaving the
-    // method absent otherwise keeps an uncorrelated run on exactly the path it had
-    // before there was a tag to carry — which is the path the drift fixture
-    // measures, and it is sensitive to work added per boundary.
-    if (options.correlationHeader !== undefined && options.correlationHeader !== '') {
-      handle.settleTagged = () => previous.then(() => delta)
-    }
+    // Always present: the reply carries the target's reads as well as its
+    // correlation tags, and an uncorrelated run still has reads to attribute.
+    handle.settleTagged = () => previous.then(() => delta)
     return handle
   }
 

@@ -30,10 +30,12 @@
  * the report buffered behind it.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
+import { Recorder } from '../src/recorder.js'
+import { FileSink, parseShard } from '../src/shard.js'
 import { rescanningSocketSource, socketSource } from '../src/adapter.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { launchService, waitForSocket, type RunningService } from './support/service.js'
@@ -309,6 +311,50 @@ test('a process that died before its socket answered is read from its exit snaps
     source?.close()
     lane?.stop()
     child?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A service reads data the map cannot name — a routing table, a config keyed by
+// line. Its change has to select the test that drove the service, which means the
+// read has to reach the shard from the far side of the socket.
+test('a file the service reads is recorded against the test that drove it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-reads-'))
+  let service: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    const route = join(dir, 'routing.json')
+    writeFileSync(route, '{"path":"/health"}\n')
+    service = await started(dir)
+
+    const shard = join(dir, 'service.ndjson')
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000 })
+    const recorder = new Recorder({
+      source,
+      sink: new FileSink(shard),
+      commit: 'reads-e2e',
+      pid: source.pid,
+      role: 'service',
+      scan: { prefilter: (url: string) => url.includes('/tests/service/') },
+    })
+    recorder.runStart()
+    recorder.testStart('reads a route', 'spec.ts')
+    service.run(`read ${route}`)
+    await until(service, 'read ')
+    recorder.testEnd('reads a route', 'passed', 0)
+    recorder.runEnd()
+    await recorder.drained()
+    recorder.close()
+    source = null
+
+    const record = parseShard(readFileSync(shard, 'utf8'), shard).find(
+      (value) => value.type === 'test' && value.title === 'reads a route',
+    )
+    assert.ok(record?.type === 'test')
+    assert.deepEqual(record.reads, [realpathSync(route)])
+  } finally {
+    source?.close()
+    service?.stop()
     rmSync(dir, { recursive: true, force: true })
   }
 })

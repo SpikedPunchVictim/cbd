@@ -344,6 +344,9 @@ export async function rescanningSocketSource(
           ids: window.ids,
           coverage: prefix(window.coverage),
         })),
+        // Reads are paths, not script ids: one namespace, no prefixing.
+        ...(capture.reads === undefined ? {} : { reads: capture.reads }),
+        ...(capture.dirReads === undefined ? {} : { dirReads: capture.dirReads }),
       }),
       // Swallowed per target rather than left to the Recorder. The Recorder catches a
       // failed window for the whole source, which would blank every *other* target's
@@ -547,13 +550,21 @@ export async function rescanningSocketSource(
     // target that appeared between two ticks.
     attachCandidates(true, parts)
 
-    const settled: Promise<TakeCapture> = Promise.all(parts).then((captures) => ({
-      coverage: captures.flatMap((capture) => capture.coverage),
-      // One id may have requests open in several targets; the recorder resolves it
-      // through one owner registry, so duplicates are harmless.
-      ids: captures.flatMap((capture) => capture.ids),
-      requests: captures.flatMap((capture) => capture.requests),
-    }))
+    const settled: Promise<TakeCapture> = Promise.all(parts).then((captures) => {
+      const reads = captures.flatMap((capture) => capture.reads ?? [])
+      const dirReads = captures.flatMap((capture) => capture.dirReads ?? [])
+      return {
+        coverage: captures.flatMap((capture) => capture.coverage),
+        // One id may have requests open in several targets; the recorder resolves it
+        // through one owner registry, so duplicates are harmless.
+        ids: captures.flatMap((capture) => capture.ids),
+        requests: captures.flatMap((capture) => capture.requests),
+        // Reads have one namespace across targets — a path is a path — so they are
+        // concatenated and the recorder deduplicates.
+        ...(reads.length === 0 ? {} : { reads }),
+        ...(dirReads.length === 0 ? {} : { dirReads }),
+      }
+    })
     void settled.then(
       () => {
         outstanding -= 1
@@ -566,9 +577,8 @@ export async function rescanningSocketSource(
       seq,
       settle: () => settled.then((capture) => capture.coverage),
     }
-    if (options.correlationHeader !== undefined && options.correlationHeader !== '') {
-      handle.settleTagged = () => settled
-    }
+    // Always: a target's reads travel in the capture, correlated or not.
+    handle.settleTagged = () => settled
     return handle
   }
 

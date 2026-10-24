@@ -139,6 +139,10 @@ export interface TakeCapture {
   coverage: V8ScriptCoverage[]
   ids: string[]
   requests: TaggedCoverage[]
+  /** Files the target read during this window, canonical. */
+  reads?: string[]
+  /** Directories the target listed during this window. */
+  dirReads?: string[]
 }
 
 /**
@@ -153,12 +157,14 @@ export interface PendingTake {
   readonly seq: number
   settle(): Promise<V8ScriptCoverage[]>
   /**
-   * The same reply with its correlation tags, when the source has any.
+   * The same reply with everything the window carries beyond its coverage.
    *
-   * A separate method rather than a wider `settle()` return type: a plain source
-   * has no tags to report, and making every caller destructure an envelope it
-   * never fills would be a worse contract than an optional capability. The
-   * `Recorder` uses this when it is present and `settle()` otherwise.
+   * A separate method rather than a wider `settle()` return type, because most
+   * callers only want the coverage. It began as the correlation tags; the target's
+   * **reads** travel here too — a service's read of a data file belongs to the
+   * window that closes at the boundary — so a queued source that tracks anything
+   * must provide it. The `Recorder` uses it when present and `settle()` otherwise,
+   * which keeps a caller-defined source from having to implement it.
    */
   settleTagged?(): Promise<TakeCapture>
 }

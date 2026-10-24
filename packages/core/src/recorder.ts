@@ -155,6 +155,9 @@ export interface RawCapture {
   coverage: V8ScriptCoverage[]
   ids: string[]
   requests: Array<{ ids: string[]; coverage: V8ScriptCoverage[] }>
+  /** Files the target read during this window; see `TakeCapture` in the adapter seam. */
+  reads?: string[]
+  dirReads?: string[]
 }
 
 /**
@@ -182,6 +185,9 @@ export interface ProjectedCapture {
   ids: string[]
   /** Deltas the source took at its own request boundaries. */
   requests: Array<{ ids: string[]; window: ProjectedWindow }>
+  /** Files the target read during this window, canonical. */
+  reads?: string[]
+  dirReads?: string[]
 }
 
 /** Turns one capture's deltas into the ranges and table rows the shard stores. */
@@ -194,6 +200,12 @@ interface Projector {
 }
 
 const EMPTY_RAW: RawCapture = { coverage: [], ids: [], requests: [] }
+
+/** Union of two path lists, deduplicated and sorted. */
+function unionSorted(a: string[], b: string[] | undefined): string[] {
+  if (b === undefined || b.length === 0) return a
+  return [...new Set([...a, ...b])].sort()
+}
 
 /**
  * The recorder's hot projection.
@@ -337,6 +349,8 @@ function projectorFor(source: Source, scan: ScanOptions): Projector {
           ids: request.ids,
           window: project(request.coverage),
         })),
+        ...(capture.reads === undefined ? {} : { reads: capture.reads }),
+        ...(capture.dirReads === undefined ? {} : { dirReads: capture.dirReads }),
       }))
     },
     scriptIds: () => [...rows.keys()],
@@ -862,21 +876,29 @@ export class Recorder {
     // source the window touched.
     this.#open = null
 
-    this.#emit((capture) => ({
-      type: 'test',
-      title,
-      file,
-      ...(ordinal === undefined ? {} : { ordinal }),
-      ...(titlePath === undefined ? {} : { titlePath }),
-      ...(line === undefined ? {} : { line }),
-      ...(column === undefined ? {} : { column }),
-      status,
-      durationMs: elapsed,
-      touches: capture.window.touches,
-      ...(reads.length === 0 ? {} : { reads }),
-      ...(dirReads.length === 0 ? {} : { dirReads }),
-      ...(opaque.length === 0 ? {} : { opaque }),
-    }))
+    this.#emit((capture) => {
+      // Reads a target made reach the recorder with the window they belong to, after
+      // the boundary; the synchronous sets above hold this process's. One test record
+      // carries both, so a service's read of a data file selects the test that drove
+      // it exactly as a read in the test process does.
+      const allReads = unionSorted(reads, capture.reads)
+      const allDirReads = unionSorted(dirReads, capture.dirReads)
+      return {
+        type: 'test',
+        title,
+        file,
+        ...(ordinal === undefined ? {} : { ordinal }),
+        ...(titlePath === undefined ? {} : { titlePath }),
+        ...(line === undefined ? {} : { line }),
+        ...(column === undefined ? {} : { column }),
+        status,
+        durationMs: elapsed,
+        touches: capture.window.touches,
+        ...(allReads.length === 0 ? {} : { reads: allReads }),
+        ...(allDirReads.length === 0 ? {} : { dirReads: allDirReads }),
+        ...(opaque.length === 0 ? {} : { opaque }),
+      }
+    })
     this.#testCount += 1
   }
 

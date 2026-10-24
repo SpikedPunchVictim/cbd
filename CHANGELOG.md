@@ -5,6 +5,14 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A file the service reads selects the test that drove it.** Read tracking ran only in the test
+  process, so a service that read a routing table, a config keyed by line, or a fixture had no edge
+  from that file to the tests that drove it — a change to the data did not select them. The
+  instrument now installs the same tracker inside the target, drains the paths with each take, and
+  the collector writes them into the test record's `reads`/`dirReads` alongside the test process's
+  own, attributed to the boundary that closes the window exactly as coverage is. `settleTagged()`
+  is now present on every queued source because it carries the reads as well as the correlation
+  tags; an older instrument reports none, and the build's include filter still decides what counts.
 - **A child that dies before it is attached is read from its exit snapshot.** A test that
   shells out to a Node CLI usually watches it exit inside the test window, and a normal exit
   unlinks the instrument's socket — so the re-scan that finds services a suite starts could not
