@@ -46,6 +46,7 @@ export type Reason =
   | { kind: 'read'; file: string; tests: number[] }
   | { kind: 'opaque'; reason: string; tests: number[] }
   | { kind: 'always'; file?: string; tests: number[] }
+  | { kind: 'shared-state'; file: string; tests: number[] }
   | { kind: 'all'; why: AllWhy; file?: string }
 
 /**
@@ -131,6 +132,17 @@ export interface SelectConfig {
   /** Tests every matching subset must also run, for oracles that read sources as text. */
   alwaysSelect?: AlwaysSelectEntry[]
   /**
+   * Globs naming files whose module state tests share.
+   *
+   * A test that patches a module-level value and a test that observes it are a
+   * pair: running one without the other is not a smaller run, it is a different
+   * one. Coverage cannot see that, so the files are declared. When a change selects
+   * any test that touched a listed file, every test that touched it is pulled in.
+   * This is deliberately not inferred from the graph — a neighbour closure over
+   * every shared module collapses to the whole suite.
+   */
+  sharedState?: string[]
+  /**
    * The config file this selection was made under, absolute.
    *
    * A change to it can change `include`, `alwaysAll`, `alwaysSelect` or the
@@ -208,7 +220,8 @@ const IMPACT: Record<Reason['kind'], number> = {
   'test-file': 3,
   opaque: 4,
   always: 5,
-  all: 6,
+  'shared-state': 6,
+  all: 7,
 }
 
 /**
@@ -769,6 +782,25 @@ export function select(
     const tests = uniqueSorted(indices)
     for (const index of tests) selected.add(index)
     reasons.push({ kind: 'always', tests })
+  }
+
+  // Rule 11 — declared shared state: a test that depends on module state another
+  // test mutates must not run without it, or a subset becomes a different run.
+  // Coverage cannot see the dependency, so the list is declared; any test that
+  // touched a listed file is pulled in when one selected test did.
+  if (config.sharedState !== undefined && config.sharedState.length > 0 && !forced) {
+    for (const [file, functions] of Object.entries(map.files)) {
+      if (matchesAnyGlob(file, config.sharedState) === null) continue
+      const touched = new Set<number>()
+      for (const entry of Object.values(functions)) {
+        for (const index of entry.tests) touched.add(index)
+      }
+      if (![...touched].some((index) => selected.has(index))) continue
+      const added = uniqueSorted([...touched].filter((index) => !selected.has(index)))
+      if (added.length === 0) continue
+      for (const index of touched) selected.add(index)
+      reasons.push({ kind: 'shared-state', file, tests: added })
+    }
   }
 
   // Rule 10 — a map that is dirty or far behind cannot be trusted to be complete.

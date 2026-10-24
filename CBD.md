@@ -830,6 +830,13 @@ resolves repository-relative locators and rejects malformed entries; a `when` ma
 outside `include`, which is what lets an entry protect a source tree the normal selection ignores
 (`cbd-0na.4`).
 
+**`sharedState` is for tests that depend on their neighbours.** A test that patches a module-level
+value and a test that observes it are a pair; running one without the other is not a smaller run but
+a different one, and coverage cannot say so. The list names files; when a change selects a test that
+touched one of them, every test that touched it is added with reason `shared-state`. It is declared
+rather than inferred on purpose: a neighbour closure over every shared module collapses to the whole
+suite. It does not model ordering, and `cbd verify` remains the measurement for what a subset missed.
+
 **Ignored is not empty.** A changed file outside `include` (and not claimed by `alwaysAll` or an
 `alwaysSelect.when`) is dropped from the selection, but it is named in `selection.ignored`; without
 it a consumer cannot tell "nothing changed" from "a change I was told to ignore" (`cbd-0na.6`).
@@ -969,6 +976,9 @@ which is safe over-selection rather than a miss.
     { "tests": ["tests/pipeline.spec.ts > no file imports outside the package"],
       "when": ["edge/pipeline/src/**"] }
   ],
+  // Files whose module state tests share: selecting one test that touched a listed
+  // file pulls in every test that touched it.
+  "sharedState": ["src/clock.ts", "src/state/**"],
   "unknownPolicy": "all",
   "unknownPolicyFor": [{ "paths": ["typescript/tools/**"], "policy": "ignore" }],
   "betweenPolicy": "all",

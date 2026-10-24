@@ -5,6 +5,13 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **`sharedState` runs neighbours together.** A subset is not a smaller run when a test depends on
+  module state another test mutates — a patched sleep, a seeded clock, a singleton wired in one test
+  and read in the next. Coverage cannot see that dependency, so the new `select.sharedState` config
+  key declares the files: when a change selects a test that touched a listed file, every test that
+  touched it is added, with reason `shared-state`. It is opt-in and deliberately not inferred; a
+  neighbour closure over every shared module collapses to the full suite, and `cbd verify` remains
+  the measurement for what a subset missed.
 - **A file the service reads selects the test that drove it.** Read tracking ran only in the test
   process, so a service that read a routing table, a config keyed by line, or a fixture had no edge
   from that file to the tests that drove it — a change to the data did not select them. The

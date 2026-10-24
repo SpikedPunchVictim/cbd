@@ -37,6 +37,11 @@ export interface CbdConfigFile {
    * `file > title`; `when` limits the trigger to changes matching those globs.
    */
   alwaysSelect?: Array<{ tests: string[]; when?: string[] }>
+  /**
+   * Globs naming files whose module state tests share. A change that selects one
+   * test touching such a file pulls in every test that touched it.
+   */
+  sharedState?: string[]
   unknownPolicy?: 'all' | 'ignore'
   /**
    * Per-glob overrides for a file the map has never seen. First matching entry
@@ -65,6 +70,7 @@ const KEYS = new Set([
   'exclude',
   'alwaysAll',
   'alwaysSelect',
+  'sharedState',
   'unknownPolicy',
   'unknownPolicyFor',
   'betweenPolicy',
@@ -320,6 +326,7 @@ function selectFrom(file: Record<string, unknown>, root: string, path: string): 
     throw new Error(`cbd: ${path} "exclude" must not be empty; omit it to exclude nothing`)
   }
   const alwaysAll = strings(file.alwaysAll, 'alwaysAll', path)
+  const sharedState = strings(file.sharedState, 'sharedState', path)
   const alwaysSelected = alwaysSelect(file.alwaysSelect, root, path)
   const unknownPolicyOverrides = unknownPolicyFor(file.unknownPolicyFor, root, path)
   const testFiles = strings(file.testFiles, 'testFiles', path)
@@ -347,6 +354,7 @@ function selectFrom(file: Record<string, unknown>, root: string, path: string): 
   if (include !== undefined || exclude !== undefined) select.include = predicate
   if (alwaysAll !== undefined) select.alwaysAll = absoluteGlobs(root, alwaysAll)
   if (alwaysSelected !== undefined) select.alwaysSelect = alwaysSelected
+  if (sharedState !== undefined) select.sharedState = absoluteGlobs(root, sharedState)
   if (unknownPolicyOverrides !== undefined) select.unknownPolicyFor = unknownPolicyOverrides
   if (testFiles !== undefined) select.testFiles = absoluteGlobs(root, testFiles)
   if (testFilePolicy !== undefined) select.testFilePolicy = testFilePolicy

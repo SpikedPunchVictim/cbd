@@ -1076,3 +1076,46 @@ test('verify warns when no change matched any recorded touch', () => {
   assert.equal(result.checked, 0)
   assert.ok((result.warnings ?? []).some((warning) => warning.includes('no recorded touch')))
 })
+
+// --- rule 11: declared shared state ----------------------------------------
+// A subset is not a smaller run if it drops a test another test's module state
+// came from. Coverage cannot see that dependency, so the files are declared.
+test('a declared shared-state file pulls in every test that touched it', () => {
+  const shared = '/repo/src/clock.ts'
+  const map = makeMap({
+    files: {
+      ...makeMap().files,
+      [shared]: {
+        'sleep@0': { startLine: 1, endLine: 4, tests: [0] },
+        'readClock@0': { startLine: 6, endLine: 9, tests: [1] },
+      },
+    },
+  })
+  const changed = [change(SRC, [{ start: 2, end: 2 }])]
+
+  // Without the policy, the change selects `adds` alone.
+  const plain = select(map, changed)
+  assert.deepEqual(plain.tests.map((index) => map.tests[index]?.title), ['adds'])
+
+  // With it, the test that observes the shared module comes along.
+  const shared2 = select(map, changed, { sharedState: [shared] })
+  assert.deepEqual(shared2.tests.map((index) => map.tests[index]?.title), ['adds', 'multiplies'])
+  assert.deepEqual(reasonKinds(shared2), ['function', 'shared-state'])
+})
+
+test('shared state does nothing when no selected test touched the file', () => {
+  const shared = '/repo/src/clock.ts'
+  const map = makeMap({
+    files: {
+      ...makeMap().files,
+      [shared]: {
+        'sleep@0': { startLine: 1, endLine: 4, tests: [0] },
+        'readClock@0': { startLine: 6, endLine: 9, tests: [1] },
+      },
+    },
+  })
+  // This change selects `uses helper` only, which touched nothing shared.
+  const result = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { sharedState: [shared] })
+  assert.deepEqual(result.tests.map((index) => map.tests[index]?.title), ['uses helper'])
+  assert.deepEqual(reasonKinds(result), ['function'])
+})

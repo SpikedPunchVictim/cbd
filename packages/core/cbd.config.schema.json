@@ -25,6 +25,11 @@
       "items": { "type": "string" },
       "description": "Globs whose change forces mode: all (lockfiles, manifests, tsconfig, migrations)."
     },
+    "sharedState": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Globs naming files whose module state tests share. A change that selects a test touching such a file also selects every test that touched it."
+    },
     "alwaysSelect": {
       "type": "array",
       "description": "Tests every matching subset must include, for oracles that read sources as text and cannot appear in coverage. An entry the map cannot resolve forces mode: all and warns.",

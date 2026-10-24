@@ -27,6 +27,7 @@ test.group('cbd.config.json', () => {
           include: ['src/**'],
           exclude: ['**/*.d.ts'],
           alwaysAll: ['pnpm-lock.yaml', '**/package.json'],
+          sharedState: ['src/clock.ts', 'src/state/**'],
           alwaysSelect: [
             {
               tests: ['tests/drain.spec.ts', 'tests/pipeline.spec.ts > no import outside the package'],
@@ -59,6 +60,7 @@ test.group('cbd.config.json', () => {
       assert.equal(select.maxAgeCommits, 50)
       assert.equal(select.strict, true)
       assert.deepEqual(select.alwaysAll, [join(root, 'pnpm-lock.yaml'), join(root, '**/package.json')])
+      assert.deepEqual(select.sharedState, [join(root, 'src/clock.ts'), join(root, 'src/state/**')])
       assert.deepEqual(select.alwaysSelect, [
         {
           tests: [

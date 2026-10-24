@@ -67,6 +67,8 @@ function reasonLine(root: string, reason: Reason): string {
       return `${reason.reason} (opaque dependency, ${plural(reason.tests.length, 'test')})`
     case 'always':
       return `alwaysSelect (${plural(reason.tests.length, 'test')})`
+    case 'shared-state':
+      return `${shown(root, reason.file)} (shared state, ${plural(reason.tests.length, 'test')})`
     case 'all':
       return reason.file === undefined
         ? reason.why
