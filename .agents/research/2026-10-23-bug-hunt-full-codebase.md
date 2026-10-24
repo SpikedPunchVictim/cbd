@@ -538,6 +538,6 @@ run alone. The mechanism visible in the failing shard is a take whose connection
 and whose recovery found no snapshot — the child process is still alive — which is worth its own
 investigation rather than a fix-by-guess.
 
-**New follow-ups, filed for the next release** (see cbd-3vm.6 and its children): harvesting a
-short-lived child's exit snapshot, tracking reads inside a service process, and a policy for
-tests whose behaviour depends on their neighbours.
+**New follow-ups, filed for the next release** (the "coverage for what the recorder cannot
+observe" epic): harvesting a short-lived child's exit snapshot, tracking reads inside a service
+process, and a policy for tests whose behaviour depends on their neighbours.
