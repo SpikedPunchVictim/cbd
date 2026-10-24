@@ -25,10 +25,14 @@ test('a skipped window is skipped; anything but passed is failed', () => {
   assert.equal(statusOf({ passed: true }, true), 'skipped')
 })
 
+// Every reading of a stored title is admitted. The stored string cannot say which
+// ` > ` occurrences were separators, and a title may itself contain one; admitting
+// the readings can only run an extra test, while guessing one silently skipped the
+// test the selection named.
 test('the selection pattern joins parts with spaces and escapes regex characters', () => {
   assert.equal(
     selectionPattern(['outer > adds', 'outer > inner > adds (fast)']),
-    '^(?:outer adds|outer inner adds \\(fast\\))$',
+    '^(?:outer > adds|outer adds|outer > inner > adds \\(fast\\)|outer inner > adds \\(fast\\)|outer > inner adds \\(fast\\)|outer inner adds \\(fast\\))$',
   )
 })
 

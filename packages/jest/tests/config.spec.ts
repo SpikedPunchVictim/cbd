@@ -40,3 +40,14 @@ test('a malformed v2 test is refused', () => {
     assert.throws(() => selectionPattern(path), /v2 selection needs/),
   )
 })
+
+// A stored title does not say which ` > ` occurrences were separators. Admitting
+// every reading can over-select; guessing one skipped the selected test silently.
+test('a title containing " > " admits every reading', () => {
+  withSelection(JSON.stringify({ titles: ['outer > a > b'] }), (path) =>
+    assert.equal(
+      selectionPattern(path),
+      '^(?:outer > a > b|outer\\s+a > b|outer > a\\s+b|outer\\s+a\\s+b)$',
+    ),
+  )
+})

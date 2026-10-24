@@ -5,6 +5,58 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **Diff parsing matches real path names.** git appends a TAB to a `---`/`+++` line when the
+  path contains a space, and the parser kept it: with an `include` of `src/**/*.ts` a change to
+  `src/my file.ts` matched no glob and was dropped as out of scope. The `diff --git` header is
+  now split where both sides agree, so a path containing `" b/"` is no longer cut in the middle.
+  Untracked names from `ls-files -z` are no longer trimmed, which rewrote a name whose last byte
+  is a space.
+- **A killed run no longer poisons later builds.** The default `cbd build` parses every shard
+  under the state directory, and a footerless shard from another commit failed the build before
+  the commit filter could skip it. The header's commit is read from the first line first; a
+  shard for another commit is skipped, and one for *this* commit is still refused.
+- **The collector stops inheriting another run's state.** An exported `CBD_SELECTION` no longer
+  narrows a `--no-select` or "run everything" collect — reproduced as a 2-test suite recording
+  one test and rewriting the map. `--shard` must name a `.ndjson` file, because that extension
+  is how `cbd build` finds shards; the previous silent outcome was a valid shard nobody built.
+  An inherited `CBD_INSPECT` now goes through the same target and collector-lock checks as
+  `--target`.
+- **Request ids reach ESM named imports; the hello names its header.** `Correlator.install`
+  patched the default export of `node:http`, so `import { request } from 'node:http'` kept
+  calling the original and its requests were attributed by time (measured). It now syncs the
+  builtin ESM exports on install and on release. The instrument's hello reports the header it
+  is correlating for, and the collector skips its `correlate` op only when the names match —
+  a bare `correlating: true` was read as agreement to whatever the collector asked for.
+- **Lost evidence reaches the shard's health record.** `rescanningSocketSource` reported no
+  `generatedMissing` and swallowed a dead target's lost window without counting it, so a shard
+  with missing generated text or a lost window looked clean and the map never became partial or
+  unhealthy. It now forwards nested ids in the shard's pid namespace, and a new optional
+  `Source.lostTakes()` carries per-target losses the recorder has no rejection left to count.
+  `inProcessSource` reports missing generated text too, a socket it gives up on is announced
+  once on stderr, and Node's empty-string `sourceMapURL` ("no map") is no longer read as a map —
+  which had marked plain scripts' files partial whenever their text could not be fetched.
+- **Titles containing ` > ` are matched, not skipped.** node:test and Jest translate CBD titles
+  into the runner's name space by splitting on ` > `, which cannot tell a separator from literal
+  text; a selected test whose title contained one was filtered out and silently never ran. The
+  shared `titlePartReadings` admits every reading, which can only over-select.
+- **A window left open says what happened.** node:test and Vitest refused the *next* test as
+  "running concurrently" when a consumer `afterEach` had thrown and stopped the hook chain
+  before the adapter's own hook. The run is still refused (the boundary is lost either way), but
+  the message names both causes.
+- **Mutation selection follows select's safety ladder.** It ignored `partial`/`unhealthy` (now
+  `all`), `opaque`/`reads`/`dirReads` (now added to every subset), and counted the whole-file
+  `<module>` entry as a function, so a top-level mutant answered with its importer alone instead
+  of the file-wide set.
+- **Robustness batch.** `select` warns when no change matched any recorded touch (a clean
+  `verify` with `checked: 0` was indistinguishable from a pass), a library `select` honours the
+  map's own `dirty`, `gc` tolerates entries that vanish mid-prune, `collect` removes its
+  selection file on every exit including a failed build, paths that do not exist yet are
+  canonicalized through their nearest existing ancestor (so a later creation still matches a
+  symlinked root), Vitest honours `CBD_SELECTION` without `CBD_SHARD`, japa closes its sources
+  even when a drain rejects, and a recorder step that throws inside an unawaited lifecycle hook
+  is reported rather than becoming an unhandled rejection. `CBD_SNAPSHOT_MS` above the timer
+  limit is clamped instead of wrapping to a 1 ms interval, and a second `runStart` on one
+  Recorder starts from zero.
 - **Attaching to a target that has just started waits for its pid.** A process attached to on its
   `Debugger listening` line answers `Runtime.evaluate('process.pid')` with `undefined` until its
   bootstrap installs the global — not with an error — so the source refused an attach that was

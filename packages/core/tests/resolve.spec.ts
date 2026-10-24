@@ -130,6 +130,13 @@ test('a missing generated script is partial only when its file has a map', () =>
 
     const withoutMap = resolveShard(shard([header(), script(plain), health, end(0)]))
     assert.deepEqual(withoutMap.partialFiles, [])
+
+    // Node reports `sourceMapURL: ""` for a script that has none. An empty string
+    // names no map, so the file is still its own source — treating it as transformed
+    // marked every plain script's file partial whenever its text could not be fetched.
+    const emptyUrl = { ...script(plain), sourceMapURL: '' }
+    const withEmpty = resolveShard(shard([header(), emptyUrl, health, end(0)]))
+    assert.deepEqual(withEmpty.partialFiles, [])
   } finally {
     mapped.cleanup()
     plain.cleanup()

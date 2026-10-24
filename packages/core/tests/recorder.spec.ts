@@ -1037,3 +1037,59 @@ test('a repeated title in one file is recorded with an ordinal', () => {
     tree.cleanup()
   }
 })
+
+// A source that swallows a per-target failure keeps the surviving targets' coverage
+// but has no rejection left for the recorder to count. The count has to travel by
+// its own route, or the shard looks healthy while a window is missing.
+test('a source that counts its own lost windows reports them as unhealthy', () => {
+  const source: Source = {
+    kind: 'swallowing',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => new Map(),
+    lostTakes: () => 2,
+    close: () => {},
+  }
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'abc' })
+  recorder.runStart()
+  recorder.testStart('a', null)
+  recorder.testEnd('a', 'passed')
+  recorder.runEnd()
+
+  const health = parseShard(sink.text).find((record) => record.type === 'health')
+  assert.ok(health?.type === 'health')
+  assert.equal(health?.type === 'health' ? health.failedTakes : undefined, 2)
+})
+
+// A Recorder driven through two runs must not carry the first run's bookkeeping:
+// its test count, its ordinals, its load phase or its failure count.
+test('a second run on one recorder starts from zero', () => {
+  const source: Source = {
+    kind: 'clean',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => new Map(),
+    close: () => {},
+  }
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'abc' })
+
+  recorder.runStart()
+  recorder.testStart('a', null)
+  recorder.testEnd('a', 'passed')
+  recorder.runEnd()
+
+  recorder.runStart()
+  recorder.testStart('b', null)
+  recorder.testEnd('b', 'passed')
+  recorder.runEnd()
+
+  // `runStart` resets the sink, so the shard is the second run alone.
+  const records = parseShard(sink.text)
+  assert.equal(records.filter((record) => record.type === 'shard').length, 1)
+  const footer = records.find((record) => record.type === 'end')
+  assert.equal(footer?.type === 'end' ? footer.tests : undefined, 1)
+})

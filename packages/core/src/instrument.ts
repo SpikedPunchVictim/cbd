@@ -91,12 +91,23 @@ const scope = globalThis as InstrumentScope
  * rewriting it every 500 ms put the instrument at ~97% CPU and the suite at 100×
  * its unrecorded time (`cbd-n9t.2`).
  */
+/**
+ * The longest delay `setInterval` accepts.
+ *
+ * Node clamps anything above a signed 32-bit integer to 1 ms and prints
+ * `TimeoutOverflowWarning`. A value meant as "effectively never" would then write
+ * a full snapshot every millisecond — the opposite of the request, on the host's
+ * event loop.
+ */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1
+
 const SNAPSHOT_INTERVAL_MS = snapshotInterval(process.env.CBD_SNAPSHOT_MS)
 
 function snapshotInterval(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return 500
   const value = Number(raw)
-  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : 500
+  if (!Number.isFinite(value) || value < 0) return 500
+  return Math.min(Math.floor(value), MAX_TIMER_DELAY_MS)
 }
 
 const socketDir = process.env[SOCKET_DIR_ENV]
@@ -575,7 +586,13 @@ async function start(dir: string): Promise<void> {
   session.on('Debugger.scriptParsed', (event) => {
     const params = event.params
     const row: ScriptRow = { id: params.scriptId, url: params.url }
-    if (params.sourceMapURL !== undefined && !declaresMap(params.url, params.sourceMapURL)) {
+    // An empty string is how Node says "no map"; carrying it would tell the build
+    // the file on disk is not the script it compiled.
+    if (
+      params.sourceMapURL !== undefined &&
+      params.sourceMapURL !== '' &&
+      !declaresMap(params.url, params.sourceMapURL)
+    ) {
       row.sourceMapURL = params.sourceMapURL
     }
     scripts.set(params.scriptId, row)
@@ -778,6 +795,7 @@ async function start(dir: string): Promise<void> {
             startedAt,
             scriptCount: scripts.size,
             correlating: requestCorrelation !== null,
+            ...(requestCorrelation === null ? {} : { correlationHeader: requestCorrelation }),
             ...(session === undefined || session === '' ? {} : { session }),
           }
           reply(connection, { id, op: 'hello', ok: true, result })

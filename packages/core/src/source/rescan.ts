@@ -185,8 +185,13 @@ export async function rescanningSocketSource(
   /** Paths with an attach in flight, so two lookers cannot start two of them. */
   const attaching = new Map<string, Promise<Target | null>>()
   const failures = new Map<string, number>()
+  /** The last error each path produced, for the one warning when it is given up on. */
+  const lastError = new Map<string, string>()
+  /** Paths already reported as written off; the warning is said once. */
+  const writtenOff = new Set<string>()
 
   let closed = false
+  let lost = 0
   let outstanding = 0
   let nextSeq = 0
 
@@ -245,8 +250,12 @@ export async function rescanningSocketSource(
       // Swallowed per target rather than left to the Recorder. The Recorder catches a
       // failed window for the whole source, which would blank every *other* target's
       // coverage in the same window: one service dying mid-run would erase the lane's
-      // map for that test as well as its own.
-      () => ({ coverage: [], ids: [], requests: [] }),
+      // map for that test as well as its own. The loss itself is counted separately,
+      // because an uncounted empty window under-selects silently.
+      () => {
+        lost += 1
+        return { coverage: [], ids: [], requests: [] }
+      },
     )
   }
 
@@ -284,8 +293,9 @@ export async function rescanningSocketSource(
       const target: Target = { path, source, pid: source.pid }
       targets.push(target)
       return target
-    } catch {
+    } catch (error) {
       failures.set(path, (failures.get(path) ?? 0) + 1)
+      lastError.set(path, error instanceof Error ? error.message : String(error))
       return null
     }
   }
@@ -325,7 +335,20 @@ export async function rescanningSocketSource(
     for (const path of candidates) {
       if (refused.has(path)) continue
       if (targets.some((target) => target.path === path)) continue
-      if ((failures.get(path) ?? 0) >= ATTACH_ATTEMPTS) continue
+      if ((failures.get(path) ?? 0) >= ATTACH_ATTEMPTS) {
+        // A written-off socket is coverage the map will not have. The docblock's
+        // case is a leftover file, but a target whose loop is blocked past the
+        // timeout lands here too, and a missing service must never be silent.
+        if (!writtenOff.has(path)) {
+          writtenOff.add(path)
+          process.stderr.write(
+            `cbd: gave up on ${path} after ${String(ATTACH_ATTEMPTS)} attempts ` +
+              `(${lastError.get(path) ?? 'no answer'}); that process's coverage is missing ` +
+              'from this run, so selection may under-select.\n',
+          )
+        }
+        continue
+      }
 
       let opening = attaching.get(path)
       if (opening === undefined) {
@@ -418,6 +441,19 @@ export async function rescanningSocketSource(
     dispatch,
     scripts,
     generated: (scriptId: string) => scripts().get(scriptId)?.generated,
+    /**
+     * Every target's missing scripts, in the shard's namespace.
+     *
+     * The nested source names its own script ids, which are unique only within its
+     * process; the rows this source publishes are `${pid}:${id}` (see `scripts`),
+     * and the build looks the id up in exactly that table.
+     */
+    generatedMissing: () =>
+      targets.flatMap((target) =>
+        (target.source.generatedMissing?.() ?? []).map((id) => `${String(target.pid)}:${id}`),
+      ),
+    /** Windows swallowed above: real losses the recorder has no rejection to count. */
+    lostTakes: () => lost,
     async prepare(scriptIds: readonly string[]) {
       const byPid = new Map<string, string[]>()
       for (const prefixed of scriptIds) {

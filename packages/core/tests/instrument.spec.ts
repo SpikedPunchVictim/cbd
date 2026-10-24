@@ -246,6 +246,44 @@ test.group('instrument module', () => {
     })
   })
 
+  // Node clamps a `setInterval` delay above a signed 32-bit integer to 1 ms with a
+  // TimeoutOverflowWarning. A host asked for a snapshot "almost never" would then
+  // write one every millisecond — and print a warning despite the module's promise
+  // to stay quiet.
+  test('a snapshot interval past the timer limit is clamped, not wrapped to 1 ms', async () => {
+    await withService({ CBD_SNAPSHOT_MS: '3000000000' }, async (service) => {
+      await service.ready
+      await new Promise((resolve) => setTimeout(resolve, 150))
+      assert.doesNotMatch(service.output(), /TimeoutOverflowWarning/)
+      assert.doesNotMatch(service.output(), /does not fit into a 32-bit/)
+    })
+  })
+
+  // The collector skips its `correlate` op when the hello names the header it asked
+  // for. A bare boolean said "some header" — a collector asking for a different one
+  // would receive no request windows and fall back to time.
+  test('the hello echoes the header it is correlating for', async () => {
+    await withService({ CBD_CORRELATION_HEADER: '' }, async (service) => {
+      await service.ready
+      await waitForSocket(service.socketPath)
+      const client = await connect(service.socketPath)
+      try {
+        const before = (await client.request('hello') as { result: HelloResult }).result
+        assert.equal(before.correlating, false)
+        assert.equal(before.correlationHeader, undefined)
+
+        const reply = await client.request('correlate')
+        assert.equal(reply.ok, true)
+
+        const after = (await client.request('hello') as { result: HelloResult }).result
+        assert.equal(after.correlating, true)
+        assert.equal(after.correlationHeader, 'x-cbd-correlation')
+      } finally {
+        client.close()
+      }
+    })
+  })
+
   // Take ids restart at 1 per client, so the session is what tells two runs apart.
   test('echoes the run session and tags its snapshot windows with it', async () => {
     await withService({}, async (service) => {

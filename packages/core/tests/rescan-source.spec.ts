@@ -239,3 +239,29 @@ test.group('rescanningSocketSource', (group) => {
     }
   })
 })
+
+// The swallow is deliberate — one dead target must not blank the others — but a
+// window that dies with its target is still a lost window. The recorder counts
+// rejections, and there is none left to count, so the source must count it.
+test('a target that dies mid-run is counted as a lost window', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let live: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    live = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000 })
+    await source.take()
+
+    live.stop()
+    await source.take()
+
+    assert.ok(
+      (source.lostTakes?.() ?? 0) >= 1,
+      'a window lost with its target must reach the health record',
+    )
+  } finally {
+    source?.close()
+    live?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

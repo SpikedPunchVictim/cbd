@@ -73,6 +73,12 @@ function resolveMocha(): typeof import('mocha') {
 }
 
 const shardPath = process.env.CBD_SHARD || undefined
+// The runner owns this shard for this process only. A child a test spawns inherits
+// both the preload (`NODE_OPTIONS`) and this variable, and its own preload would
+// reset the shard this process is writing — measured: one `node -e` child replaced
+// a complete parent shard with its own header line. The value has been read, so
+// removing it makes every descendant inert, exactly as the japa entry point does.
+if (shardPath !== undefined) delete process.env.CBD_SHARD
 // Read before the suite is imported: a malformed or empty selection must fail
 // here, while the message can still say which file is wrong, rather than after
 // mocha has already loaded every test file.

@@ -262,7 +262,7 @@ cbd explain <file>[:<line>] [--format json]
 cbd reaches <test-title> <file>[:<line>] [--file <test-file>] [--format json]
 cbd reaches --batch <rows.json> [--format json]
 cbd stats   [--commit <sha>] [--format json]
-cbd collect [--no-select] [--no-build] [--shard <path>] [--incremental] -- <test command>
+cbd collect [--no-select] [--no-build] [--shard <path.ndjson>] [--incremental] -- <test command>
 cbd gc      [--keep <n>]
 ```
 

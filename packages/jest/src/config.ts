@@ -12,6 +12,7 @@
  * spaces, so each part is escaped and the separator becomes `\\s+`.
  */
 import { readFileSync } from 'node:fs'
+import { titlePartReadings } from '@spikedpunch/cbd/adapter'
 
 const REGEX_SPECIALS = /[.*+?^${}()|[\]\\]/g
 
@@ -44,10 +45,16 @@ export function selectionPattern(path: string | undefined = process.env.CBD_SELE
     throw new Error('cbd: the selection is empty; run without CBD_SELECTION rather than nothing')
   }
   // Anchored: Jest's pattern is unanchored, and `Should throw an error` would
-  // otherwise also match `Should throw an error 2`.
-  const alternatives = titles.map(
-    (title) => title.split(' > ').map(escapePart).join('\\s+'),
-  )
+  // otherwise also match `Should throw an error 2`. Every reading of a title is
+  // admitted, because a title may itself contain ` > ` and the stored string does
+  // not say which occurrences were separators; the extra readings can only
+  // over-select.
+  const alternatives: string[] = []
+  for (const title of titles) {
+    for (const parts of titlePartReadings(title)) {
+      alternatives.push(parts.map(escapePart).join('\\s+'))
+    }
+  }
   return `^(?:${alternatives.join('|')})$`
 }
 

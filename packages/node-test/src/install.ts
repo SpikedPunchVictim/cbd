@@ -121,15 +121,19 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     remember(context, 'todo')
 
     // A concurrent subtree (`{ concurrency: true }`, or a concurrent describe)
-    // opens a second window while the first is still recording. The Recorder
-    // attributes coverage and reads to one open window, so the run is refused
-    // rather than recorded wrongly.
+    // opens a second window while the first is still recording. A consumer
+    // `afterEach` that threw stops Node's hook chain before this adapter's own
+    // `afterEach`, which leaves the previous window open with the same symptom. The
+    // two cannot be told apart here, and both lose a boundary the recorder cannot
+    // attribute, so the run stops and the shard is left incomplete either way.
     if (open > 0) {
       refused = true
       throw new Error(
-        'cbd: node:test is running tests concurrently, but recording attributes coverage ' +
-          'and reads to one open test window. Record with concurrency disabled. The shard ' +
-          'is left incomplete so it cannot be selected from.',
+        'cbd: a test window was still open when the next test started — the runner ' +
+          'overlapped tests, or a hook stopped the boundary from closing (a throwing ' +
+          'afterEach does this). Recording cannot attribute coverage to one window then, ' +
+          'so the run stops and the shard is left incomplete. Record with concurrency ' +
+          'disabled.',
       )
     }
     recorder.testStart(title, absolute(fileOf(context) ?? file))

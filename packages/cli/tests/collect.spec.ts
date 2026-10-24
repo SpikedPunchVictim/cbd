@@ -7,7 +7,16 @@
  * and diff → selection file → child environment → shard → map.
  */
 import assert from 'node:assert/strict'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from '@japa/runner'
 import { inspectorLockPath, resolveInspectorTarget } from '@spikedpunch/cbd/adapter'
@@ -489,6 +498,126 @@ test('detects a smaller complete rerun at the same shard path', () => {
     assert.match(result.out.join('\n'), /^recorded 1 shard/m)
     assert.match(result.out.join('\n'), /^map /m)
   } finally {
+    cleanup()
+  }
+})
+
+test.group('cbd collect environment', () => {
+  // The child inherits the shell's environment. A selection exported by an earlier
+  // run is not one this run asked for, and a mode-all run that quietly recorded a
+  // subset wrote a map that under-selects from then on.
+  test('a stale CBD_SELECTION does not narrow a run that selected nothing', () => {
+    const { root, a, spec, runner, cleanup } = prepared()
+    const previous = process.env.CBD_SELECTION
+    try {
+      const selection = join(root, '.cbd', 'stale.json')
+      mkdirSync(dirname(selection), { recursive: true })
+      writeFileSync(
+        selection,
+        JSON.stringify({ version: 2, tests: [{ id: `${spec}::adds`, file: spec, title: 'adds' }] }),
+      )
+      process.env.CBD_SELECTION = selection
+
+      const log = join(root, 'log.ndjson')
+      const result = invoke(
+        root,
+        'collect',
+        '--no-select',
+        '--no-build',
+        '--',
+        process.execPath,
+        runner,
+        log,
+        a,
+        spec,
+      )
+      assert.equal(result.code, EXIT.ok, result.err.join('\n'))
+      assert.equal(logOf(log).selection, null, 'the child must not see an inherited selection')
+    } finally {
+      if (previous === undefined) delete process.env.CBD_SELECTION
+      else process.env.CBD_SELECTION = previous
+      cleanup()
+    }
+  })
+
+  // `cbd build` discovers shards by extension, so a path without one is written and
+  // then never read: collect reported "nothing recorded" while a valid shard sat on
+  // disk.
+  test('--shard must name a .ndjson file', () => {
+    const { root, cleanup } = prepared()
+    try {
+      const result = invoke(
+        root,
+        'collect',
+        '--shard',
+        'custom/run.txt',
+        '--',
+        process.execPath,
+        '-e',
+        '0',
+      )
+      assert.equal(result.code, EXIT.usage)
+      assert.match(result.err.join('\n'), /--shard must name a \.ndjson file/)
+    } finally {
+      cleanup()
+    }
+  })
+
+  // The file names a test set for this run only. A failed build used to return
+  // before the cleanup, leaving it for nothing to read.
+  test('a failed build removes the selection file it wrote', () => {
+    const { repo, root, a, spec, runner, cleanup } = prepared()
+    const outside = mkdtempSync(join(tmpdir(), 'cbd-collect-env-'))
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+      const wrapper = join(outside, 'wrapper.mjs')
+      writeFileSync(
+        wrapper,
+        `import { execFileSync } from 'node:child_process'
+import { appendFileSync } from 'node:fs'
+execFileSync(process.execPath, [process.argv[2], ...process.argv.slice(3)], { stdio: 'inherit' })
+appendFileSync(process.env.CBD_SHARD, 'not json\\n')
+`,
+      )
+
+      const result = invoke(
+        root,
+        'collect',
+        '--',
+        process.execPath,
+        wrapper,
+        join(root, runner),
+        join(outside, 'log.ndjson'),
+        a,
+        spec,
+      )
+
+      assert.equal(result.code, EXIT.error)
+      const left = readdirSync(join(root, '.cbd')).filter((name) => name.startsWith('selection-'))
+      assert.deepEqual(left, [])
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+})
+
+// An inherited CBD_INSPECT is the same target by another route — the adapter will
+// attach to it — so the CLI's checks have to run for it too, before the suite starts.
+test('an inherited CBD_INSPECT is checked like --target', () => {
+  const { root, cleanup } = prepared()
+  const previous = process.env.CBD_INSPECT
+  try {
+    process.env.CBD_INSPECT = '10.0.0.5:9229'
+    const log = join(root, 'log.ndjson')
+    const result = invoke(root, 'collect', '--', process.execPath, '-e', '0')
+    assert.equal(result.code, EXIT.usage)
+    assert.match(result.err.join('\n'), /allowRemote/)
+    assert.equal(existsSync(log), false)
+  } finally {
+    if (previous === undefined) delete process.env.CBD_INSPECT
+    else process.env.CBD_INSPECT = previous
     cleanup()
   }
 })

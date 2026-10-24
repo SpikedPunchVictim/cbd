@@ -163,3 +163,16 @@ test('carries the instrument it stood down into the first window, once', async (
 // The shared contract, so the in-process source and the out-of-process one cbd-a3v
 // will build are held to the same shape rather than to two private opinions.
 sourceContract('in-process', inProcessSource, { supportsSync: true })
+
+// The generated text is fetched for scripts whose map had to travel; a clean run
+// produces all of it, so the health signal is empty rather than absent. The absent
+// method was indistinguishable from "nothing was missing" on every run.
+test('reports no missing generated text on a clean run', async () => {
+  const source = await inProcessSource()
+  try {
+    await source.prepare?.([...source.scripts().keys()])
+    assert.deepEqual(source.generatedMissing?.(), [])
+  } finally {
+    source.close()
+  }
+})

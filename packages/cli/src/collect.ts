@@ -38,6 +38,7 @@ import {
   INSPECT_ENV,
   SELECTION_ENV,
   StaleShardError,
+  allowRemoteFromEnv,
   assertInspectorUnheld,
   mapPath,
   nearestMapCommit,
@@ -156,6 +157,7 @@ function childEnv(
     CBD_COMMIT: options.commit,
   }
   if (titles !== undefined) env[SELECTION_ENV] = selectionPath
+  else delete env[SELECTION_ENV]
   if (options.target !== undefined) env[INSPECT_ENV] = options.target
   // Absent means "the target is loopback"; the adapter checks it again either way.
   if (options.allowRemote) env[INSPECT_ALLOW_REMOTE_ENV] = '1'
@@ -274,8 +276,15 @@ export function collect(options: CollectOptions): number {
   const { out, err } = options
   // Before the selection: a target that cannot be attached to is worth saying
   // before any work, and before a suite is spawned that would spend its setup
-  // discovering it.
-  if (options.target !== undefined) checkInspectTarget(options.target, options.allowRemote)
+  // discovering it. An inherited `CBD_INSPECT` is the same target by another route —
+  // the adapter will attach to it, so the same checks have to run — and its
+  // allow-remote flag can only have come from the environment.
+  const target = options.target ?? process.env[INSPECT_ENV]
+  const allowRemote =
+    options.target !== undefined
+      ? options.allowRemote
+      : allowRemoteFromEnv(process.env[INSPECT_ALLOW_REMOTE_ENV])
+  if (target !== undefined && target !== '') checkInspectTarget(target, allowRemote)
 
   const stateDir = options.config.stateDir ?? '.cbd'
   const shard = options.shard ?? join(options.root, stateDir, 'shards', collectShardName())
@@ -327,22 +336,27 @@ export function collect(options: CollectOptions): number {
       : 'no tests ran; nothing recorded',
   )
 
-  if (result.signal !== null) {
+  // The selection file belongs to this run and this run only. Every exit from here
+  // removes it, including a failed build: leaving it behind left a file naming a
+  // test set no later run asked for.
+  try {
+    if (result.signal !== null) {
+      err(
+        `cbd: the test command was killed by ${result.signal}; its shard has no footer, ` +
+          'so no map was built',
+      )
+      return EXIT.error
+    }
+
+    if (options.build && wroteShard) {
+      const failure = buildAfterRun(options, stateDir, written, out, err)
+      if (failure !== null) return failure
+    }
+
+    const status = result.status ?? EXIT.error
+    if (status !== 0) err(`cbd: the test command exited ${status}`)
+    return status
+  } finally {
     rmSync(selectionPath, { force: true })
-    err(
-      `cbd: the test command was killed by ${result.signal}; its shard has no footer, ` +
-        'so no map was built',
-    )
-    return EXIT.error
   }
-
-  if (options.build && wroteShard) {
-    const failure = buildAfterRun(options, stateDir, written, out, err)
-    if (failure !== null) return failure
-  }
-
-  rmSync(selectionPath, { force: true })
-  const status = result.status ?? EXIT.error
-  if (status !== 0) err(`cbd: the test command exited ${status}`)
-  return status
 }

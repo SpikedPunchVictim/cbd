@@ -114,7 +114,7 @@ test('a concurrent run is refused and leaves no complete shard', () => {
       encoding: 'utf8',
     })
     assert.notEqual(result.status, 0, 'a concurrent recording must fail, not be recorded')
-    assert.match(`${result.stdout}\n${result.stderr}`, /running tests concurrently/)
+    assert.match(`${result.stdout}\n${result.stderr}`, /still open when the next test started/)
 
     // The adapter declines to finish the shard. An end record would let a build
     // accept a map whose windows overlapped, which is the failure this guard exists
@@ -139,6 +139,35 @@ test('CBD_SELECTION narrows the run; an unselected test leaves no window', () =>
     run(dir, join(dir, 'run.ndjson'), ['math > adds'])
     const titles = shardsIn(dir).flatMap((shard) => testsIn(shard).map((record) => record.title))
     assert.deepEqual(titles, ['math > adds'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Selecting and recording are independent: `cbd select --emit-selection` hands the
+// setup file a CBD_SELECTION and nothing else, and the narrowing must still happen.
+test('a selection without a shard narrows the run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-vitest-select-only-'))
+  const env: NodeJS.ProcessEnv = { ...process.env, CBD_COMMIT: 'vitest-e2e' }
+  delete env.CBD_SHARD
+  delete env.CBD_SOCKET_DIR
+  delete env.NODE_OPTIONS
+  try {
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['math > adds'] }))
+    env.CBD_SELECTION = selection
+
+    const result = spawnSync(vitest, ['run', '--config', config, '--reporter=verbose'], {
+      cwd: packageRoot,
+      env,
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    // The reporter lists skipped tests too, so the count line is the answer: one
+    // test ran, the rest were filtered out by the selection.
+    assert.match(result.stdout, /Tests\s+1 passed \| 3 skipped/)
+    assert.match(result.stdout, /✓ .*math > adds/)
+    assert.deepEqual(shardsIn(dir), [], 'a selection-only run records nothing')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -775,7 +775,9 @@ export function select(
   const info: MapInfo = {
     commit: mapInfo?.commit ?? map.commit,
     distance: mapInfo?.distance ?? 0,
-    dirty: mapInfo?.dirty ?? false,
+    // The map records whether its own build ran on a dirty tree; a caller that
+    // passes only the changes must not be told it was clean.
+    dirty: mapInfo?.dirty ?? map.dirty === true,
     builtAt: mapInfo?.builtAt ?? map.builtAt,
   }
   if (info.dirty) warnings.push('the map was built from a dirty tree')
@@ -986,6 +988,19 @@ export function verify(
     misses,
     checked,
     ranEverything: false,
-    ...(warnings.length === 0 ? {} : { warnings }),
+    // A caller whose changes are in another coordinate space (repo-relative, or the
+    // old side) matches nothing, and the empty misses would read as a clean pass. Say
+    // that nothing was checked rather than let the silence be the verdict.
+    ...(checked === 0 && changedWithHunks.size > 0 && entries.length > 0
+      ? {
+          warnings: [
+            ...warnings,
+            'no recorded touch matched the changed ranges: the changes must name the ' +
+              "map's coordinate space (absolute paths under the map root, new side)",
+          ],
+        }
+      : warnings.length === 0
+        ? {}
+        : { warnings }),
   }
 }

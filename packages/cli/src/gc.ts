@@ -76,7 +76,14 @@ function candidates(dir: string, kind: 'file' | 'dir'): Candidate[] {
   for (const entry of entries) {
     if (!(kind === 'file' ? entry.isFile() : entry.isDirectory())) continue
     const path = join(dir, entry.name)
-    out.push({ path, mtimeMs: statSync(path).mtimeMs })
+    // Another gc, or a collect pruning the same directory, can remove this between
+    // the listing and the stat. A file that is gone is not a candidate, and is not
+    // a reason to abort the whole prune.
+    try {
+      out.push({ path, mtimeMs: statSync(path).mtimeMs })
+    } catch {
+      continue
+    }
   }
   // Newest first, and the name breaks a tie so two runs recorded in the same
   // millisecond are pruned in a stable order.
@@ -113,7 +120,11 @@ function prune(
   let bytes = 0
   for (const entry of pool) {
     if (keepSet.has(entry.path)) continue
-    bytes += sizeOf(entry.path)
+    try {
+      bytes += sizeOf(entry.path)
+    } catch {
+      // Removed by a concurrent run between the listing and here.
+    }
     rmSync(entry.path, { recursive: true, force: true })
     removed += 1
   }

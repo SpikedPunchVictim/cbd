@@ -7,7 +7,12 @@
  */
 import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
-import { ADAPTER_CONTRACT_VERSION, testId, testRef } from '../src/contract.js'
+import {
+  ADAPTER_CONTRACT_VERSION,
+  testId,
+  testRef,
+  titlePartReadings,
+} from '../src/contract.js'
 
 test.group('adapter contract', () => {
   test('the id is the file and the title, with no definition site', () => {
@@ -37,5 +42,25 @@ test.group('adapter contract', () => {
 
   test('the contract is versioned separately from the package', () => {
     assert.equal(ADAPTER_CONTRACT_VERSION, 1)
+  })
+
+  // The stored title does not say which ` > ` occurrences were separators, and a
+  // title may itself contain one. A runner-facing pattern needs every reading.
+  test('a stored title yields every reading of its parts', () => {
+    assert.deepEqual(titlePartReadings('adds'), [['adds']])
+    assert.deepEqual(titlePartReadings('outer > adds'), [
+      ['outer > adds'],
+      ['outer', 'adds'],
+    ])
+    assert.deepEqual(titlePartReadings('outer > a > b'), [
+      ['outer > a > b'],
+      ['outer', 'a > b'],
+      ['outer > a', 'b'],
+      ['outer', 'a', 'b'],
+    ])
+    // 2^9 readings is 512; past the cap the plain split is today's behavior.
+    const many = titlePartReadings(Array.from({ length: 11 }, (_, i) => `p${i}`).join(' > '))
+    assert.equal(many.length, 1)
+    assert.equal(many[0]?.length, 11)
   })
 })

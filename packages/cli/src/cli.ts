@@ -83,7 +83,7 @@ Usage:
   cbd reaches --batch <rows.json> [--format json]
   cbd stats   [--commit <sha>] [--root <dir>] [--format json]
   cbd flaky   [--root <dir>] [--format json]
-  cbd collect [--no-select] [--no-build] [--shard <path>] [--incremental]
+  cbd collect [--no-select] [--no-build] [--shard <path.ndjson>] [--incremental]
               [--target <host:port|ws://url> [--allow-remote]]
               -- <test command>
   cbd gc      [--keep <n>] [--root <dir>] [--format json]

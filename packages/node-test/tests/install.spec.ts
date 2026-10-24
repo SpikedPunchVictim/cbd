@@ -47,7 +47,7 @@ test('a second open window is refused and leaves the shard incomplete', async ()
     hooks.beforeEach!(first)
     assert.throws(
       () => hooks.beforeEach!(second),
-      /running tests concurrently/,
+      /still open when the next test started/,
       'a concurrent window must be refused, not charged to the first test',
     )
     hooks.afterEach!(first)

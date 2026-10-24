@@ -478,7 +478,7 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
       const path = stablePath(script.url, relocate)
       if (path === null) continue
       const hasMap =
-        script.sourceMapURL !== undefined ||
+        (script.sourceMapURL !== undefined && script.sourceMapURL !== '') ||
         sourceMapUrlOf(cache.text(path) ?? '') !== undefined ||
         existsSync(`${path}.map`)
       // Canonical like every other path that will be compared with a change: a map

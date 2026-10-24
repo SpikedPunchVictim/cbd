@@ -30,6 +30,14 @@ export async function inProcessSource(): Promise<Source> {
   session.connect()
 
   const scripts = new Map<string, ScriptInfo>()
+  /**
+   * Scripts whose text the inspector would not give us.
+   *
+   * A transformed script whose text is missing cannot be converted against the file
+   * on disk, so the build must mark its file partial rather than index the wrong
+   * bytes — the same signal the socket and inspector sources carry.
+   */
+  const missingGenerated = new Set<string>()
   let closed = false
 
   function generatedFor(scriptId: string): GeneratedScript | undefined {
@@ -76,7 +84,10 @@ export async function inProcessSource(): Promise<Source> {
       if (info === undefined || info.generated !== undefined) continue
       if (!info.url.startsWith('file:') || info.sourceMapURL === undefined) continue
       const value = generatedFor(scriptId)
+      // The script has a map, so the file on disk is not the text V8 compiled. An
+      // answer the inspector would not produce is a loss the build has to know about.
       if (value !== undefined) info.generated = value
+      else missingGenerated.add(scriptId)
     }
   }
 
@@ -152,6 +163,7 @@ export async function inProcessSource(): Promise<Source> {
     scripts: () => scripts,
     generated,
     prepare,
+    generatedMissing: () => [...missingGenerated],
     close: () => {
       closed = true
       try {

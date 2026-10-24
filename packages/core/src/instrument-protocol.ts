@@ -132,6 +132,14 @@ export interface HelloResult {
    */
   correlating?: boolean
   /**
+   * The header name this process is correlating for, when it is correlating.
+   *
+   * `correlating` alone says "some header"; a collector that asked for a different
+   * name would skip its `correlate` op and then receive no request windows. The
+   * echo is what lets the collector compare instead of assume.
+   */
+  correlationHeader?: string
+  /**
    * The collector's run session, echoed from the hello.
    *
    * A source makes one id per run and sends it with the hello, so a snapshot

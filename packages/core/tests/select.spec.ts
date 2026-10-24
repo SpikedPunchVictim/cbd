@@ -629,8 +629,18 @@ test('rule 10: a dirty map warns, and --strict turns the warning into mode: all'
   assert.deepEqual(strict.tests, [])
 })
 
-test('rule 10: a map past maxAgeCommits warns, and --strict makes it all', () => {
-  const lenient = select(makeMap(), [change(SRC, [{ start: 2, end: 2 }])], {
+// The map records whether its own build ran on a dirty tree. A library caller that
+// passes only the changes must still be warned — `strict` promises a full run for
+// a map the build itself says it could not trust.
+test('rule 10: a dirty map is trusted as dirty without mapInfo', () => {
+  const result = select(makeMap({ dirty: true }), [change(SRC, [{ start: 2, end: 2 }])], {
+    strict: true,
+  })
+  assert.equal(result.mode, 'all')
+  assert.ok(reasonKinds(result).includes('all:stale-map'))
+})
+
+test('rule 10: a map past maxAgeCommits warns, and --strict makes it all', () => {  const lenient = select(makeMap(), [change(SRC, [{ start: 2, end: 2 }])], {
     maxAgeCommits: 5,
   }, { distance: 9 })
   assert.equal(lenient.mode, 'subset')
@@ -1049,4 +1059,20 @@ test('verify reads the new side and checks a pure insertion', () => {
   )
   assert.equal(ok.checked, 1)
   assert.deepEqual(ok.misses, [])
+})
+
+// A caller whose changes are in another coordinate space matches no touch, and an
+// empty miss list would read as a clean verdict. Say nothing was checked instead.
+test('verify warns when no change matched any recorded touch', () => {
+  const map = makeMap()
+  // The selection was computed in the map's own coordinates; the caller hands
+  // verify repo-relative changes, which match no recorded touch.
+  const selection = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.equal(selection.mode, 'subset')
+  const groundTruth = new Map([
+    ['adds', [[SRC, 'add@0', 1, 3]] as [string, string, number, number][]],
+  ])
+  const result = verify(selection, map, [change('src/a.ts', [{ start: 2, end: 2 }])], groundTruth)
+  assert.equal(result.checked, 0)
+  assert.ok((result.warnings ?? []).some((warning) => warning.includes('no recorded touch')))
 })

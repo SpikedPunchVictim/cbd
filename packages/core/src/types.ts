@@ -100,6 +100,15 @@ export interface Source {
    * build marks its file partial instead of indexing the wrong text.
    */
   generatedMissing?(): readonly string[]
+  /**
+   * Windows this source settled with no evidence, for a reason of its own.
+   *
+   * A source that swallows a per-target failure so one dead target cannot blank the
+   * others has no rejection left for the recorder to count, and an uncounted empty
+   * window under-selects silently. This is how that loss reaches the health record
+   * without discarding the coverage the surviving targets did produce.
+   */
+  lostTakes?(): number
   close(): void
 }
 

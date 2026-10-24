@@ -1,5 +1,5 @@
-import { realpathSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
+import { canonicalPath } from './paths.js'
 
 /**
  * The record API — what a test, or a helper it calls, can tell CBD.
@@ -73,13 +73,9 @@ function absolute(path: string): string {
   // The recorder's read tracker already sees resolved paths; a helper may pass a
   // path relative to its own working directory, which is the natural thing to
   // write. The map's keys are realpaths (the build canonicalizes its root), so a
-  // declared dependency through a symlink has to be canonicalized too.
-  const resolved = isAbsolute(path) ? path : resolve(path)
-  try {
-    return realpathSync(resolved)
-  } catch {
-    return resolved
-  }
+  // declared dependency through a symlink has to be canonicalized too — including
+  // one that does not exist yet.
+  return canonicalPath(isAbsolute(path) ? path : resolve(path))
 }
 
 /**

@@ -87,6 +87,7 @@ export {
   ADAPTER_CONTRACT_VERSION,
   testId,
   testRef,
+  titlePartReadings,
   type TestRef,
   type TestRefDetail,
 } from './contract.js'

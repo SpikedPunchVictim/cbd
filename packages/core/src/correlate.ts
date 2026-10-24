@@ -41,6 +41,7 @@
  */
 import http from 'node:http'
 import https from 'node:https'
+import { syncBuiltinESMExports } from 'node:module'
 import {
   CORRELATION_ENV,
   CORRELATION_HEADER,
@@ -159,6 +160,10 @@ export class Correlator implements OwnerIndex {
     patch(http as unknown as Record<string, unknown>, 'get')
     patch(https as unknown as Record<string, unknown>, 'request')
     patch(https as unknown as Record<string, unknown>, 'get')
+    // A named ESM import of a builtin (`import { request } from 'node:http'`) is a
+    // snapshot taken at link time; patching the default export alone leaves it
+    // calling the original, untagged. The read tracker does the same for `fs`.
+    syncBuiltinESMExports()
 
     // `fetch` is a global rather than a module export. Node >= 18 always has one.
     const originalFetch = globalThis.fetch
@@ -191,6 +196,9 @@ export class Correlator implements OwnerIndex {
 
     this.#release = () => {
       for (const undo of restore.reverse()) undo()
+      // The named bindings were re-pointed at the patches above; without this they
+      // would keep calling them after the run asked for them to be gone.
+      syncBuiltinESMExports()
     }
   }
 

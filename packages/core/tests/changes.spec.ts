@@ -424,3 +424,57 @@ test('--no-worktree reads the range from the map to HEAD', () => {
     repo.cleanup()
   }
 })
+
+// git appends a TAB to `---`/`+++` when the path contains a space. Keeping it made
+// the change match no include glob, so a spaced file's tests were silently not
+// selected.
+test('a path containing a space is reported without git’s separator', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('src/my file.ts', 'one\n')
+    const base = repo.commit('base')
+    repo.write('src/my file.ts', 'two\n')
+
+    const [change] = changesSince({ root: repo.root, since: base })
+    assert.equal(change?.path, 'src/my file.ts')
+    // The header paths agree, so this is a modification — not a rename from the
+    // untabbed spelling to the tabbed one.
+    assert.equal(change?.from, undefined)
+    assert.equal(change?.status, 'M')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+// The separator between the two sides of `diff --git` is ` b/`, which a path may
+// itself contain.
+test('a path containing " b/" is split at the right separator', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('x b/del.ts', 'keep\n')
+    const base = repo.commit('base')
+    repo.remove('x b/del.ts')
+
+    const [change] = changesSince({ root: repo.root, since: base })
+    assert.equal(change?.path, 'x b/del.ts')
+    assert.equal(change?.status, 'D')
+  } finally {
+    repo.cleanup()
+  }
+})
+
+// `git ls-files -z` is NUL-separated, so its output needs no trimming — and
+// trimming rewrites a name whose last byte is a space.
+test('an untracked name keeps significant whitespace', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\n')
+    const base = repo.commit('base')
+    repo.write('trailing ', 'x\n')
+
+    const added = changesSince({ root: repo.root, since: base }).find((entry) => entry.status === 'A')
+    assert.equal(added?.path, 'trailing ')
+  } finally {
+    repo.cleanup()
+  }
+})

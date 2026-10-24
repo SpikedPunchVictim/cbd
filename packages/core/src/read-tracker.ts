@@ -32,6 +32,7 @@ import promises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { canonicalPath } from './paths.js'
 
 /** What the recorder exposes to the tracker. */
 export interface ReadSink {
@@ -90,8 +91,9 @@ const DIR_PROMISES = ['readdir', 'opendir'] as const
  * The path argument of an fs call, canonical, or `undefined` for a file
  * descriptor or an unsupported value.
  *
- * A missing path (an `existsSync` check) is resolved but not realpath'd; a later
- * creation of that file must still select the test that asserted its absence.
+ * A missing path (an `existsSync` check) has its nearest existing ancestor
+ * canonicalized, so a later creation of that file still matches the build's root
+ * even through a symlinked checkout.
  */
 function pathOf(value: unknown): string | undefined {
   let path: string
@@ -105,11 +107,7 @@ function pathOf(value: unknown): string | undefined {
     }
   } else return undefined
   const resolved = resolve(path)
-  try {
-    return realpath(resolved)
-  } catch {
-    return resolved
-  }
+  return canonicalPath(resolved)
 }
 
 function note(kind: 'file' | 'dir', value: unknown): void {

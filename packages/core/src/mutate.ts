@@ -28,7 +28,7 @@
  * the map, not something this function can repair.
  */
 import { realpathSync } from 'node:fs'
-import { isAbsolute, resolve } from 'node:path'
+import { isAbsolute, relative, resolve } from 'node:path'
 import type { CoverageMap, FunctionEntry, TestEntry } from './map.js'
 
 export interface MutantTarget {
@@ -65,6 +65,8 @@ export type MutantWhy =
   | 'teardown'
   | 'between'
   | 'untested'
+  | 'partial'
+  | 'unhealthy'
   | 'function'
   | 'file'
   | 'test-file'
@@ -106,6 +108,26 @@ export function mutantTests(
     return { mode: 'none', why: 'test-file', tests: [] }
   }
 
+  /** Tests that can observe a change without executing the mutated code. */
+  const observers = observersOf(map, file)
+  /**
+   * The same rule `select` applies: a map whose evidence is incomplete, or whose
+   * shard lost a window, cannot name a subset for anything.
+   */
+  const withObservers = (selection: MutantSelection): MutantSelection => {
+    if (observers.length === 0) return selection
+    if (selection.mode === 'all') return selection
+    const tests = mergeTests(selection.tests, observers)
+    return { ...selection, mode: 'subset', tests }
+  }
+
+  if (map.partial?.some((entry) => isUnder(file, entry)) === true) {
+    return { mode: 'all', why: 'partial', tests: [] }
+  }
+  if ((map.unhealthy?.length ?? 0) > 0) {
+    return { mode: 'all', why: 'unhealthy', tests: [] }
+  }
+
   // Per-test function evidence wins over the file-level buckets. A module is in
   // `@load` because a test file imported it at start-up; a mutant inside one of
   // its functions is still killable by the tests that executed that function in
@@ -113,7 +135,12 @@ export function mutantTests(
   // answer a change the function index cannot place.
   const functions = map.files[file]
   if (functions !== undefined) {
-    const entries = Object.values(functions)
+    // The module body is a V8 entry whose range spans the whole file. It is not a
+    // function in the source: counting it would call every line covered and place a
+    // top-level mutant inside one. `select` excludes it for the same reason.
+    const entries = Object.entries(functions)
+      .filter(([key]) => !key.startsWith('<module>'))
+      .map(([, entry]) => entry)
     const intersecting = entries.filter((entry) => entry.startLine <= end && entry.endLine >= start)
 
     let everyLineCovered = true
@@ -125,7 +152,11 @@ export function mutantTests(
     }
 
     if (intersecting.length > 0 && everyLineCovered) {
-      return { mode: 'subset', why: 'function', tests: testsOf(map, intersecting) }
+      return withObservers({
+        mode: 'subset',
+        why: 'function',
+        tests: testsOf(map, intersecting),
+      })
     }
   }
 
@@ -137,29 +168,71 @@ export function mutantTests(
     if ((policy.betweenPolicy ?? 'all') === 'all') {
       return { mode: 'all', why: 'between', tests: [] }
     }
-    if (functions === undefined) return { mode: 'none', why: 'between', tests: [] }
+    if (functions === undefined) {
+      return withObservers({ mode: 'none', why: 'between', tests: [] })
+    }
   }
 
   if (functions !== undefined) {
     // Top-level code in a file the map can place: any test that touched the file
-    // could read it.
-    return { mode: 'subset', why: 'file', tests: testsOf(map, Object.values(functions)) }
+    // could read it — including one that only imported it, whose evidence is the
+    // module-body entry excluded above.
+    return withObservers({
+      mode: 'subset',
+      why: 'file',
+      tests: testsOf(map, Object.values(functions)),
+    })
   }
 
   if (!new Set(map.seen).has(file)) {
     return (policy.unknownPolicy ?? 'all') === 'all'
       ? { mode: 'all', why: 'unknown-file', tests: [] }
-      : { mode: 'none', why: 'unknown-file', tests: [] }
+      : withObservers({ mode: 'none', why: 'unknown-file', tests: [] })
   }
 
   // The map has evidence for the file but no passing test touched a function in
   // it. No test can be named; the mutation runner should report no coverage.
-  return { mode: 'none', why: 'untested', tests: [] }
+  return withObservers({ mode: 'none', why: 'untested', tests: [] })
+}
+
+/**
+ * Tests that can observe a change to `file` without executing the mutated code.
+ *
+ * `select` adds these for any in-scope change: a test that declared an invisible
+ * dependency (`recordOpaque`, `recordDependency`) may drive a tool over the file,
+ * and a test that read or listed it is an oracle on its text. A mutation runner
+ * that ignored them scored a killable mutant as survived.
+ */
+function observersOf(map: CoverageMap, file: string): TestEntry[] {
+  const indices = new Set<number>()
+  for (const tests of Object.values(map.opaque ?? {})) {
+    for (const index of tests ?? []) indices.add(index)
+  }
+  for (const index of map.reads?.[file] ?? []) indices.add(index)
+  for (const [dir, tests] of Object.entries(map.dirReads ?? {})) {
+    if (!isUnder(file, dir)) continue
+    for (const index of tests ?? []) indices.add(index)
+  }
+  return [...indices]
+    .sort((a, b) => a - b)
+    .map((index) => map.tests[index])
+    .filter((test): test is TestEntry => test !== undefined)
+}
+
+/** Union of two resolved test lists, in `base` order first. */
+function mergeTests(base: TestEntry[], extra: TestEntry[]): TestEntry[] {
+  const seen = new Set(base)
+  return [...base, ...extra.filter((test) => !seen.has(test))]
+}
+
+/** Whether `path` is `dir` or under it, both canonical. */
+function isUnder(path: string, dir: string): boolean {
+  const rel = relative(dir, path)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
 /** Map keys are realpaths; a relative target is resolved against the map root. */
-function canonical(root: string, file: string): string {
-  const absolute = isAbsolute(file) ? file : resolve(root, file)
+function canonical(root: string, file: string): string {  const absolute = isAbsolute(file) ? file : resolve(root, file)
   try {
     return realpathSync(absolute)
   } catch {

@@ -473,6 +473,28 @@ function configChangedOutside(root: string, configFile: string, base: string): b
   }
 }
 
+/**
+ * A shard's header, read from its first line without parsing the whole file.
+ *
+ * `build` uses it to decide whether a shard belongs to the commit before anyone
+ * pays for — or is refused by — a full parse. A first line that is not a readable
+ * shard header answers `null`, which leaves the caller's full parse to raise the
+ * error it would have raised anyway.
+ */
+function shardHeaderOf(text: string): ShardHeader | null {
+  const end = text.indexOf('\n')
+  const line = (end === -1 ? text : text.slice(0, end)).trim()
+  if (line === '') return null
+  try {
+    const parsed = JSON.parse(line) as Partial<ShardHeader>
+    return parsed.type === 'shard' && typeof parsed.commit === 'string'
+      ? (parsed as ShardHeader)
+      : null
+  } catch {
+    return null
+  }
+}
+
 /** Every `.ndjson` under a directory, at any depth. */
 function shardFiles(dir: string): string[] {
   if (!existsSync(dir)) return []
@@ -602,16 +624,21 @@ export function createCbd(config: CbdConfig): Cbd {
       const inputs: ShardInput[] = []
       const skipped: string[] = []
       for (const path of paths) {
-        const records = parseShard(readFileSync(path, 'utf8'), path, {
+        const text = readFileSync(path, 'utf8')
+        // The commit filter runs before the full parse: a shard from another commit
+        // cannot contribute, and a killed run's footerless shard would otherwise
+        // fail the build that was meant to skip it. A first line that is not a
+        // readable header falls through to `parseShard`, so its error is unchanged.
+        if (options.shards === undefined) {
+          const header = shardHeaderOf(text)
+          if (header !== null && header.commit !== commit) {
+            skipped.push(`${basename(path)} (commit ${header.commit})`)
+            continue
+          }
+        }
+        const records = parseShard(text, path, {
           allowIncomplete: options.partial === true,
         })
-        const header = records[0] as ShardHeader
-        // With an explicit list the caller chose the shards; with the default glob
-        // the commit filter is what keeps another run's shard out of this map.
-        if (options.shards === undefined && header.commit !== commit) {
-          skipped.push(`${basename(path)} (commit ${header.commit})`)
-          continue
-        }
         inputs.push({ name: relative(root, path), records })
       }
 

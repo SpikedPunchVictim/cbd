@@ -65,3 +65,36 @@ export function testRef(file: string | null, title: string, detail: TestRefDetai
     ...(detail.column === undefined ? {} : { column: detail.column }),
   }
 }
+
+/**
+ * Every way a stored title could be the parts a runner joins.
+ *
+ * CBD stores a title as `outer > inner > test`. A title may itself contain ` > `,
+ * and the stored string cannot say which occurrences were separators — that is the
+ * problem the `titlePath` note above describes, seen from the reader's side. A
+ * runner that filters by its own `title path` therefore needs the *readings*, not
+ * one guess: a pattern admitting all of them can run an extra test (over-selection,
+ * the safe direction) but can never drop a selected one.
+ *
+ * `maxOccurrences` bounds the blow-up: each ` > ` doubles the readings, so a
+ * pathological title is answered with the plain split instead of 2^n alternatives.
+ * That is today's behavior for that title and no worse.
+ */
+export function titlePartReadings(stored: string, maxOccurrences = 8): string[][] {
+  const parts = stored.split(' > ')
+  if (parts.length === 1) return [[stored]]
+  const separators = parts.length - 1
+  if (separators > maxOccurrences) return [parts]
+
+  const readings: string[][] = []
+  for (let mask = 0; mask < 1 << separators; mask += 1) {
+    const reading: string[] = [parts[0] as string]
+    for (let index = 0; index < separators; index += 1) {
+      const next = parts[index + 1] as string
+      if ((mask & (1 << index)) !== 0) reading.push(next)
+      else reading[reading.length - 1] += ` > ${next}`
+    }
+    readings.push(reading)
+  }
+  return readings
+}

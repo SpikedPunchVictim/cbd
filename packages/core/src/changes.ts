@@ -252,9 +252,33 @@ function pathsFromHeader(line: string): { oldPath?: string; path?: string } {
       path: unquoteGitPath(`"${match[2] ?? ''}"`).replace(/^b\//, ''),
     }
   }
-  const boundary = rest.indexOf(' b/')
-  if (!rest.startsWith('a/') || boundary === -1) return {}
+  if (!rest.startsWith('a/')) return {}
+  // The separator is `" b/"`, but a path may contain that substring (`x b/del.ts`).
+  // For anything that is not a rename both sides are the same path, so the correct
+  // split is the one where they agree; the first occurrence is the fallback for a
+  // genuine rename, whose real paths arrive on `rename from/to` lines anyway.
+  let boundary = -1
+  for (let index = rest.indexOf(' b/'); index !== -1; index = rest.indexOf(' b/', index + 1)) {
+    if (rest.slice(2, index) === rest.slice(index + 3)) {
+      boundary = index
+      break
+    }
+  }
+  if (boundary === -1) boundary = rest.indexOf(' b/')
+  if (boundary === -1) return {}
   return { oldPath: rest.slice(2, boundary), path: rest.slice(boundary + 3) }
+}
+
+/**
+ * A `---`/`+++` path, minus the TAB git appends when the name contains a space.
+ *
+ * `git diff` writes `--- a/my file.ts<TAB>` (an optional timestamp follows the TAB).
+ * A name that contains a TAB is always C-quoted, so on an unquoted line the first
+ * TAB is always the separator. Leaving it in made the path match no include glob.
+ */
+function headerPath(raw: string): string {
+  const tab = raw.indexOf('\t')
+  return tab !== -1 && !raw.startsWith('"') ? raw.slice(0, tab) : raw
 }
 
 function defaultExec(root: string, args: string[]): string {
@@ -343,12 +367,12 @@ export function parseUnifiedDiff(diff: string): Change[] {
     } else if (line.startsWith('copy to ')) {
       current.path = unquoteGitPath(line.slice('copy to '.length))
     } else if (line.startsWith('--- ')) {
-      const path = unquoteGitPath(line.slice(4))
+      const path = unquoteGitPath(headerPath(line.slice(4)))
       if (current.path === '' && path !== '/dev/null') {
         current.path = path.replace(/^a\//, '')
       }
     } else if (line.startsWith('+++ ')) {
-      const path = unquoteGitPath(line.slice(4))
+      const path = unquoteGitPath(headerPath(line.slice(4)))
       if (path !== '/dev/null') current.path = path.replace(/^b\//, '')
     } else {
       const hunk = HUNK.exec(line)
@@ -388,7 +412,8 @@ function untrackedChanges(exec: (args: string[]) => string, root: string): Chang
   }
   return out
     .split('\u0000')
-    .map((line) => line.trim())
+    // NUL-separated, so nothing needs trimming — and trimming would rewrite a
+    // name whose first or last byte is a space, selecting the wrong file.
     .filter((line) => line !== '')
     .map((path) => ({ path, status: 'A', hunks: [], insertions: [0] }) as Change)
 }

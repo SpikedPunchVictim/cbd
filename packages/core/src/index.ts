@@ -135,6 +135,7 @@ export { SELECTION_ENV, writeSelection, type SelectionFile, type SelectionTest }
 export {
   INSPECT_ALLOW_REMOTE_ENV,
   INSPECT_ENV,
+  allowRemoteFromEnv,
   assertInspectorUnheld,
   parseInspectorTarget,
   type InspectorSourceOptions,
@@ -144,6 +145,7 @@ export {
   ADAPTER_CONTRACT_VERSION,
   testId,
   testRef,
+  titlePartReadings,
   type TestRef,
   type TestRefDetail,
 } from './contract.js'

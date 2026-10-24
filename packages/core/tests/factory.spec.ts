@@ -14,7 +14,7 @@ import { loadMap, saveMap, type CoverageMap } from '../src/map.js'
 import type { Change } from '../src/changes.js'
 import type { Selection } from '../src/select.js'
 import type { TouchRef } from '../src/shard.js'
-import { IncompleteShardError } from '../src/shard.js'
+import { IncompleteShardError, SHARD_VERSION } from '../src/shard.js'
 import { tempRepo, type TempRepo } from './support/git.js'
 
 const ref = (file: string, key: string, start: number, end: number): TouchRef => [
@@ -201,6 +201,32 @@ test.group('createCbd', () => {
       })
       assert.equal(explicit.tests, 3, 'an explicit list is the caller’s choice')
       assert.equal(explicit.commit, commit)
+    } finally {
+      cleanup()
+    }
+  })
+
+  // A killed run leaves a shard with no footer; it is not this commit's evidence,
+  // and refusing the whole build for it made one interrupted run poison every
+  // later build until the file was removed by hand.
+  test('an incomplete shard from another commit does not fail the default build', () => {
+    const { repo, cleanup } = prepared()
+    try {
+      writeShard(repo.root, 'killed.ndjson', `${JSON.stringify({
+        type: 'shard', version: SHARD_VERSION, commit: 'deadbeef', pid: 1, startedAt: 'T0',
+      })}\n`)
+      const cbd = createCbd({ root: repo.root })
+
+      const result = cbd.build()
+      assert.equal(result.tests, 2)
+      assert.deepEqual(result.shards, ['.cbd/shards/run.ndjson'])
+
+      // The same file at this commit is still refused: it is evidence this map
+      // would otherwise be built from.
+      writeShard(repo.root, 'killed.ndjson', `${JSON.stringify({
+        type: 'shard', version: SHARD_VERSION, commit: result.commit, pid: 1, startedAt: 'T0',
+      })}\n`)
+      assert.throws(() => cbd.build(), /no end record/)
     } finally {
       cleanup()
     }

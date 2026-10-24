@@ -56,7 +56,11 @@ interface VitestWorkerScope {
  */
 export async function installVitest(hooks: VitestHooks): Promise<void> {
   const base = process.env.CBD_SHARD
-  if (base === undefined || base === '') return
+  const selection = readSelection(process.env)
+  const wanted = selection === undefined ? null : new Set(selection)
+  // Selecting and recording are independent, and the contract says so: a run
+  // narrowed by `cbd select --emit-selection` carries only CBD_SELECTION.
+  if ((base === undefined || base === '') && wanted === null) return
 
   const scope = globalThis as VitestWorkerScope
   const file = scope.__vitest_worker__?.filepath
@@ -70,24 +74,27 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     )
   }
 
-  const source = await inProcessSource()
-  const recorder = new Recorder({
-    source,
-    sink: new FileSink(shardPathFor(base, file ?? `${String(process.pid)}-${String(threadId)}`)),
-    commit: process.env.CBD_COMMIT || 'unknown',
-    scan: withSelfRoot(scanFromEnv()),
-  })
-  recorder.runStart()
-  // The test file imports after this setup file; a module-scope read belongs to
-  // the tests in this file, and the worker filepath is the scope.
-  recorder.specStart(file ?? null)
+  const recording = base !== undefined && base !== ''
+  const source = recording ? await inProcessSource() : null
+  const recorder = recording
+    ? new Recorder({
+        source: source as NonNullable<typeof source>,
+        sink: new FileSink(shardPathFor(base, file ?? `${String(process.pid)}-${String(threadId)}`)),
+        commit: process.env.CBD_COMMIT || 'unknown',
+        scan: withSelfRoot(scanFromEnv()),
+      })
+    : null
+  if (recorder !== null) {
+    recorder.runStart()
+    // The test file imports after this setup file; a module-scope read belongs to
+    // the tests in this file, and the worker filepath is the scope.
+    recorder.specStart(file ?? null)
+  }
   // The setup file runs once per test file; installs form a stack so the active
   // file's recorder receives the reads.
-  const stopReads = installReadTracking(recorder)
-  const stopProcesses = installProcessTracking(recorder)
+  const stopReads = recorder === null ? null : installReadTracking(recorder)
+  const stopProcesses = recorder === null ? null : installProcessTracking(recorder)
 
-  const selection = readSelection(process.env)
-  const wanted = selection === undefined ? null : new Set(selection)
   const opened = new WeakSet<object>()
   const filtered = new WeakSet<object>()
   let open = 0
@@ -104,17 +111,19 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
       context.skip?.()
       return
     }
+    if (recorder === null) return
     // The Recorder attributes coverage and reads to one open window. A runner that
     // overlaps tests (`test.concurrent`, or `sequence.concurrent` in the config)
-    // would charge one test's execution to another, so this adapter declines to
-    // record rather than write a map that is confidently wrong.
+    // cannot be recorded honestly; neither can a run where a consumer hook threw and
+    // stopped the chain before this adapter's `afterEach`. The two look the same from
+    // here, so the run stops rather than charge one window's work to another test.
     if (open > 0) {
       refused = true
       throw new Error(
-        'cbd: Vitest is running tests concurrently, but recording attributes coverage ' +
-          'and reads to one open test window. Record without test.concurrent (or with ' +
-          'sequence.concurrent disabled). The shard is left incomplete so it cannot be ' +
-          'selected from.',
+        'cbd: a test window was still open when the next test started — the runner ' +
+          'overlapped tests, or a hook stopped the boundary from closing (a throwing ' +
+          'afterEach does this). Recording cannot attribute coverage to one window then, ' +
+          'so the run stops and the shard is left incomplete. Record without test.concurrent.',
       )
     }
     recorder.testStart(title, absolute(fileOf(task) ?? file ?? null))
@@ -124,6 +133,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
 
   hooks.afterEach((context) => {
     const task = context.task
+    if (recorder === null) return
     if (task === undefined || !opened.has(task) || filtered.has(task)) return
     const title = titleOf(task)
     if (title === null) return
@@ -132,21 +142,18 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
   })
 
   hooks.afterAll(async () => {
+    if (recorder === null || source === null) return
     // No end record after a refused run: the build refuses an incomplete shard,
     // so overlapping windows can never silently become a map. The source is still
     // closed (outside every window) so a recording run leaves no handle behind.
-    if (refused) {
-      source.close()
-      stopReads()
-      stopProcesses()
-      return
+    if (!refused) {
+      // Outside every test window: the source fetches generated script text for
+      // transformed modules before the table is finalized (`cbd-x2j`).
+      await recorder.runEnd()
     }
-    // Outside every test window: the source fetches generated script text for
-    // transformed modules before the table is finalized (`cbd-x2j`).
-    await recorder.runEnd()
     source.close()
-    stopReads()
-    stopProcesses()
+    stopReads?.()
+    stopProcesses?.()
   })
 }
 

@@ -7,6 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import http from 'node:http'
+import { request as namedRequest } from 'node:http'
 import { test } from '@japa/runner'
 import { CORRELATION_HEADER, Correlator } from '../src/correlate.js'
 
@@ -195,4 +196,33 @@ test('begin mirrors the recorder ordinal for repeated titles', () => {
   correlator.end()
   assert.equal(correlator.ownerOf(first)!.ordinal, undefined)
   assert.equal(correlator.ownerOf(second)!.ordinal, 1)
+})
+
+// A named ESM import of a builtin is a snapshot taken at link time. Patching the
+// default export alone left `import { request } from 'node:http'` calling the
+// original, so those requests reached the service untagged and fell back to the
+// time-based attribution correlation exists to replace.
+test('a named ESM import of http.request carries the id', async () => {
+  const server = await listening()
+  const correlator = new Correlator()
+  correlator.begin('named import', 'spec.ts')
+  try {
+    correlator.install()
+    await new Promise<void>((resolve, reject) => {
+      const call = namedRequest(`${server.url}/named`, (response) => {
+        response.resume()
+        response.on('end', resolve)
+      })
+      call.on('error', reject)
+      call.end()
+    })
+    assert.equal(
+      server.received[0]?.headers[CORRELATION_HEADER],
+      correlator.current(),
+    )
+  } finally {
+    correlator.release()
+    correlator.end()
+    await server.close()
+  }
 })

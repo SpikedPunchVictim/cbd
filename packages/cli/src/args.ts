@@ -453,6 +453,14 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
   const commit = stringOf(flags, 'commit')
   const since = stringOf(flags, 'since')
   const shard = stringOf(flags, 'shard')
+  // `cbd build` finds shards by extension (`factory.shardFiles`), so a path without
+  // it would be written and then never read: collect would report nothing recorded.
+  if (shard !== undefined && !shard.endsWith('.ndjson')) {
+    throw new UsageError(
+      `--shard must name a .ndjson file: cbd build finds shards by that extension, so ` +
+        `"${shard}" would be written and never read`,
+    )
+  }
   const target = stringOf(flags, 'target')
   const allowRemote = flags.get('allow-remote') === true
   // A flag that only relaxes a security rule on another flag means nothing alone,

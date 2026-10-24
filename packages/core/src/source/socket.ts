@@ -609,6 +609,18 @@ function resolveSocket(options: SocketSourceOptions): Resolved {
 // The source
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether the target is already taking boundaries for `header`.
+ *
+ * An older instrument reports only that it correlates for *some* header, which is
+ * not an answer to this question — the collector sends the op rather than assume.
+ */
+function correlatesFor(hello: HelloResult, header: string): boolean {
+  const echoed = hello.correlationHeader
+  if (echoed === undefined) return false
+  return echoed.trim().toLowerCase() === header.trim().toLowerCase()
+}
+
 export async function socketSource(options: SocketSourceOptions = {}): Promise<QueuedSource> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_INSPECTOR_TIMEOUT_MS
   const resolved = resolveSocket(options)
@@ -654,30 +666,39 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
    */
   const session = hello.session
 
+  const wantedHeader = options.correlationHeader
   if (
-    options.correlationHeader !== undefined &&
-    options.correlationHeader !== '' &&
-    hello.correlating !== true
+    wantedHeader !== undefined &&
+    wantedHeader !== '' &&
+    !correlatesFor(hello, wantedHeader)
   ) {
-    // The target has to agree to this before any request is made, or the first
-    // request's coverage is taken by time like every other window. A refusal is
-    // loud rather than a silent fallback: a run that asked for correlation and got
-    // time-based windows is a map whose attribution is weaker than the caller was
-    // told, and under-selection is the direction this project does not accept.
+    // The target has to agree to *this* header before any request is made, or the
+    // first request's coverage is taken by time like every other window. A refusal
+    // is loud rather than a silent fallback: a run that asked for correlation and
+    // got time-based windows is a map whose attribution is weaker than the caller
+    // was told, and under-selection is the direction this project does not accept.
     //
-    // Skipped when the hello says the process already is: a service a recording
-    // test spawned inherited the header name and installed the hook at start-up.
-    // Saving that round trip is not micro-optimisation — it is the difference
-    // between attaching inside the test that started the process and attaching
-    // during the next one.
-    const reply = await client.request('correlate', undefined, options.correlationHeader)
-    if (!reply.ok) {
+    // The op is skipped only when the hello names the same header: a service a
+    // recording test spawned inherited the name and installed the hook at start-up,
+    // and saving that round trip is the difference between attaching inside the test
+    // that started the process and attaching during the next one. An instrument that
+    // reports only `correlating: true` is asked anyway — installing twice is
+    // idempotent, guessing wrong is not.
+    try {
+      const reply = await client.request('correlate', undefined, wantedHeader)
+      if (!reply.ok) {
+        throw new SocketSourceError(
+          `the instrument in pid ${String(hello.pid)} refused request-id correlation: ` +
+            `${reply.error}. It may predate the "correlate" op; rebuild the package the ` +
+            'service imports, or start it without correlation.',
+        )
+      }
+    } catch (error) {
+      // A timeout here rejects without destroying the socket (`#send` clears the
+      // pending entry only), and an open handle keeps the run alive after its
+      // summary. Nothing holds this client once the source fails to exist.
       client.close()
-      throw new SocketSourceError(
-        `the instrument in pid ${String(hello.pid)} refused request-id correlation: ` +
-          `${reply.error}. It may predate the "correlate" op; rebuild the package the ` +
-          'service imports, or start it without correlation.',
-      )
+      throw error
     }
   }
 
@@ -762,7 +783,6 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
    * So numbered windows are always recovered; the fallback is spent once.
    */
   let fallbackTaken = false
-
   function dispatch(): PendingTake {
     if (closed) throw new SocketSourceError('the source is closed')
     // The target is gone and the whole lifetime it left behind has been read. A
@@ -905,8 +925,18 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
     generatedMissing: () => [...missingGenerated],
     async prepare(scriptIds: readonly string[]) {
       if (closed || scriptIds.length === 0) return
+      // Only a script whose map had to travel needs its generated text: for every
+      // other script the file on disk is the script, and `projector.finish` discards
+      // an identical index after paying for it. Fetching them all made the end of a
+      // large run a blocking loop on the host and could exceed the timeout, which
+      // then marked every script missing.
+      const wanted = scriptIds.filter((id) => {
+        const info = scripts.get(id)
+        return info !== undefined && info.sourceMapURL !== undefined && info.sourceMapURL !== ''
+      })
+      if (wanted.length === 0) return
       try {
-        const reply = await client.generated([...scriptIds])
+        const reply = await client.generated([...wanted])
         if (reply.ok && reply.op === 'generated') {
           const { generated, missing } = reply.result
           for (const [id, value] of Object.entries(generated)) {
@@ -920,14 +950,14 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
           // nothing was produced at all.
           if (missing !== undefined) for (const id of missing) missingGenerated.add(id)
         } else {
-          for (const id of scriptIds) missingGenerated.add(id)
+          for (const id of wanted) missingGenerated.add(id)
         }
       } catch {
         // An instrument older than this op, or a socket that died at the end. The
         // fetch failed, so every script's generated text is unavailable — recorded as
         // health rather than quietly falling back to a file that may not be the text
         // V8 compiled. Never make the run fail here.
-        for (const id of scriptIds) missingGenerated.add(id)
+        for (const id of wanted) missingGenerated.add(id)
       }
     },
 

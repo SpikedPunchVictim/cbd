@@ -423,6 +423,14 @@ interface Windows {
   failedTakes(): number
   /** Resolves once every record has reached the sink. */
   drained(): Promise<void>
+  /**
+   * Forgets the run so far, for a Recorder driven through a second run.
+   *
+   * The header is written by `runStart`, and the count it reports belongs to that
+   * run; a second run inheriting the first's failures would report a clean shard as
+   * unhealthy.
+   */
+  reset?(): void
 }
 
 /**
@@ -489,8 +497,11 @@ function syncWindows(source: Source, sink: ShardSink, project: Projector): Windo
       for (const row of updates()) sink.append(JSON.stringify(row))
       appendRecords(sink, footer())
     },
-    failedTakes: () => failedTakes,
+    failedTakes: () => failedTakes + (source.lostTakes?.() ?? 0),
     drained: () => Promise.resolve(),
+    reset() {
+      failedTakes = 0
+    },
   }
 }
 
@@ -557,8 +568,11 @@ function queuedWindows(source: QueuedSource, sink: ShardSink, project: Projector
         appendRecords(sink, footer())
       })
     },
-    failedTakes: () => failedTakes,
+    failedTakes: () => failedTakes + (source.lostTakes?.() ?? 0),
     drained: () => chain,
+    reset() {
+      failedTakes = 0
+    },
   }
 }
 
@@ -723,9 +737,23 @@ export class Recorder {
    * empty window and silently mis-file the entire load phase as `@between`.
    */
   runStart(): void {
-    // A new recording owns its path; a second run at the same path must not
-    // inherit the first run's header, tests or footer.
+    // A new recording owns its path — and its bookkeeping. A second run on the same
+    // instance must not inherit the first run's header, tests, footer, ordinals,
+    // load phase, open window, pending reads or failure count; before this, the
+    // second run's import phase was filed as `@between` and its footer counted both
+    // runs' tests.
     this.#sink.reset?.()
+    this.#windows.reset?.()
+    this.#testCount = 0
+    this.#loadCaptured = false
+    this.#ordinals.clear()
+    this.#open = null
+    this.#spec = null
+    this.#reads.clear()
+    this.#dirReads.clear()
+    this.#opaque.clear()
+    this.#releaseSink?.()
+    this.#releaseSink = null
     this.#windows.commit({
       type: 'shard',
       version: SHARD_VERSION,

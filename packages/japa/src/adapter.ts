@@ -210,6 +210,29 @@ export function installJapaAdapter(
   const hooks = recorders.map((recorder) => japaWindowHooks(recorder))
 
   /**
+   * Runs one recorder call, reporting the first failure instead of throwing it.
+   *
+   * These calls come from japa lifecycle events, which japa does not await: a throw
+   * becomes a rejected promise nobody handles and takes the process down with no
+   * footer and no explanation. A sink that cannot write (ENOSPC, a removed shard
+   * directory) is a shard that will be refused later anyway; one line on stderr is
+   * the honest, non-fatal answer.
+   */
+  let writeFailureReported = false
+  const guarded = (run: () => void): void => {
+    try {
+      run()
+    } catch (error) {
+      if (writeFailureReported) return
+      writeFailureReported = true
+      process.stderr.write(
+        `cbd: a recorder step failed (${error instanceof Error ? error.message : String(error)}); ` +
+          'this shard is incomplete and the build may refuse it.\n',
+      )
+    }
+  }
+
+  /**
    * One window per test for every recorder, and one correlation id for the
    * requests it makes.
    *
@@ -219,10 +242,14 @@ export function installJapaAdapter(
    */
   const onTestStart = (node: JapaTestStartNode): void => {
     options.correlation?.begin(node.title.original, node.meta.fileName ?? null)
-    for (const hook of hooks) hook.onTestStart(node)
+    guarded(() => {
+      for (const hook of hooks) hook.onTestStart(node)
+    })
   }
   const onTestEnd = (node: JapaTestEndNode): void => {
-    for (const hook of hooks) hook.onTestEnd(node)
+    guarded(() => {
+      for (const hook of hooks) hook.onTestEnd(node)
+    })
     options.correlation?.end()
   }
 
@@ -247,12 +274,15 @@ export function installJapaAdapter(
       // prints its summary, reports every test green, and then hangs until
       // something kills it.
       await Promise.all(recorders.map((recorder) => recorder.drained()))
-      for (const recorder of recorders) recorder.close()
     })().finally(() => {
       // The HTTP patch is a process-wide side effect; leaving it in place after
       // the run would put an id on requests nobody is recording.
       options.correlation?.end()
       options.correlation?.release()
+      // Closing here rather than after the drains: a drain that rejected skips the
+      // rest of the body above, and a source left open is a socket that keeps the
+      // process alive after it printed its summary. `close` is idempotent.
+      for (const recorder of recorders) recorder.close()
     })
     return finished
   }

@@ -7,6 +7,7 @@
  */
 import { createHash } from 'node:crypto'
 import { basename, dirname, extname, join } from 'node:path'
+import { titlePartReadings } from '@spikedpunch/cbd/adapter'
 
 export interface NodeTestContextLike {
   /** The test's own name, without its enclosing suites. */
@@ -73,9 +74,19 @@ const escapePart = (part: string): string => part.replace(REGEX_SPECIALS, '\\$&'
  * joined by **single spaces** — `outer > inner > adds` is `outer inner adds` —
  * which is not the spelling CBD stores. Each part is escaped; an anchored
  * alternation keeps `adds` from also matching `adds twice`.
+ *
+ * A stored title may itself contain ` > `, and the stored string does not say which
+ * occurrences were separators. Every reading is admitted: matching a name that was
+ * not selected over-selects, which is safe, while guessing one reading and being
+ * wrong silently skipped the test the selection named.
  */
 export function selectionPattern(titles: string[]): string {
-  const alternatives = titles.map((title) => title.split(' > ').map(escapePart).join(' '))
+  const alternatives: string[] = []
+  for (const title of titles) {
+    for (const parts of titlePartReadings(title)) {
+      alternatives.push(parts.map(escapePart).join(' '))
+    }
+  }
   return `^(?:${alternatives.join('|')})$`
 }
 

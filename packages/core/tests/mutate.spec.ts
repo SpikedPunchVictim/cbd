@@ -255,3 +255,59 @@ test('the range defaults to one line and rejects invalid ranges', () => {
     /1-based and ordered/,
   )
 })
+
+// The module body is a V8 entry spanning the whole file. Counting it as a function
+// calls every line covered and places a top-level mutant inside one, so a mutant
+// outside every real function answers with the importer alone instead of the
+// file-wide answer. `select` excludes the same entry.
+test('the module body does not count as a function for the outside check', () => {
+  const map = mapOf({
+    files: {
+      [FILE]: {
+        '<module>@0': entry(1, 100, [0]),
+        alpha: entry(10, 20, [1]),
+      },
+    },
+    seen: [FILE],
+    load: [touch(FILE, '@module', 1, 1)],
+  })
+  const selection = mutantTests(map, { file: FILE, startLine: 60 })
+  assert.equal(selection.mode, 'all')
+  assert.equal(selection.why, 'load')
+})
+
+// A map that says its evidence is incomplete cannot name a subset for anything.
+test('a partial file, or an unhealthy map, runs everything', () => {
+  const files = { [FILE]: { alpha: entry(10, 20, [0]) } }
+  const partial = mutantTests(
+    mapOf({ files, seen: [FILE], partial: [FILE] }),
+    { file: FILE, startLine: 12 },
+  )
+  assert.equal(partial.mode, 'all')
+  assert.equal(partial.why, 'partial')
+
+  const unhealthy = mutantTests(
+    mapOf({ files, seen: [FILE], unhealthy: ['run.ndjson: 1 window(s) could not be taken'] }),
+    { file: FILE, startLine: 12 },
+  )
+  assert.equal(unhealthy.mode, 'all')
+  assert.equal(unhealthy.why, 'unhealthy')
+})
+
+// A test that drives a tool over the file, or reads it as text, can kill a mutant
+// without executing it — `select` runs those tests for any in-scope change.
+test('opaque, read and directory-listing tests are added to a subset', () => {
+  const map = mapOf({
+    files: { [FILE]: { alpha: entry(10, 20, [0]) } },
+    seen: [FILE],
+    opaque: { 'spawned a tool': [2] },
+    reads: { [FILE]: [1] },
+    dirReads: { '/repo/src': [2] },
+  })
+  const selection = mutantTests(map, { file: FILE, startLine: 12 })
+  assert.equal(selection.mode, 'subset')
+  assert.deepEqual(
+    selection.tests.map((test) => test.title),
+    ['alpha one', 'alpha two', 'beta'],
+  )
+})
