@@ -830,6 +830,14 @@ resolves repository-relative locators and rejects malformed entries; a `when` ma
 outside `include`, which is what lets an entry protect a source tree the normal selection ignores
 (`cbd-0na.4`).
 
+**Environment dependencies are declared, and compared by hash.** A test that branches on
+`process.env.FLAG` has no file edge: the value comes from the shell or CI, not from the diff.
+`recordEnv('FLAG')` names it; the shard and the map keep a 16-hex-character hash of the value the
+recording saw, never the value, and `select` compares the current environment against those hashes.
+A variable that moved selects the declaring tests, with reason `env-changed`. A map with no hash for
+a variable — one written before this existed — leaves it alone rather than selecting on every run.
+An undeclared variable stays invisible, which is the same boundary as any unrecorded dependency.
+
 **`sharedState` is for tests that depend on their neighbours.** A test that patches a module-level
 value and a test that observes it are a pair; running one without the other is not a smaller run but
 a different one, and coverage cannot say so. The list names files; when a change selects a test that

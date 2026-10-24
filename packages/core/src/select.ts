@@ -22,6 +22,7 @@
 import { isAbsolute, relative } from 'node:path'
 import { intersects, type Change, type LineRange } from './changes.js'
 import { testId } from './contract.js'
+import { hashEnvValue } from './env.js'
 import { matchesAnyGlob } from './glob.js'
 import type { CoverageMap, FunctionEntry } from './map.js'
 import type { TouchRef } from './shard.js'
@@ -47,6 +48,7 @@ export type Reason =
   | { kind: 'opaque'; reason: string; tests: number[] }
   | { kind: 'always'; file?: string; tests: number[] }
   | { kind: 'shared-state'; file: string; tests: number[] }
+  | { kind: 'env-changed'; keys: string[]; tests: number[] }
   | { kind: 'all'; why: AllWhy; file?: string }
 
 /**
@@ -143,6 +145,14 @@ export interface SelectConfig {
    */
   sharedState?: string[]
   /**
+   * The environment to compare declared variables against.
+   *
+   * Defaults to this process's. A library caller that selects for a run spawned
+   * elsewhere passes the environment that run will see; the CLI passes nothing
+   * because `collect` and `select` inherit it already.
+   */
+  env?: NodeJS.ProcessEnv
+  /**
    * The config file this selection was made under, absolute.
    *
    * A change to it can change `include`, `alwaysAll`, `alwaysSelect` or the
@@ -221,6 +231,7 @@ const IMPACT: Record<Reason['kind'], number> = {
   opaque: 4,
   always: 5,
   'shared-state': 6,
+  'env-changed': 6,
   all: 7,
 }
 
@@ -800,6 +811,26 @@ export function select(
       if (added.length === 0) continue
       for (const index of touched) selected.add(index)
       reasons.push({ kind: 'shared-state', file, tests: added })
+    }
+  }
+
+  // Rule 12 — declared environment: `recordEnv` names the variables a test reads,
+  // and the map keeps a hash of the value the recording saw. A value that has moved
+  // since selects that test even though no file changed and coverage cannot see the
+  // dependency. A variable the map has no hash for is left alone: an older map
+  // cannot say what it used to be, and guessing would select on every run.
+  if (!forced) {
+    const environment = config.env ?? process.env
+    for (const [index, test] of map.tests.entries()) {
+      const keys = test.env
+      if (keys === undefined || keys.length === 0 || selected.has(index)) continue
+      const changed = keys.filter((key) => {
+        const seen = map.env?.[key]
+        return seen !== undefined && !seen.includes(hashEnvValue(environment[key]))
+      })
+      if (changed.length === 0) continue
+      selected.add(index)
+      reasons.push({ kind: 'env-changed', keys: changed, tests: [index] })
     }
   }
 

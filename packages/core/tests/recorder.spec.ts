@@ -10,6 +10,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { Recorder } from '../src/recorder.js'
+import { recordEnv } from '../src/record.js'
 import {
   recordDependency,
   recordDirRead,
@@ -1092,4 +1093,42 @@ test('a second run on one recorder starts from zero', () => {
   assert.equal(records.filter((record) => record.type === 'shard').length, 1)
   const footer = records.find((record) => record.type === 'end')
   assert.equal(footer?.type === 'end' ? footer.tests : undefined, 1)
+})
+
+// `recordEnv` names the variables a test consults. The shard keeps a hash of the
+// value the window saw — never the value itself — so a changed flag selects the
+// declaring test without a file change and without a coverage edge.
+test('a declared environment variable is recorded as a hash, never a value', () => {
+  const source: Source = {
+    kind: 'clean',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => new Map(),
+    close: () => {},
+  }
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'env' })
+  const previous = process.env.CBD_TEST_FLAG
+  try {
+    process.env.CBD_TEST_FLAG = 'secret-value'
+    recorder.runStart()
+    recorder.testStart('declares a flag', null)
+    recordEnv('CBD_TEST_FLAG')
+    recorder.testEnd('declares a flag', 'passed')
+    recorder.runEnd()
+
+    const record = parseShard(sink.text).find(
+      (value) => value.type === 'test' && value.title === 'declares a flag',
+    )
+    assert.ok(record?.type === 'test')
+    const hashes = record.env
+    assert.ok(hashes !== undefined)
+    assert.deepEqual(Object.keys(hashes), ['CBD_TEST_FLAG'])
+    assert.match(hashes.CBD_TEST_FLAG as string, /^[0-9a-f]{16}$/)
+    assert.doesNotMatch(sink.text, /secret-value/)
+  } finally {
+    if (previous === undefined) delete process.env.CBD_TEST_FLAG
+    else process.env.CBD_TEST_FLAG = previous
+  }
 })

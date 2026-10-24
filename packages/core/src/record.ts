@@ -44,6 +44,8 @@ export interface RecordSink {
    * map if a rule ever needs to; today both select the reader on a change.
    */
   noteDependency(paths: readonly string[]): void
+  /** Environment variables the open test consulted. */
+  noteEnv(keys: readonly string[]): void
 }
 
 let active: RecordSink | null = null
@@ -103,6 +105,20 @@ export function recordDirRead(dir: string): void {
 export function recordDependency(paths: string | readonly string[]): void {
   const list = typeof paths === 'string' ? [paths] : paths
   active?.noteDependency(list.map(absolute))
+}
+
+/**
+ * Declares the environment variables the running test consults.
+ *
+ * Their values are never recorded — the shard keeps a hash — and selection compares
+ * the current environment against those hashes, so a changed flag selects the tests
+ * that declared it even when no file changed and no coverage could have seen it.
+ * Declaring a variable the test does not read only over-selects; failing to declare
+ * one leaves it invisible, which is the same boundary as any unrecorded dependency.
+ */
+export function recordEnv(keys: string | readonly string[]): void {
+  const list = typeof keys === 'string' ? [keys] : keys
+  active?.noteEnv(list)
 }
 
 /**

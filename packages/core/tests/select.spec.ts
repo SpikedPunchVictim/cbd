@@ -9,6 +9,7 @@ import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
 import type { Change } from '../src/changes.js'
 import type { CoverageMap } from '../src/map.js'
+import { hashEnvValue } from '../src/env.js'
 import { fileDefinesTests, select, verify, type Selection } from '../src/select.js'
 
 const SRC = '/repo/src/a.ts'
@@ -1116,6 +1117,48 @@ test('shared state does nothing when no selected test touched the file', () => {
   })
   // This change selects `uses helper` only, which touched nothing shared.
   const result = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { sharedState: [shared] })
+  assert.deepEqual(result.tests.map((index) => map.tests[index]?.title), ['uses helper'])
+  assert.deepEqual(reasonKinds(result), ['function'])
+})
+
+// --- rule 12: declared environment -----------------------------------------
+// A flag read through `process.env` has no file edge. `recordEnv` names it and the
+// map keeps a hash of the value the recording saw; a value that moved selects the
+// declaring test even when nothing in the diff did.
+test('a declared variable whose value changed selects the test that declared it', () => {
+  const map = makeMap({
+    env: { FLAG: [hashEnvValue('on')] },
+    tests: makeMap().tests.map((entry, index) =>
+      index === 0 ? { ...entry, env: ['FLAG'] } : entry,
+    ),
+  })
+
+  // Unchanged: the ordinary rule answers.
+  const same = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { env: { FLAG: 'on' } })
+  assert.deepEqual(same.tests.map((index) => map.tests[index]?.title), ['uses helper'])
+  assert.deepEqual(reasonKinds(same), ['function'])
+
+  // Changed, with no matching change at all: the declaring test is selected.
+  const moved = select(map, [change(HELPER, [{ start: 1, end: 1 }])], {
+    env: { FLAG: 'off' },
+  })
+  // Map order, not selection order.
+  assert.deepEqual(moved.tests.map((index) => map.tests[index]?.title), [
+    'adds',
+    'uses helper',
+  ])
+  assert.deepEqual(reasonKinds(moved), ['function', 'env-changed'])
+  const reason = moved.reasons.find((entry) => entry.kind === 'env-changed')
+  assert.deepEqual(reason?.kind === 'env-changed' ? reason.keys : undefined, ['FLAG'])
+})
+
+test('a map with no recorded hash leaves declared variables alone', () => {
+  const map = makeMap({
+    tests: makeMap().tests.map((entry, index) =>
+      index === 0 ? { ...entry, env: ['FLAG'] } : entry,
+    ),
+  })
+  const result = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { env: { FLAG: 'off' } })
   assert.deepEqual(result.tests.map((index) => map.tests[index]?.title), ['uses helper'])
   assert.deepEqual(reasonKinds(result), ['function'])
 })

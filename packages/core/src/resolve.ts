@@ -64,6 +64,8 @@ export interface ResolvedTest {
   dirReads?: string[]
   /** Reasons the test declared an invisible dependency. */
   opaque?: string[]
+  /** Environment variables the test declared, by hashed value. */
+  env?: Record<string, string>
 }
 
 export interface ResolvedShard {
@@ -537,6 +539,7 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
       ...(test.reads === undefined ? {} : { reads: readPaths(test.reads) }),
       ...(test.dirReads === undefined ? {} : { dirReads: dirPaths(test.dirReads) }),
       ...(test.opaque === undefined ? {} : { opaque: test.opaque }),
+      ...(test.env === undefined ? {} : { env: test.env }),
     })),
     load: load.flatMap(touchesOf),
     between: between.flatMap(touchesOf),

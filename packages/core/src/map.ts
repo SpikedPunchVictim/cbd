@@ -55,6 +55,13 @@ export interface TestEntry {
   /** The last recorded outcome and duration, for the subset's cost estimate. */
   status?: 'passed' | 'failed' | 'skipped'
   durationMs?: number
+  /**
+   * Environment variables the test declared with `recordEnv`, by name.
+   *
+   * The values live in `CoverageMap.env` as hashes; this is the per-test edge that
+   * says which tests a changed variable selects.
+   */
+  env?: string[]
 }
 
 export interface CoverageMap {
@@ -74,6 +81,14 @@ export interface CoverageMap {
   reads?: Record<string, number[]>
   /** Directories listed by tests; a change to any file under one selects the lister. */
   dirReads?: Record<string, number[]>
+  /**
+   * Declared environment variables, by the hashes observed at record time.
+   *
+   * More than one hash means the variable changed between recordings being merged.
+   * A value is never stored — only the fingerprint — so this file can live in the
+   * repository's state directory without carrying a CI secret.
+   */
+  env?: Record<string, string[]>
   /**
    * Tests that declared an invisible dependency, by the reason they gave.
    *
@@ -265,6 +280,8 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
   const reads = new Map<string, Set<number>>()
   const dirReads = new Map<string, Set<number>>()
   const opaque = new Map<string, Set<number>>()
+  /** Declared variable -> every hash observed for it across the merged shards. */
+  const envHashes = new Map<string, Set<string>>()
   const included: string[] = []
   const partial = new Set<string>()
   const unhealthy: string[] = []
@@ -394,6 +411,18 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
       const index = indexOfTest(test)
       allTests.push(index)
       if (test.touches.length > 0) touchedTests.add(testKey)
+      for (const [key, hash] of Object.entries(test.env ?? {})) {
+        let seen = envHashes.get(key)
+        if (seen === undefined) {
+          seen = new Set()
+          envHashes.set(key, seen)
+        }
+        seen.add(hash)
+        const entry = tests[index]
+        if (entry !== undefined && !(entry.env ?? []).includes(key)) {
+          entry.env = [...(entry.env ?? []), key].sort()
+        }
+      }
       for (const reason of test.opaque ?? []) {
         let set = opaque.get(reason)
         if (set === undefined) {
@@ -544,6 +573,9 @@ export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): 
     reads: indexed(reads),
     dirReads: indexed(dirReads),
     ...(opaque.size === 0 ? {} : { opaque: indexed(opaque) }),
+    ...(envHashes.size === 0
+      ? {}
+      : { env: Object.fromEntries([...envHashes].map(([key, hashes]) => [key, [...hashes].sort()])) }),
     seen: [...seen].sort(),
     shards: included,
     dirty: options.dirty === true,
@@ -850,6 +882,11 @@ export function carryMap(
     tests,
     files,
     ...(Object.keys(opaque).length === 0 ? {} : { opaque }),
+    // Hashes are keyed by variable, not by test: a carried test keeps its declared
+    // keys on its entry, and the set of values that were recorded is the base's
+    // union the new run's. Dropping the base's would make a variable look unchanged
+    // since the carried run could not re-observe it.
+    ...(mergeEnv(next.env, base.env) === undefined ? {} : { env: mergeEnv(next.env, base.env) }),
     reads: merge(next.reads, readByTest),
     dirReads: merge(next.dirReads, dirByTest),
     load: next.load,
@@ -861,6 +898,21 @@ export function carryMap(
     ...(unhealthy.length === 0 ? {} : { unhealthy }),
     carried: { base: base.commit, tests: carried.length },
   }
+}
+
+/** Union of two `env` indexes: variable -> every hash either side observed. */
+function mergeEnv(
+  a: Record<string, string[]> | undefined,
+  b: Record<string, string[]> | undefined,
+): Record<string, string[]> | undefined {
+  if (a === undefined && b === undefined) return undefined
+  const out: Record<string, string[]> = {}
+  for (const source of [a, b]) {
+    for (const [key, hashes] of Object.entries(source ?? {})) {
+      out[key] = [...new Set([...(out[key] ?? []), ...hashes])].sort()
+    }
+  }
+  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /**

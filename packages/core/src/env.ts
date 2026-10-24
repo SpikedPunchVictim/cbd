@@ -23,6 +23,7 @@
  * keyed by a path no diff can name (ADR-0006). Projection cannot stand in for it:
  * projection is consulted only when a script has no map, and these have one.
  */
+import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ScanOptions } from './normalize.js'
@@ -248,4 +249,21 @@ function selectionTests(parsed: unknown, path: string): SelectionTest[] | undefi
       ...(test.column === undefined ? {} : { column: test.column }),
     }
   })
+}
+
+
+/**
+ * A stable, value-free fingerprint of an environment variable.
+ *
+ * `recordEnv` names the variables a test consulted; the shard and the map keep
+ * only this hash, never the value. Selection compares the current environment's
+ * hash against the recorded ones, so a secret in CI is never written to `.cbd`.
+ * An absent variable hashes differently from an empty one: "unset" and "set to
+ * nothing" are different answers to most code.
+ */
+export function hashEnvValue(value: string | undefined): string {
+  return createHash('sha256')
+    .update(value === undefined ? '\u0000absent' : `v${value}`)
+    .digest('hex')
+    .slice(0, 16)
 }

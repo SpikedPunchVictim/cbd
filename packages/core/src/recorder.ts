@@ -56,6 +56,7 @@ import { FileCache, sameLineStarts } from './line-index.js'
 import { scriptPrefilter, type ScanOptions } from './normalize.js'
 import { withoutReadTracking } from './read-tracker.js'
 import { activateRecordSink } from './record.js'
+import { hashEnvValue } from './env.js'
 import { createRelocator } from './relocate.js'
 import { sourceMapUrlOf } from './source-maps.js'
 import {
@@ -642,6 +643,8 @@ export class Recorder {
   #dirReads = new Set<string>()
   /** Invisible dependencies the open test declared, by reason. */
   #opaque = new Set<string>()
+  /** Environment variables the open test declared. Values are hashed, never kept. */
+  #env = new Set<string>()
   /** Detaches the record API from this recorder when the window closes. */
   #releaseSink: (() => void) | null = null
   #owners: OwnerIndex | undefined
@@ -766,6 +769,7 @@ export class Recorder {
     this.#reads.clear()
     this.#dirReads.clear()
     this.#opaque.clear()
+    this.#env.clear()
     this.#releaseSink?.()
     this.#releaseSink = null
     this.#windows.commit({
@@ -822,6 +826,7 @@ export class Recorder {
     this.#reads.clear()
     this.#dirReads.clear()
     this.#opaque.clear()
+    this.#env.clear()
     this.#open = {
       title,
       file,
@@ -837,6 +842,9 @@ export class Recorder {
       noteRead: (path) => this.noteRead(path),
       noteReadDir: (dir) => this.noteReadDir(dir),
       noteOpaque: (reason) => this.noteOpaque(reason),
+      noteEnv: (keys) => {
+        for (const key of keys) this.noteEnv(key)
+      },
       noteDependency: (paths) => {
         for (const path of paths) this.noteRead(path)
       },
@@ -859,12 +867,17 @@ export class Recorder {
     const reads = [...this.#reads].sort()
     const dirReads = [...this.#dirReads].sort()
     const opaque = [...this.#opaque].sort()
+    // Hashes, never values: a shard lives in the repository's state directory and a
+    // CI secret must not. Read here, with the window's other fields.
+    const env: Record<string, string> = {}
+    for (const key of [...this.#env].sort()) env[key] = hashEnvValue(process.env[key])
     const titlePath = open?.title === title ? open.titlePath : undefined
     const line = open?.title === title ? open.line : undefined
     const column = open?.title === title ? open.column : undefined
     this.#reads.clear()
     this.#dirReads.clear()
     this.#opaque.clear()
+    this.#env.clear()
     // The record API is bound to this window; detach it before the window closes
     // so a helper called during projection cannot be charged to the test.
     this.#releaseSink?.()
@@ -897,6 +910,7 @@ export class Recorder {
         ...(allReads.length === 0 ? {} : { reads: allReads }),
         ...(allDirReads.length === 0 ? {} : { dirReads: allDirReads }),
         ...(opaque.length === 0 ? {} : { opaque }),
+        ...(Object.keys(env).length === 0 ? {} : { env }),
       }
     })
     this.#testCount += 1
@@ -916,6 +930,7 @@ export class Recorder {
     this.#reads.clear()
     this.#dirReads.clear()
     this.#opaque.clear()
+    this.#env.clear()
     this.#releaseSink?.()
     this.#releaseSink = null
     this.#open = null
@@ -942,6 +957,17 @@ export class Recorder {
   }
 
   /** Note an invisible dependency of the open test. See `recordOpaque`. */
+  /**
+   * Note an environment variable the open test declared.
+   *
+   * Synchronous, like the other record calls: the hash is taken at `testEnd` from
+   * the value in force while the window runs, so a test that mutates its own
+   * environment is recorded against the value it actually used.
+   */
+  noteEnv(key: string): void {
+    if (this.#open !== null) this.#env.add(key)
+  }
+
   noteOpaque(reason: string): void {
     if (this.#open !== null) this.#opaque.add(reason)
   }

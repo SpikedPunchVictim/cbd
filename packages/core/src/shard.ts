@@ -183,6 +183,15 @@ export interface ShardTest {
    * kept so `explain` can say why.
    */
   opaque?: string[]
+  /**
+   * Environment variables the test declared, by **hash** of the value it saw.
+   *
+   * The value is never recorded: a shard is a repository artefact and CI secrets
+   * must not land in one. Selection compares the hash of the current value against
+   * these, so a changed flag selects the declaring test with no file change and no
+   * coverage edge.
+   */
+  env?: Record<string, string>
 }
 
 /**

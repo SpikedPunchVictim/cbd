@@ -1012,3 +1012,29 @@ test('a service shard keeps the owners of attributed windows as load observers',
   assert.equal(result.mode, 'subset')
   assert.deepEqual(result.tests, [0])
 })
+
+// Declared variables keep their hashes in the map and their names on the test; the
+// value itself never reaches either.
+test('declared environment variables merge by name and hash', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('declares', []), env: { FLAG: 'aaaa0000aaaa0000' } },
+      ]),
+      shard('s2', [
+        {
+          ...testRecord('declares elsewhere', []),
+          env: { FLAG: 'bbbb1111bbbb1111', MODE: 'cccc2222cccc2222' },
+        },
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.env, {
+    // Two recordings saw different values; both are kept so selection can tell.
+    FLAG: ['aaaa0000aaaa0000', 'bbbb1111bbbb1111'],
+    MODE: ['cccc2222cccc2222'],
+  })
+  const declares = map.tests.find((entry) => entry.title === 'declares')
+  assert.deepEqual(declares?.env, ['FLAG'])
+})

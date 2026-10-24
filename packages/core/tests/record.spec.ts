@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
-import { activateRecordSink, recordDependency, recordRead } from '../src/record.js'
+import { activateRecordSink, recordDependency, recordEnv, recordRead } from '../src/record.js'
 
 test('declared reads and dependencies are canonicalized', () => {
   const dir = mkdtempSync(join(tmpdir(), 'cbd-record-'))
@@ -17,21 +17,27 @@ test('declared reads and dependencies are canonicalized', () => {
 
     const reads: string[] = []
     const dependencies: string[] = []
+    const env: string[] = []
     const release = activateRecordSink({
       noteRead: (path) => reads.push(path),
       noteReadDir: () => {},
       noteOpaque: () => {},
       noteDependency: (paths) => dependencies.push(...paths),
+      noteEnv: (keys) => env.push(...keys),
     })
     try {
       recordRead(join(link, 'x.ts'))
       recordDependency(join(link, 'x.ts'))
+      recordEnv('FEATURE_FLAG')
+      recordEnv(['A', 'B'])
     } finally {
       release()
     }
     const canonical = realpathSync(file)
     assert.deepEqual(reads, [canonical])
     assert.deepEqual(dependencies, [canonical])
+    // Declarations pass through as names; the value is hashed by the recorder.
+    assert.deepEqual(env, ['FEATURE_FLAG', 'A', 'B'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

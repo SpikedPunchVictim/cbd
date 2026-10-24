@@ -5,6 +5,13 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A declared environment variable selects the tests that read it.** A test that branches on
+  `process.env.FLAG` has no file edge, so a flag flipped in CI or the shell left the selection
+  answering for the old value. `recordEnv('FLAG')` names the variable; the shard and the map keep a
+  16-hex hash of the value the recording saw — never the value — and `select` compares the current
+  environment against those hashes, selecting the declaring tests with reason `env-changed`. An
+  older map with no hash for the variable leaves it alone rather than selecting on every run, and
+  an undeclared variable stays invisible, which is the same boundary as any unrecorded dependency.
 - **`sharedState` runs neighbours together.** A subset is not a smaller run when a test depends on
   module state another test mutates — a patched sleep, a seeded clock, a singleton wired in one test
   and read in the next. Coverage cannot see that dependency, so the new `select.sharedState` config

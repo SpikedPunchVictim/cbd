@@ -152,6 +152,7 @@ export {
 export {
   activateRecordSink,
   recordDependency,
+  recordEnv,
   recordDirRead,
   recordOpaque,
   recordRead,
