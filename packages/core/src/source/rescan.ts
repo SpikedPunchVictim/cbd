@@ -73,10 +73,16 @@
  *
  * ## What this cannot do, named rather than discovered later
  *
- * **A process that dies inside its window is not here.** By the time any boundary
- * looks, its socket is gone and its coverage went with it. That is ADR-0007's second
- * mechanism — the child's own snapshot, harvested after the run — and it is not this
- * file.
+ * **A process that dies before it is attached is read from its exit snapshot.** A
+ * normal exit unlinks the socket, so the discovery loop cannot see it at all; what is
+ * left is `pid-N.coverage.json` beside where the socket was. That file is ADR-0007's
+ * second mechanism, and this source harvests it: once per process, for a process born
+ * after the recording started and never attached, delivered to the boundary that
+ * discovered it.
+ *
+ * **A process that dies while attached is read by its own socket source.** The take
+ * fails, and the exit write's unnumbered lifetime is recovered once, by the boundary
+ * that discovers the loss (`socket.ts`); this source neither duplicates nor loses it.
  *
  * **An attach that outlives the next boundary loses that window.** The attach costs a
  * connect and a hello; a window shorter than that has no target to take from, and the
@@ -98,9 +104,19 @@
  * dies and is replaced that quickly inside one test run is not a shape worth a stat
  * per boundary to catch.
  */
+import { readFile } from 'node:fs/promises'
 import { DEFAULT_INSPECTOR_TIMEOUT_MS } from './inspector.js'
-import { SocketSourceError, noServiceError, socketPaths, socketSource } from './socket.js'
-import { SOCKET_DIR_ENV } from '../instrument-protocol.js'
+import {
+  SocketSourceError,
+  noServiceError,
+  pidOfSnapshotPath,
+  pidOfSocketPath,
+  snapshotLifetime,
+  snapshotPaths,
+  socketPaths,
+  socketSource,
+} from './socket.js'
+import { SOCKET_DIR_ENV, nowUs, snapshotPath, type ScriptRow, type SnapshotFile } from '../instrument-protocol.js'
 import type {
   DriftStats,
   PendingTake,
@@ -125,6 +141,13 @@ export interface RescanningSocketSourceOptions {
    * before the next request, not after the next test.
    */
   correlationHeader?: string
+  /**
+   * How often to look for a new target *between* boundaries. Default 25 ms.
+   *
+   * The interval bounds how long a newly appeared process waits to be attached; a
+   * test can lengthen it to keep its own timing deterministic.
+   */
+  discoveryIntervalMs?: number
 }
 
 /** One instrumented process, and the socket it is reached by. */
@@ -190,6 +213,25 @@ export async function rescanningSocketSource(
   /** Paths already reported as written off; the warning is said once. */
   const writtenOff = new Set<string>()
 
+  /**
+   * Processes that died before their socket answered, and the lifetime each left.
+   *
+   * Read once, delivered once: the next boundary is the one that discovered them,
+   * which is the same window a live target's first take would have gone to.
+   */
+  interface Harvest {
+    pid: number
+    coverage: V8ScriptCoverage[]
+    scripts: ScriptRow[]
+    ids: string[]
+    requests: TakeCapture['requests']
+  }
+  const harvested: Harvest[] = []
+  const harvestedPids = new Set<number>()
+
+  /** Processes born before this are another run's: their files can share the directory. */
+  const recordingStartedUs = nowUs()
+
   let closed = false
   let lost = 0
   let outstanding = 0
@@ -208,7 +250,7 @@ export async function rescanningSocketSource(
   let mergedRows = -1
 
   function scripts(): ReadonlyMap<string, ScriptInfo> {
-    let rows = 0
+    let rows = harvested.length
     for (const target of targets) rows += target.source.scripts().size
     if (rows === mergedRows) return merged
 
@@ -217,7 +259,63 @@ export async function rescanningSocketSource(
     for (const target of targets) {
       for (const [id, info] of target.source.scripts()) merged.set(`${String(target.pid)}:${id}`, info)
     }
+    for (const harvest of harvested) {
+      for (const row of harvest.scripts) {
+        merged.set(`${String(harvest.pid)}:${row.id}`, {
+          url: row.url,
+          ...(row.sourceMapURL === undefined ? {} : { sourceMapURL: row.sourceMapURL }),
+        })
+      }
+    }
     return merged
+  }
+
+  /**
+   * Reads the exit snapshot of a process whose socket would not answer.
+   *
+   * The socket file outlives the process, so the connect failure is what says the
+   * process is gone. Its exit write is the whole lifetime — the accumulator no take
+   * drained plus the rows no reply delivered — and it is this run's because the
+   * process was born after the recording started and no collector ever attached.
+   */
+  async function harvestPid(pid: number | undefined): Promise<Harvest | null> {
+    if (pid === undefined) return null
+    if (harvestedPids.has(pid)) return null
+    if (targets.some((target) => target.pid === pid)) return null
+
+    let file: SnapshotFile
+    try {
+      // The snapshot lives in the directory its socket would have been in.
+      file = JSON.parse(await readFile(snapshotPath(dir, pid), 'utf8')) as SnapshotFile
+    } catch {
+      return null
+    }
+    const lifetime = snapshotLifetime(file, recordingStartedUs)
+    if (lifetime === null) return null
+
+    harvestedPids.add(pid)
+    return {
+      pid,
+      coverage: lifetime.coverage,
+      scripts: lifetime.scripts,
+      ids: lifetime.ids,
+      requests: lifetime.requests,
+    }
+  }
+
+  /** One harvest as a window's capture, in that process's script-id namespace. */
+  function captureOf(harvest: Harvest): TakeCapture {
+    const pid = String(harvest.pid)
+    const prefix = (coverage: V8ScriptCoverage[]): V8ScriptCoverage[] =>
+      coverage.map((script) => ({ ...script, scriptId: `${pid}:${script.scriptId}` }))
+    return {
+      coverage: prefix(harvest.coverage),
+      ids: harvest.ids,
+      requests: harvest.requests.map((window) => ({
+        ids: window.ids,
+        coverage: prefix(window.coverage),
+      })),
+    }
   }
 
   /** One target's window, with its ids moved into that target's namespace. */
@@ -267,7 +365,10 @@ export async function rescanningSocketSource(
    * discovery, and doing it ahead of the boundary is what keeps that take
    * synchronous (see `DISCOVERY_INTERVAL_MS`).
    */
-  async function attach(path: string): Promise<Target | null> {
+  async function attach(
+    path: string,
+    deliver?: (harvest: Harvest) => void,
+  ): Promise<Target | null> {
     try {
       const source = await socketSource({
         socket: path,
@@ -294,6 +395,19 @@ export async function rescanningSocketSource(
       targets.push(target)
       return target
     } catch (error) {
+      // A socket file outlives its process. If the process ended before it answered,
+      // its exit snapshot is still this run's work — read it once instead of
+      // reporting the child missing.
+      const recovered = await harvestPid(pidOfSocketPath(path))
+      if (recovered !== null) {
+        refused.add(path)
+        // The boundary that discovered the process gets its lifetime in that same
+        // window; a background look queues it for the next one, exactly as a live
+        // target found between boundaries waits for the next take.
+        if (deliver === undefined) harvested.push(recovered)
+        else deliver(recovered)
+        return null
+      }
       failures.set(path, (failures.get(path) ?? 0) + 1)
       lastError.set(path, error instanceof Error ? error.message : String(error))
       return null
@@ -307,7 +421,7 @@ export async function rescanningSocketSource(
   // to. See `DISCOVERY_INTERVAL_MS`.
   const discovery = setInterval(() => {
     if (!closed) attachCandidates(false, [])
-  }, DISCOVERY_INTERVAL_MS)
+  }, options.discoveryIntervalMs ?? DISCOVERY_INTERVAL_MS)
   discovery.unref()
 
   /**
@@ -321,6 +435,41 @@ export async function rescanningSocketSource(
    * would make the next boundary the first boundary after it was held, and the
    * whole history would move with it.
    */
+  /**
+   * Pids whose snapshot has been looked at, so a file that cannot be harvested is
+   * not read again at every boundary. A process that exits without running its exit
+   * handler leaves only the bounded periodic file, and that one is not recoverable
+   * by any rule — retrying would pay a read per test to learn nothing.
+   */
+  const harvestAttempted = new Set<number>()
+
+  /**
+   * Processes that exited before any socket could answer: a normal exit unlinks the
+   * socket, so the discovery loop's socket list cannot see them at all.
+   */
+  function harvestCandidates(boundary: boolean, parts: Array<Promise<TakeCapture>>): void {
+    for (const path of snapshotPaths(dir)) {
+      const pid = pidOfSnapshotPath(path)
+      if (pid === undefined || pid === process.pid) continue
+      if (harvestAttempted.has(pid) || harvestedPids.has(pid)) continue
+      if (targets.some((target) => target.pid === pid)) continue
+      harvestAttempted.add(pid)
+
+      const opening = harvestPid(pid)
+      if (boundary) {
+        parts.push(
+          opening.then((harvest) =>
+            harvest === null ? { coverage: [], ids: [], requests: [] } : captureOf(harvest),
+          ),
+        )
+      } else {
+        void opening.then((harvest) => {
+          if (harvest !== null) harvested.push(harvest)
+        })
+      }
+    }
+  }
+
   function attachCandidates(boundary: boolean, parts: Array<Promise<TakeCapture>>): void {
     let candidates: string[] = []
     try {
@@ -331,6 +480,11 @@ export async function rescanningSocketSource(
       // that a whole run's server coverage becomes empty windows.
       candidates = []
     }
+
+    // A process that exited normally unlinked its socket, so there is no path to
+    // connect to and the loop below cannot see it. Its snapshot is the only thing
+    // left of it; look for those too.
+    harvestCandidates(boundary, parts)
 
     for (const path of candidates) {
       if (refused.has(path)) continue
@@ -352,7 +506,10 @@ export async function rescanningSocketSource(
 
       let opening = attaching.get(path)
       if (opening === undefined) {
-        opening = attach(path)
+        opening = attach(
+          path,
+          boundary ? (harvest) => parts.push(Promise.resolve(captureOf(harvest))) : undefined,
+        )
         attaching.set(path, opening)
         void opening.then(() => attaching.delete(path))
       }
@@ -377,6 +534,13 @@ export async function rescanningSocketSource(
     // dispatch time is the boundary, not completion time — and an `await` above it
     // would fold one test's execution into its neighbour's window.
     for (const target of targets) parts.push(takeFrom(target))
+
+    // A process discovered dead at this boundary brings the lifetime it left. It is
+    // offered once, to this window — the same rule a live target's first take
+    // follows, where the process's start-up is credited to the window that caused it.
+    for (const harvest of harvested.splice(0, harvested.length)) {
+      parts.push(Promise.resolve(captureOf(harvest)))
+    }
 
     // Then a look at what is new. Usually the background interval has already
     // found and attached it, which is the point: this look is the fallback for a
@@ -448,10 +612,19 @@ export async function rescanningSocketSource(
      * process; the rows this source publishes are `${pid}:${id}` (see `scripts`),
      * and the build looks the id up in exactly that table.
      */
-    generatedMissing: () =>
-      targets.flatMap((target) =>
+    generatedMissing: () => [
+      ...targets.flatMap((target) =>
         (target.source.generatedMissing?.() ?? []).map((id) => `${String(target.pid)}:${id}`),
       ),
+      // A harvested process is gone: its generated text can never be fetched, so a
+      // script of its that carries a map is exactly the case the partial marker
+      // exists for.
+      ...harvested.flatMap((harvest) =>
+        harvest.scripts
+          .filter((row) => row.sourceMapURL !== undefined && row.sourceMapURL !== '')
+          .map((row) => `${String(harvest.pid)}:${row.id}`),
+      ),
+    ],
     /** Windows swallowed above: real losses the recorder has no rejection to count. */
     lostTakes: () => lost,
     async prepare(scriptIds: readonly string[]) {

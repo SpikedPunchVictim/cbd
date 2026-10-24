@@ -265,3 +265,50 @@ test('a target that dies mid-run is counted as a lost window', async () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// A child spawned and finished inside one test can be gone before any socket connect
+// succeeds — the shape a suite that shells out to a CLI has. The socket file outlives
+// the process, and so does the exit snapshot: the accumulator no take drained, and
+// the rows no reply delivered.
+test('a process that died before its socket answered is read from its exit snapshot', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let child: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    // A long discovery interval keeps the background look from attaching the child
+    // while it is alive, so the boundary is the first thing to try its socket — and
+    // by then the process is gone and only its exit write is left.
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+
+    child = launchService({ CBD_SOCKET_DIR: dir })
+    await child.ready
+    await waitForSocket(child.socketPath)
+    child.run('store')
+    await until(child, 'stored:')
+
+    const proc = child.proc
+    const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()))
+    child.run('quit')
+    await exited
+
+    const payload = await source.take()
+    const names = executedNames(payload)
+    // The child's own script ids, in the shard's pid namespace: proof the window came
+    // from its snapshot rather than from the lane that runs the same file.
+    const fromChild = payload.some((script) =>
+      script.scriptId.startsWith(`${String(child?.proc.pid)}:`),
+    )
+    assert.ok(fromChild, 'the window must carry the dead child\'s coverage')
+    assert.ok(
+      names.has('persistKey'),
+      `the dead child's work must be recorded: ${[...names].join(', ') || '(nothing)'}`,
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    child?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

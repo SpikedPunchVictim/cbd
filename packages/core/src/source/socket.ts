@@ -84,7 +84,7 @@ import { randomUUID } from 'node:crypto'
 import { readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import net from 'node:net'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { DEFAULT_INSPECTOR_TIMEOUT_MS } from './inspector.js'
 import {
   INSTRUMENT_PROTOCOL,
@@ -147,6 +147,8 @@ export interface SocketSourceOptions {
 
 /** `pid-1234.sock`, the name the instrument module writes. */
 const SOCKET_NAME = /^pid-(\d+)\.sock$/
+/** `pid-1234.coverage.json`, what the same module leaves beside it. */
+const SNAPSHOT_NAME = /^pid-(\d+)\.coverage\.json$/
 
 // ---------------------------------------------------------------------------
 // The wire
@@ -425,6 +427,32 @@ async function recoverWindow(
 }
 
 /**
+ * The evidence a process left behind that no collector ever attached to.
+ *
+ * A child spawned and finished inside one test can be gone before the re-scan's
+ * connect succeeds: its exit write is still on disk, holding the accumulator no take
+ * ever drained and the rows no reply delivered. That is a whole lifetime, offered
+ * once, to the window that discovered the process.
+ *
+ * **Three things make it this run's evidence.** The file must have no session (a
+ * collector that said hello would have set one — and then the source held the target
+ * and its own recovery already ran). The write must be an exit write (`endedAtUs`),
+ * because only that one carries the accumulator. And the process must have been born
+ * after the recording started: a stale file from an earlier run in the same socket
+ * directory fails that test, and so does one whose pid was reused.
+ */
+export function snapshotLifetime(file: SnapshotFile, bornAfterUs: number): Recovered | null {
+  if (file.protocol !== INSTRUMENT_PROTOCOL) return null
+  if (file.session !== undefined) return null
+  if (file.endedAtUs === undefined) return null
+  if (file.startedAtUs < bornAfterUs) return null
+  const coverage = file.untaken ?? []
+  const requests = file.pendingRequests ?? []
+  if (coverage.length === 0 && requests.length === 0) return null
+  return { coverage, scripts: file.scripts, ids: [], requests, matched: false }
+}
+
+/**
  * The snapshot window for `takeId` in this run, or null when the file carries no
  * evidence for it.
  *
@@ -532,6 +560,37 @@ export async function discoverSockets(
     }
   }
   return targets
+}
+
+/** The pid a snapshot path names, or `undefined` for anything else in the directory. */
+export function pidOfSnapshotPath(path: string): number | undefined {
+  const match = SNAPSHOT_NAME.exec(basename(path))
+  return match?.[1] === undefined ? undefined : Number(match[1])
+}
+
+/**
+ * Every `pid-*.coverage.json` in `dir`.
+ *
+ * A process that exits normally unlinks its socket before it goes
+ * (`instrument.shutdown`), so the snapshot is the only thing left of it. A process
+ * that was killed outright leaves both.
+ */
+export function snapshotPaths(dir: string): string[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return []
+  }
+  return entries
+    .filter((entry) => SNAPSHOT_NAME.test(entry))
+    .map((entry) => join(dir, entry))
+}
+
+/** The pid a socket path names, or `undefined` for anything else in the directory. */
+export function pidOfSocketPath(path: string): number | undefined {
+  const match = SOCKET_NAME.exec(basename(path))
+  return match?.[1] === undefined ? undefined : Number(match[1])
 }
 
 /**

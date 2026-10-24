@@ -5,6 +5,17 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A child that dies before it is attached is read from its exit snapshot.** A test that
+  shells out to a Node CLI usually watches it exit inside the test window, and a normal exit
+  unlinks the instrument's socket — so the re-scan that finds services a suite starts could not
+  see the process at all, and its work was missing from the map (announced, after the previous
+  batch, but not recorded). `rescanningSocketSource` now harvests `pid-N.coverage.json` once per
+  process — the accumulator no take drained plus the script rows no reply delivered — and
+  delivers it to the boundary that discovered the process, as a live target's first take is.
+  Three conditions keep it this run's evidence: no collector session in the file, an exit write
+  (`endedAtUs`), and a process born after the recording started. A pid already held through its
+  socket is never harvested, so nothing is counted twice. `discoveryIntervalMs` lets a caller
+  tune the look-for-new-targets interval.
 - **Diff parsing matches real path names.** git appends a TAB to a `---`/`+++` line when the
   path contains a space, and the parser kept it: with an `include` of `src/**/*.ts` a change to
   `src/my file.ts` matched no glob and was dropped as out of scope. The `diff --git` header is

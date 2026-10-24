@@ -181,8 +181,12 @@ itself is picked up too (ADR-0007).
   unauthenticated code-execution surface, so there is no loopback rule and no collector lock file to
   keep.
 - **A process that dies still leaves evidence.** The instrument writes `pid-<pid>.coverage.json`
-  beside its socket — after each take, on an interval, and at exit. The collector recovers a
-  numbered window by take id, or the unnumbered lifetime exactly once (ADR-0007).
+  beside its socket — after each take, on an interval, and at exit. A target the source held
+  recovers a numbered window by take id, or the unnumbered lifetime exactly once (ADR-0007). A
+  process that exits before it could be attached — the ordinary shape of a test that shells out
+  to a CLI — unlinks its socket but leaves the exit write; the re-scan harvests that lifetime
+  once, for the boundary that discovered the process, when the file names no collector session
+  and the process was born during the recording.
 - **What it cannot reach.** A target whose environment cannot be set, and one that cannot resolve
   `@spikedpunch/cbd/instrument` from its own module graph. The in-process case is section 4.2.
 
