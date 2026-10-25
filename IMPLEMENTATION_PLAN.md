@@ -420,7 +420,13 @@ T_full and T_subset; collection overhead as a % of T_full; take p50/p95 on a rea
 isolate; normalize cost over ~2,000 real TS files; map bytes and parse ms;
 **all-rate with reasons**, and `mode` broken down by `always-all / load / unknown-file /
 between / stale-map`; and `verify`'s **miss count** — the one number that decides safety.
-**Status**: Blocked on B2 and B3, and it runs after both despite its number. A miss count needs a
+**Status**: First pass complete (2026-10-25, `.explore/B1-measurements.md`). `T_full` 128.29 s;
+recorded 755.65 s — **489% overhead, so B2's ~10% target is not met by a wide margin**; shard
+77.8 MB; build 17.18 s to a 192.6 MB map; parse 1.1–1.5 s; select 1.1–3.2 s; a 107-test subset
+on the same 629-file load ran in 17.72 s (**7.2×**). All-rate 20/20 subset for function-interior
+changes; a module-scope hunk selects everything because the single-process harness attributes the
+module body to every test. **The miss count is still open**: it needs a per-commit replay
+(≈13 min recording + 2 min full run per commit, ~5 h for 20). A miss count needs a
 repeatable command to produce it, and hand-calling `buildMap`/`saveMap` will not survive a
 20-commit replay. Reordering the labels would break their references in the commit history and in
 `.explore/`, so the number stays and the ordering is stated here instead.
@@ -429,8 +435,16 @@ repeatable command to produce it, and hand-calling `buildMap`/`saveMap` will not
 **Goal**: make the per-test overhead small enough for B1 to measure anything else.
 **Success criteria**: recording overhead under ~10% of `T_full`; the shard records raw
 byte ranges and no resolved paths; `buildMap` resolves each `(script, function)` once.
-**Status**: In Progress. Tracked in beads as the epic *B2 — defer coverage resolution to build
-time*. One addition to the design below, forced by writing it down: because a byte offset only
+**Status**: Complete as specified (epic *B2 — defer coverage resolution to build time* closed), but
+its ~10% overhead criterion is **not met**: B1 measured 489% recording overhead on VS Code. The
+per-test take and shard write are the cost; the deferral itself (byte ranges, one resolution per
+`(script, function)` at build) did what it promised. Follow-up filed on the overhead. Verify the
+criteria against the code before trusting the label: v2 shards carry byte ranges and script rows,
+no resolved path; the recorder's projector only converts V8 ranges (`projectorFor`, no file read
+per boundary); `buildMap` resolves each `(script, function)` once behind a shared `FileCache`, and
+refuses a shard whose script bytes changed (`StaleShardError`). The overhead percentage itself is
+B1's measurement, not a separate claim. One addition to the design, forced by writing it down:
+because a byte offset only
 means anything against the exact bytes it was taken from, the shard must carry a per-script
 content signal and `cbd build` must refuse a shard whose script has changed since the run.
 Otherwise a rebuild between the run and the build silently misattributes, in the
