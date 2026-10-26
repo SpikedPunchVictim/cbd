@@ -1,7 +1,5 @@
 /**
- * The adapter's work, with `node:test`'s hooks
-
-functions injected.
+ * The adapter's work, with `node:test`'s hooks and functions injected.
  *
  * The register entry imports the hooks from the consumer's Node and passes them
  * here; this module imports nothing from the runner, so it can be read and tested
