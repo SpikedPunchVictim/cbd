@@ -15,3 +15,4 @@ export {
 } from './adapter.js'
 
 export { cbd, type CbdOptions, type JapaPlugin, type JapaPluginApi } from './plugin.js'
+export { guardNarrowed, narrowFiles, type NarrowableConfig } from './narrow.js'

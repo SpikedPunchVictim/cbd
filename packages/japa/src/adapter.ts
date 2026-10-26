@@ -320,7 +320,8 @@ export function installJapaAdapter(
  * emitting `--tests` is not (A0 F11).
  */
 export interface JapaConfigLike {
-  filters: { tests?: string[] }
+  cwd?: string
+  filters: { tests?: string[]; files?: string[] }
 }
 
 /**

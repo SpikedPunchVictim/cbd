@@ -5,6 +5,16 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A japa subset run no longer imports the spec files it did not select.** The title filter is
+  applied after japa has imported every spec file, so a subset cost as much as the full run and the
+  time a selection saved measured as zero. When the selection names each test's file (the v2 file
+  `cbd select --emit-selection` and `cbd collect` write), the plugin now sets japa's `filters.files`
+  to those files before the planner imports anything. It narrows nothing, and loads every file as
+  before, when any selected test has no file, a file is relative or missing, the selection is the
+  older titles-only form, `only` is passed explicitly, or `--files` was already given. The replay
+  harness now writes a v2 selection so its subset command is narrowed the same way. A narrowed run
+  that ends having started no test (a selected file whose spelling matched nothing japa resolved)
+  prints the files to stderr and exits 1 rather than passing with nothing run.
 - **Function keys are numbered per build, not per process.** A key such as `<anonymous>@0` was an
   ordinal assigned inside one process, so two shards that executed different arrows of the same file
   both produced `<anonymous>@0`, and the merge unioned them into one function spanning both. A

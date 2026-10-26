@@ -76,8 +76,9 @@ Deployed copies (a lane, a container image) can be mapped back to the checkout w
 
 ## Selection
 
-`CBD_SELECTION` (a JSON file `{ "titles": string[] }`) narrows the run to those bare japa titles;
-`cbd collect` writes it before spawning the run. You can also pass titles explicitly:
+`CBD_SELECTION` (a JSON file; `cbd collect` and `cbd select --emit-selection` write it) narrows the
+run to the selected bare japa titles. A titles-only file `{ "titles": string[] }` is also accepted.
+You can also pass titles explicitly:
 
 ```js
 configure({ plugins: [cbd({ only: ['adds two numbers'] })] })
@@ -85,6 +86,20 @@ configure({ plugins: [cbd({ only: ['adds two numbers'] })] })
 
 An explicit `only` wins over the environment. Recording and selection are independent: selection can
 run without recording, and recording without selection.
+
+### Fewer files imported
+
+japa applies the title filter after it has imported every spec file, so titles alone make a subset run
+no faster to load. When the selection names each test's file (the default form `cbd` writes), the
+plugin also sets japa's `filters.files` to those files, and the others are never imported. This works
+for any form of `files` in your config, including a function.
+
+Every doubt falls back to importing everything and filtering by title: a selected test with no file,
+a relative or missing path, a titles-only selection file, an explicit `only`, or a `--files` you
+passed yourself.
+
+If a narrowed run ends having started no test, the selected files matched nothing japa resolved; the
+run prints those files to stderr and exits 1 instead of passing with nothing run.
 
 ## Options
 

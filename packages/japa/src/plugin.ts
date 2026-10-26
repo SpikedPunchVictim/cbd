@@ -71,6 +71,7 @@ import {
   parseInspectorTarget,
   readSelection,
   granularityFromEnv,
+  readSelectionTests,
   rescanningSocketSource,
   scanFromEnv,
   type OwnerIndex,
@@ -84,6 +85,7 @@ import {
   type JapaConfigLike,
   type JapaEmitter,
 } from './adapter.js'
+import { guardNarrowed, narrowFiles } from './narrow.js'
 
 export interface CbdOptions {
   /** Set `false` to make the plugin inert without removing it from the array. */
@@ -379,5 +381,14 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
     // passes `only` explicitly is not overridden.
     const only = options.only ?? readSelection(process.env)
     if (only !== undefined) applyTests(config, only)
+    // The titles filter runs after japa has imported every spec file. When the
+    // selection came from the environment it also names each test's file, so the
+    // files nothing was selected from are never imported. An explicit `only` has
+    // titles and no files, and is left to the titles alone.
+    if (options.only === undefined && only !== undefined) {
+      if (narrowFiles(config, readSelectionTests(process.env))) {
+        guardNarrowed(emitter, config.filters.files!)
+      }
+    }
   }
 }

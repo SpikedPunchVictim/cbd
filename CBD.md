@@ -546,6 +546,15 @@ plugin cannot be lost that way. `--groups` is never emitted: japa rejects every 
 Bare titles can collide across groups; a collision runs both, which over-selects. When the selection
 is `mode: "all"` the plugin prints the reason and changes nothing.
 
+**Narrowing the files japa imports.** The title filter is applied after japa has imported every
+spec file, so on its own it saves test time but not load time. When `CBD_SELECTION` is a v2 file the
+plugin also sets `config.filters.files` to the selected tests' files; the planner greps its resolved
+file list against it before importing, for a glob, a list or a function `files` alike. The rule is
+that a file leaves the run only when the selection proves it can: a selected test with no file, a
+relative or missing path, a v1 titles-only file, an explicit `only`, or a `--files` the caller
+already gave all leave every file loading and the title filter alone applies. Extra files cost
+time; a missing one is a missed test.
+
 ### 7.2 node:test (`@spikedpunch/cbd-node-test`)
 
 **Implemented.** One preload:

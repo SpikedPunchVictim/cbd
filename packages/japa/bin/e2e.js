@@ -9,6 +9,8 @@
  * Usage: node bin/e2e.js <mode>
  *   full    — no plugin            → 4 tests
  *   only    — plugin with a filter → 1 test
+ *   narrow  — plugin with no options; CBD_SELECTION (if set) decides which of two spec
+ *             files japa imports. Each file logs on import.
  *   record  — plugin with a shard  → a shard naming both files
  *   service — a suite that drives a separately started service, recorded from two
  *             processes. Needs `CBD_SOCKET_DIR` (the variable the service itself was
@@ -43,7 +45,9 @@ const mode = process.argv[2] ?? 'full'
 const cwd = fileURLToPath(new URL('..', import.meta.url))
 
 const files =
-  mode === 'service'
+  mode === 'narrow'
+    ? ['fixture/narrow-tests/*.spec.js']
+    : mode === 'service'
     ? ['fixture/service-tests/*.spec.js']
     : mode === 'straddle'
       ? ['fixture/straddle-tests/*.spec.js']
@@ -59,6 +63,9 @@ if (mode === 'early') await import('../fixture/early/helper.js')
 
 const plugins = []
 if (mode === 'only') plugins.push(cbd({ only: ['alpha-grouped'] }))
+// No options: the selection comes from CBD_SELECTION, which is the path `cbd select
+// --emit-selection` and `cbd collect` use.
+if (mode === 'narrow') plugins.push(cbd())
 // The service mode is the `record` mode plus a `CBD_SOCKET_DIR` in the environment:
 // the plugin needs no second switch to know a service is out there, because the
 // service's own start-up already had to set that variable (ADR-0005).

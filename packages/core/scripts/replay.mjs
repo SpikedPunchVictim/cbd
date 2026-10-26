@@ -80,6 +80,7 @@ import {
   sameCommit,
   select,
   testsForLine,
+  writeSelection,
 } from '../dist/src/index.js'
 import { parseShard, summarizeShard, IncompleteShardError } from '../dist/src/adapter.js'
 
@@ -603,7 +604,13 @@ for (const [index, step] of plan.entries()) {
       process.stdout.write('replay:   subset empty; nothing to run\n')
     } else {
       const selectionPath = resolve(dir, 'selection.json')
-      writeFileSync(selectionPath, JSON.stringify({ titles: selected }, null, 2))
+      // A v2 selection, so a runner that can narrow by file (the japa adapter) does:
+      // a titles-only file leaves every spec file imported and the subset as slow as
+      // the full run. Every other adapter reads the titles out of it unchanged.
+      writeSelection(
+        selectionPath,
+        selection.tests.map((testIndex) => mapForSelection.tests[testIndex]),
+      )
       const subsetShardPath = resolve(dir, 'subset.ndjson')
       subset = runTests(dir, subsetShardPath, step.commit, selectionPath)
       process.stdout.write(`replay:   subset ${subset.wall.toFixed(1)}s (exit ${subset.status})\n`)
