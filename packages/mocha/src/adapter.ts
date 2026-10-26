@@ -45,6 +45,14 @@ export interface AdapterWiring {
    * a v2 shard (ADR-0002), so the build needs the same rules.
    */
   scan?: ScanOptions
+  /**
+   * `'group'` records one window per mocha suite instead of two per test.
+   *
+   * Opt-in, because it is the adapter that knows a `suite end` is a boundary it
+   * can report. The recorder takes nothing at a test boundary in this mode; a
+   * group that never closes is flushed at `runEnd`.
+   */
+  granularity?: 'test' | 'group'
 }
 
 export interface InstalledAdapter {

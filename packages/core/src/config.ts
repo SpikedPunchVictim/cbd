@@ -13,11 +13,12 @@
  * predicate `select` takes, which is also what keeps an `exclude` from being a
  * second semantics nobody tests.
  *
- * **`granularity` is accepted but only `"test"` is supported.** It is in the design
- * document and in every example config; a v1 that rejected it would fail on a file
- * the documentation tells a reader to write. `"group"` is a real design lever, not
- * a typo, so it is refused with a message that says it is not built yet rather than
- * silently ignored.
+ * **`granularity` is a recording decision, not a selection one.** `"test"` takes a
+ * window at every test boundary; `"group"` takes one per runner group, and every
+ * test in the group carries the union. It travels to the recording process in
+ * `CBD_GRANULARITY` (`cbd collect` sets it), so an adapter that never calls
+ * `groupEnd` must not claim group support: the recorder would then flush the whole
+ * run into one window.
  */
 import { readFileSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve } from 'node:path'
@@ -55,7 +56,12 @@ export interface CbdConfigFile {
   stateDir?: string
   /** Directory holding per-commit maps; absolute paths let worktrees share one set. */
   mapsDir?: string
-  /** Only `"test"` is implemented; the key is accepted for the documented config. */
+  /**
+   * When a coverage window is taken. `"test"` (default) is per test; `"group"`
+   * takes once per runner group and every test in it shares the window. The
+   * trade is take count against selection precision, and it is the only lever on
+   * a large single-process suite's recording overhead.
+   */
   granularity?: 'test' | 'group'
 }
 
@@ -181,6 +187,7 @@ export function parseConfig(raw: unknown, root: string): CbdConfig {
     root: canonical,
     ...(file.stateDir === undefined ? {} : { stateDir: file.stateDir as string }),
     ...(file.mapsDir === undefined ? {} : { mapsDir: file.mapsDir as string }),
+    ...(file.granularity === undefined ? {} : { granularity: file.granularity as 'test' | 'group' }),
     ...(Object.keys(select).length === 0 ? {} : { select }),
   }
 }
@@ -200,10 +207,8 @@ function checkKnownKeys(file: Record<string, unknown>, path: string): void {
 }
 
 function checkScalars(file: Record<string, unknown>, path: string): void {
-  if (file.granularity !== undefined && file.granularity !== 'test') {
-    throw new Error(
-      `cbd: ${path} "granularity" is only "test" in v1; "${String(file.granularity)}" is a B2 lever and is not built yet`,
-    )
+  if (file.granularity !== undefined && file.granularity !== 'test' && file.granularity !== 'group') {
+    throw new Error(`cbd: ${path} "granularity" must be "test" or "group"`)
   }
   if (file.stateDir !== undefined && typeof file.stateDir !== 'string') {
     throw new Error(`cbd: ${path} "stateDir" must be a string`)

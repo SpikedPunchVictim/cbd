@@ -73,6 +73,8 @@ export {
 export { CBD_SELF_ROOTS, packageCodeRoots, packageRoot } from './self.js'
 
 export {
+  GRANULARITY_ENV,
+  granularityFromEnv,
   INCLUDE_SELF_ENV,
   readSelection,
   readSelectionTests,

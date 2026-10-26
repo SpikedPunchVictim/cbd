@@ -201,11 +201,12 @@ test.group('cbd.config.json', () => {
     }
   })
 
-  test('granularity: test is accepted, group is refused as not built', () => {
+  test('granularity: test and group are accepted, anything else is refused', () => {
     const { root, cleanup } = tempRoot()
     try {
-      assert.doesNotThrow(() => parseConfig({ granularity: 'test' }, root))
-      assert.throws(() => parseConfig({ granularity: 'group' }, root), /not built yet/)
+      assert.equal(parseConfig({ granularity: 'test' }, root).granularity, 'test')
+      assert.equal(parseConfig({ granularity: 'group' }, root).granularity, 'group')
+      assert.throws(() => parseConfig({ granularity: 'file' }, root), /must be "test" or "group"/)
     } finally {
       cleanup()
     }

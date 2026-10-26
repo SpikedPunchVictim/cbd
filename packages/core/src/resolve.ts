@@ -394,7 +394,12 @@ function checkReferences(
   scripts: Map<string, ShardScript>,
   functions: Map<string, Map<string, ShardFunction>>,
 ): void {
+  // A group window is shared by its tests, so the same touch map arrives once per
+  // test. Checking it once is enough: the ranges and the table are identical.
+  const seen = new Set<ShardTouch>()
   for (const window of windows) {
+    if (seen.has(window)) continue
+    seen.add(window)
     for (const [scriptId, ranges] of Object.entries(window)) {
       const byRange = functions.get(scriptId)
       if (!scripts.has(scriptId)) {
@@ -506,7 +511,12 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
   }
 
   /** One window's raw ranges in the map's coordinates, unioned per function. */
+  const resolvedWindows = new WeakMap<ShardTouch, TouchRef[]>()
   const touchesOf = (touch: ShardTouch): TouchRef[] => {
+    const cached = resolvedWindows.get(touch)
+    // A group shares one object across its tests; resolving it once is what keeps
+    // the build `O(windows)`, not `O(tests × functions)`.
+    if (cached !== undefined) return cached
     const merged = new Map<string, TouchRef>()
     for (const [scriptId, ranges] of Object.entries(touch)) {
       const byRange = identities.get(scriptId)
@@ -519,7 +529,9 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
         unionInto(merged, [[identity.file, identity.key, identity.startLine, identity.endLine]])
       }
     }
-    return [...merged.values()]
+    const refs = [...merged.values()]
+    resolvedWindows.set(touch, refs)
+    return refs
   }
 
   return {

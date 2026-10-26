@@ -34,11 +34,31 @@
  *
  *   Version 1 is refused rather than misread. Its touch tuples would be parsed as
  *   script ids and offsets and produce a confident, empty map.
+ *
+ * ## Version 3: a window can cover a group of tests
+ *
+ * Taking coverage at every test boundary costs two V8 takes per test, and a take
+ * walks every loaded function (~13 ms on a large single-process suite). Version 3
+ * adds a `group` record: one window's touches, shared by the tests that ran inside
+ * it. The touches are stored once rather than copied into each test, and
+ * `summarizeShard` expands the record back into ordinary test entries, so the map
+ * and everything that reads it are unchanged. Version 2 shards are still read.
  */
 import { appendFileSync, writeFileSync } from 'node:fs'
 import type { DriftStats } from './types.js'
 
-export const SHARD_VERSION = 2
+export const SHARD_VERSION = 3
+
+/**
+ * Versions this build reads.
+ *
+ * v2 and v3 encode a window the same way — script ids to byte ranges — so a v2
+ * shard is read as itself, not guessed at. v3 adds the `group` record; a shard
+ * whose header says 2 may not contain one, because that is not a shard a v2
+ * writer could have produced.
+ */
+const READABLE_VERSIONS = new Set([2, 3])
+
 
 /**
  * The map's tuple: `[file, key, startLine, endLine]`, in original coordinates.
@@ -221,6 +241,34 @@ export interface ShardLoadReads {
   dirReads?: string[]
 }
 
+/**
+ * Tests that share one window, when the run records at group granularity.
+ *
+ * The `touches` belong to every test in `tests`: a group window cannot say which
+ * of its tests executed a range, so each is credited with the union. That
+ * over-selects inside the group and never under-selects — the direction a
+ * coverage oracle has to fail in.
+ */
+export interface ShardGroup {
+  type: 'group'
+  /** The window's executed functions, once for the whole group. */
+  touches: ShardTouch
+  /** The tests the window covers, in start order. */
+  tests: ShardGroupTest[]
+  /**
+   * Reads a target made during this window, unioned across the group.
+   *
+   * A service's reads arrive with the window, and a group window cannot say which
+   * of its tests drove one. Every test in the group therefore carries them, which
+   * over-selects and never under-selects. Each test's own reads stay on its entry.
+   */
+  reads?: string[]
+  dirReads?: string[]
+}
+
+/** A group test's identity and evidence; its touches are the group's. */
+export type ShardGroupTest = Omit<ShardTest, 'type' | 'touches'>
+
 export interface ShardFooter {
   type: 'end'
   tests: number
@@ -269,6 +317,7 @@ export type ShardRecord =
   | ShardScript
   | ShardFunction
   | ShardTest
+  | ShardGroup
   | ShardBucket
   | ShardLoadReads
   | ShardHealth
@@ -375,13 +424,19 @@ export function parseShard(
   if (first?.type !== 'shard') {
     throw new IncompleteShardError(`${source} does not start with a shard header`)
   }
-  if (first.version !== SHARD_VERSION) {
+  if (!READABLE_VERSIONS.has(first.version as number)) {
     // Never guess at another version's meaning. A v1 touch is a resolved tuple and
     // a v2 touch is a script id, so reading one as the other yields a well-formed
     // map in which every test reaches nothing — a confident wrong answer.
     throw new ShardVersionError(
-      `${source} is a version ${String(first.version)} shard; this build reads version ${String(SHARD_VERSION)}. ` +
-        'Re-record the run (v1 shards carry resolved tuples that cannot be converted).',
+      `${source} is a version ${String(first.version)} shard; this build reads versions ` +
+        `${[...READABLE_VERSIONS].join(' and ')}. Re-record the run.`,
+    )
+  }
+  if (first.version === 2 && records.some((record) => record.type === 'group')) {
+    throw new IncompleteShardError(
+      `${source} is a version 2 shard containing a group record, which only a version 3 ` +
+        'writer produces; the shard is inconsistent and its coverage cannot be trusted',
     )
   }
   const last = records[records.length - 1]
@@ -399,6 +454,13 @@ export function parseShard(
     )
   }
   return records
+}
+
+/** Union of a test's own paths with its group's, when there is a group. */
+function unionPaths(a: string[] | undefined, b: string[] | undefined): string[] | undefined {
+  if (b === undefined || b.length === 0) return a
+  if (a === undefined || a.length === 0) return b
+  return [...new Set([...a, ...b])].sort()
 }
 
 /** Split records back into the buckets a map builder wants. */
@@ -426,7 +488,21 @@ export function summarizeShard(records: ShardRecord[]): {
   const functions: ShardFunction[] = []
   for (const record of records) {
     if (record.type === 'test') tests.push(record)
-    else if (record.type === 'load') load.push(record.touches)
+    else if (record.type === 'group') {
+      // A group's window is expanded into ordinary test entries, so the map, the
+      // selection rules and `explain` never learn that grouping happened.
+      for (const test of record.tests) {
+        const reads = unionPaths(test.reads, record.reads)
+        const dirReads = unionPaths(test.dirReads, record.dirReads)
+        tests.push({
+          type: 'test',
+          ...test,
+          touches: record.touches,
+          ...(reads === undefined ? {} : { reads }),
+          ...(dirReads === undefined ? {} : { dirReads }),
+        })
+      }
+    } else if (record.type === 'load') load.push(record.touches)
     else if (record.type === 'between') between.push(record.touches)
     else if (record.type === 'teardown') teardown.push(record.touches)
     else if (record.type === 'loadReads') loadReads.push(record)

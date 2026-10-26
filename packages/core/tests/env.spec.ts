@@ -14,6 +14,8 @@ import {
   readSelection,
   readSelectionTests,
   scanFromEnv,
+  granularityFromEnv,
+  GRANULARITY_ENV,
   INCLUDE_SELF_ENV,
   SELECTION_ENV,
 } from '../src/env.js'
@@ -175,4 +177,11 @@ test('empty projection and relocation values are unset', () => {
     scanFromEnv({ CBD_RELOCATE_FROM: '', CBD_RELOCATE_TO: '/repo' }),
     undefined,
   )
+})
+
+test('granularity is opt-in: only "group" leaves the default behind', () => {
+  assert.equal(granularityFromEnv({}), undefined)
+  assert.equal(granularityFromEnv({ [GRANULARITY_ENV]: 'test' }), undefined)
+  assert.equal(granularityFromEnv({ [GRANULARITY_ENV]: 'group' }), 'group')
+  assert.equal(granularityFromEnv({ [GRANULARITY_ENV]: 'anything' }), undefined)
 })

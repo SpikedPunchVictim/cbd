@@ -59,6 +59,22 @@ test('a shard missing its header is refused', () => {
   assert.throws(() => parseShard([TEST_A, FOOTER].join('\n')), IncompleteShardError)
 })
 
+// v3 adds the group record; a v2 header cannot have produced one, so a shard
+// claiming both is inconsistent. Reading it would silently drop those tests.
+test('a version 2 shard carrying a group record is refused', () => {
+  const group = '{"type":"group","touches":{},"tests":[]}'
+  assert.throws(
+    () => parseShard([HEADER, group, FOOTER].join('\n')),
+    (error: unknown) =>
+      error instanceof IncompleteShardError && /group record/.test(error.message),
+  )
+})
+
+test('a version 2 shard without group records is still read', () => {
+  const records = parseShard([HEADER, TEST_A, FOOTER].join('\n'))
+  assert.equal(records.length, 3)
+})
+
 test('an empty shard is refused rather than treated as no tests', () => {
   assert.throws(() => parseShard(''), IncompleteShardError)
 })

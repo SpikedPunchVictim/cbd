@@ -77,6 +77,7 @@ function stubRecorder(drained?: () => Promise<void>): { recorder: Recorder; call
     testEnd: (title: string, status: TestStatus, durationMs?: number) =>
       calls.push(['testEnd', title, status, durationMs]),
     runEnd: () => calls.push(['runEnd']),
+    groupEnd: () => calls.push(['groupEnd']),
     close: () => calls.push(['close']),
     drained:
       drained ??
@@ -193,6 +194,18 @@ test.group('installJapaAdapter', () => {
       ['testStart', 'one', '/a.js'],
       ['testEnd', 'one', 'passed', 3],
     ])
+  })
+
+  test('a group boundary closes the window on every recorder', () => {
+    const first = stubRecorder()
+    const second = stubRecorder()
+    const { emitter, emit } = fakeEmitter()
+    installJapaAdapter(emitter, [first.recorder, second.recorder])
+
+    emit('group:end', { title: 'a group' })
+
+    assert.deepEqual(first.calls, [['groupEnd']])
+    assert.deepEqual(second.calls, [['groupEnd']])
   })
 
   test('runner:end writes the footer, drains and closes, without an explicit finish call', async () => {

@@ -63,6 +63,7 @@ import {
   SHARD_VERSION,
   type RawRange,
   type ShardFunction,
+  type ShardGroupTest,
   type ShardHealth,
   type ShardRecord,
   type ShardScript,
@@ -124,6 +125,22 @@ export interface RecorderOptions {
    * share one registry, so the service can name a test it never ran.
    */
   owners?: OwnerIndex
+  /**
+   * When a window is taken.
+   *
+   * `'test'` (the default) takes at every test boundary, twice per test: the gap
+   * before the test as `@between`, then the test itself. `'group'` takes once at
+   * `groupEnd()`, and every test that finished inside the group shares that one
+   * window. A take walks the isolate's loaded functions, so its cost is per call
+   * and not per payload; grouping is the only lever on the overhead a large
+   * single-process suite pays (measured at 13 ms a take on VS Code).
+   *
+   * The trade is over-selection inside a group and never under-selection. The gap
+   * between tests is not a bucket in this mode: it belongs to the window of the
+   * group that follows. An adapter that never calls `groupEnd` records per test,
+   * which is why the mode is opted into by the adapter rather than guessed here.
+   */
+  granularity?: 'test' | 'group'
 }
 
 /**
@@ -648,6 +665,16 @@ export class Recorder {
   /** Detaches the record API from this recorder when the window closes. */
   #releaseSink: (() => void) | null = null
   #owners: OwnerIndex | undefined
+  #granularity: 'test' | 'group'
+  /**
+   * Tests that finished since the last take, in group mode.
+   *
+   * Their identity and evidence are taken at `testEnd`, synchronously, exactly as
+   * the per-test record's fields are; only the window is deferred. `groupEnd`
+   * hands the whole list to one take, so a queued source builds the record from
+   * what was captured at the boundary rather than from the recorder's state later.
+   */
+  #pending: ShardGroupTest[] = []
 
   constructor(options: RecorderOptions) {
     this.#commit = options.commit
@@ -656,6 +683,7 @@ export class Recorder {
     this.#role = options.role
     this.#now = options.now ?? Date.now
     this.#owners = options.owners
+    this.#granularity = options.granularity ?? 'test'
 
     const scan = options.scan ?? {}
     const source = options.source
@@ -764,6 +792,7 @@ export class Recorder {
     this.#testCount = 0
     this.#loadCaptured = false
     this.#ordinals.clear()
+    this.#pending = []
     this.#open = null
     this.#spec = null
     this.#reads.clear()
@@ -817,7 +846,9 @@ export class Recorder {
     if (!this.#loadCaptured) {
       this.#loadCaptured = true
       this.#bucket('load')
-    } else {
+    } else if (this.#granularity === 'test') {
+      // In group mode the gap belongs to the window of the group that follows:
+      // the next take covers it (a group window cannot split its own interval).
       this.#bucket('between')
     }
     const key = `${file ?? ''}\u0000${title}`
@@ -889,6 +920,29 @@ export class Recorder {
     // source the window touched.
     this.#open = null
 
+    const test: ShardGroupTest = {
+      title,
+      file,
+      ...(ordinal === undefined ? {} : { ordinal }),
+      ...(titlePath === undefined ? {} : { titlePath }),
+      ...(line === undefined ? {} : { line }),
+      ...(column === undefined ? {} : { column }),
+      status,
+      durationMs: elapsed,
+      ...(reads.length === 0 ? {} : { reads }),
+      ...(dirReads.length === 0 ? {} : { dirReads }),
+      ...(opaque.length === 0 ? {} : { opaque }),
+      ...(Object.keys(env).length === 0 ? {} : { env }),
+    }
+
+    if (this.#granularity === 'group') {
+      // The window is not taken here; `groupEnd` takes it once for every test
+      // that finished inside the group.
+      this.#pending.push(test)
+      this.#testCount += 1
+      return
+    }
+
     this.#emit((capture) => {
       // Reads a target made reach the recorder with the window they belong to, after
       // the boundary; the synchronous sets above hold this process's. One test record
@@ -897,20 +951,11 @@ export class Recorder {
       const allReads = unionSorted(reads, capture.reads)
       const allDirReads = unionSorted(dirReads, capture.dirReads)
       return {
+        ...test,
         type: 'test',
-        title,
-        file,
-        ...(ordinal === undefined ? {} : { ordinal }),
-        ...(titlePath === undefined ? {} : { titlePath }),
-        ...(line === undefined ? {} : { line }),
-        ...(column === undefined ? {} : { column }),
-        status,
-        durationMs: elapsed,
         touches: capture.window.touches,
         ...(allReads.length === 0 ? {} : { reads: allReads }),
         ...(allDirReads.length === 0 ? {} : { dirReads: allDirReads }),
-        ...(opaque.length === 0 ? {} : { opaque }),
-        ...(Object.keys(env).length === 0 ? {} : { env }),
       }
     })
     this.#testCount += 1
@@ -934,6 +979,38 @@ export class Recorder {
     this.#releaseSink?.()
     this.#releaseSink = null
     this.#open = null
+  }
+
+  /**
+   * Close a group, taking the one window its tests share.
+   *
+   * Called by an adapter at its runner's group boundary (mocha's `suite end`,
+   * japa's `group:end`). In group mode this is the only thing that takes coverage
+   * during the run — `testEnd` accumulates instead — so the number of takes is the
+   * number of groups, not twice the number of tests.
+   *
+   * An empty group takes nothing: a suite that ran no test has no window to
+   * attribute, and its coverage belongs to whatever runs next (or to `@teardown`).
+   * The tests are handed over by value before the take, because a queued source
+   * builds the record when the reply lands.
+   */
+  groupEnd(): void {
+    if (this.#granularity !== 'group') return
+    if (this.#pending.length === 0) return
+    const tests = this.#pending.splice(0)
+    this.#emit((capture) => {
+      // A target's reads arrive with this window, and a group window cannot say
+      // which of its tests drove one; every test in the group carries them.
+      const reads = unionSorted([], capture.reads)
+      const dirReads = unionSorted([], capture.dirReads)
+      return {
+        type: 'group',
+        tests,
+        touches: capture.window.touches,
+        ...(reads.length === 0 ? {} : { reads }),
+        ...(dirReads.length === 0 ? {} : { dirReads }),
+      }
+    })
   }
 
   /**
@@ -986,6 +1063,11 @@ export class Recorder {
       this.#loadCaptured = true
       this.#bucket('load')
     }
+    // A group the runner never closed — root-level tests, or an adapter whose last
+    // boundary came before its last test — is flushed here. Its window covers
+    // everything since the previous take, so it over-attributes rather than
+    // dropping tests that ran.
+    this.groupEnd()
     // Post-run activity — global teardown hooks, a timer from the last test that
     // fired late. Filed separately from @between because §8.3 treats a file
     // reached only by teardown as startup code, like @load.

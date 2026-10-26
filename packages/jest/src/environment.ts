@@ -51,7 +51,10 @@ interface CoreAdapter {
   installProcessTracking(sink: { noteOpaque(reason: string): void }): () => void
   packageCodeRoots(moduleUrl: string, packageName: string): string[]
   scanFromEnv(): Record<string, unknown> | undefined
+  granularityFromEnv(): 'group' | undefined
 }
+
+let warnedGranularity = false
 
 class CbdEnvironment extends TestEnvironment {
   #file: string | null
@@ -74,6 +77,14 @@ class CbdEnvironment extends TestEnvironment {
     if (base === undefined || base === '') return
 
     const core = (await importModule('@spikedpunch/cbd/adapter')) as CoreAdapter
+    // Jest reports no suite boundary to this adapter, so a group request would
+    // collapse the whole file into one window. Warn and record per test.
+    if (core.granularityFromEnv() === 'group' && !warnedGranularity) {
+      warnedGranularity = true
+      process.stderr.write(
+        'cbd: the Jest adapter has no group boundary, so granularity "group" records per test.\n',
+      )
+    }
     this.#source = (await core.inProcessSource()) as { close?: () => void }
     const scan = core.scanFromEnv() ?? {}
     const roots = core.packageCodeRoots(pathToFileURL(__filename).href, '@spikedpunch/cbd-jest')

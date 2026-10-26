@@ -65,6 +65,7 @@ import {
   installReadTracking,
   parseInspectorTarget,
   readSelection,
+  granularityFromEnv,
   rescanningSocketSource,
   scanFromEnv,
   type OwnerIndex,
@@ -286,6 +287,7 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
       const recorders = await recordersFor(process.env, shard, {
         commit,
         ...(scan === undefined ? {} : { scan }),
+        ...(granularityFromEnv() === undefined ? {} : { granularity: 'group' }),
         ...(correlator === undefined ? {} : { owners: correlator }),
       })
       // Installed after the sources are open, so a service that cannot be reached

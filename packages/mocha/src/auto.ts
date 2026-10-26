@@ -23,20 +23,20 @@
  * run can be narrowed without being recorded (`CBD_SELECTION` alone) or recorded
  * without being narrowed (`CBD_SHARD` alone). `cbd collect` sets both; a consumer
  * that never runs it sets neither, and the module is inert.
+ *
+ * **An inert process must not load the core.** Every child a test spawns inherits
+ * `NODE_OPTIONS`, so this module runs in each of them; without a shard or a
+ * selection there is nothing to do. Importing the core graph statically to
+ * discover that cost 60 ms per child against 6 ms for a bare node, and a large
+ * suite spawns hundreds (measured: 140 on VS Code's `vs/platform` scope, ~8 s of
+ * the run's overhead). The core and the adapter are therefore dynamic imports
+ * behind the branch that needs them, and only their types are static.
  */
 import { createRequire } from 'node:module'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import {
-  FileSink,
-  inProcessSource,
-  installProcessTracking,
-  installReadTracking,
-  readSelection,
-  scanFromEnv,
-  type Recorder,
-} from '@spikedpunch/cbd/adapter'
-import { beginShard, installMochaAdapter, type InstalledAdapter } from './adapter.js'
+import type { Recorder } from '@spikedpunch/cbd/adapter'
+import type { InstalledAdapter } from './adapter.js'
 import { selectionPattern } from './selection.js'
 import type Mocha from 'mocha'
 
@@ -79,28 +79,36 @@ const shardPath = process.env.CBD_SHARD || undefined
 // a complete parent shard with its own header line. The value has been read, so
 // removing it makes every descendant inert, exactly as the japa entry point does.
 if (shardPath !== undefined) delete process.env.CBD_SHARD
-// Read before the suite is imported: a malformed or empty selection must fail
-// here, while the message can still say which file is wrong, rather than after
-// mocha has already loaded every test file.
-const only = readSelection(process.env)
+/** Whether this process has anything to do at all; an empty selection is nothing. */
+const selecting = (process.env.CBD_SELECTION ?? '') !== ''
 
-let recorder: Recorder | null = null
-let stopReads: (() => void) | null = null
-let stopProcesses: (() => void) | null = null
-if (shardPath !== undefined) {
-  const source = await inProcessSource()
-  const scan = scanFromEnv()
-  recorder = beginShard({
-    source,
-    sink: new FileSink(shardPath),
-    commit: process.env.CBD_COMMIT || 'unknown',
-    ...(scan === undefined ? {} : { scan }),
-  })
-  stopReads = installReadTracking(recorder)
-  stopProcesses = installProcessTracking(recorder)
-}
+if (shardPath !== undefined || selecting) {
+  // Loaded here rather than at the top of the module: an inert process (a child a
+  // test spawned) must not pay for the core graph. See the docblock.
+  const core = await import('@spikedpunch/cbd/adapter')
+  const { beginShard, installMochaAdapter } = await import('./adapter.js')
+  // Read before the suite is imported: a malformed or empty selection must fail
+  // here, while the message can still say which file is wrong, rather than after
+  // mocha has already loaded every test file.
+  const only = core.readSelection(process.env)
 
-if (recorder !== null || only !== undefined) {
+  let recorder: Recorder | null = null
+  let stopReads: (() => void) | null = null
+  let stopProcesses: (() => void) | null = null
+  if (shardPath !== undefined) {
+    const source = await core.inProcessSource()
+    const scan = core.scanFromEnv()
+    recorder = beginShard({
+      source,
+      sink: new core.FileSink(shardPath),
+      commit: process.env.CBD_COMMIT || 'unknown',
+      ...(scan === undefined ? {} : { scan }),
+      ...(core.granularityFromEnv() === undefined ? {} : { granularity: 'group' }),
+    })
+    stopReads = core.installReadTracking(recorder)
+    stopProcesses = core.installProcessTracking(recorder)
+  }
+
   const MochaClass = resolveMocha()
   const originalRun = MochaClass.prototype.run
   const pattern = only === undefined ? undefined : selectionPattern(only)
@@ -140,7 +148,7 @@ if (recorder !== null || only !== undefined) {
     const first = installMochaAdapter(this, recorder)
     adapter = first
 
-    return originalRun.call(this, async (failures: number) => {
+    const runner = originalRun.call(this, async (failures: number) => {
       // Mocha's CLI exits from this callback, so the footer and the generated
       // coordinates must be written before it is called.
       await first.finish()
@@ -149,5 +157,11 @@ if (recorder !== null || only !== undefined) {
       stopProcesses = null
       return callback?.(failures)
     })
+    // One window per suite, when the recording asked for group granularity. The
+    // listener is inert in per-test mode (`groupEnd` is a no-op). A suite end is
+    // asynchronous, so attaching after `run` returns still sees every one; a
+    // root-level test with no suite boundary of its own is flushed at `runEnd`.
+    runner.on('suite end', () => recorder.groupEnd())
+    return runner
   }
 }

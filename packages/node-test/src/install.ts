@@ -1,5 +1,7 @@
 /**
- * The adapter's work, with `node:test`'s hook functions injected.
+ * The adapter's work, with `node:test`'s hooks
+
+functions injected.
  *
  * The register entry imports the hooks from the consumer's Node and passes them
  * here; this module imports nothing from the runner, so it can be read and tested
@@ -32,6 +34,7 @@ import {
   inProcessSource,
   installProcessTracking,
   installReadTracking,
+  granularityFromEnv,
   scanFromEnv,
 } from '@spikedpunch/cbd/adapter'
 import {
@@ -42,6 +45,9 @@ import {
   type NodeTestContextLike,
 } from './identity.js'
 import { withSelfRoot } from './self.js'
+
+/** Warn once per process, not once per test file. */
+let warnedGranularity = false
 
 /** The runner's registration functions, as the consumer's Node provides them. */
 export interface NodeTestHooks {
@@ -64,6 +70,15 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
   }
 
   const file = absolute(process.argv[1] ?? `${String(process.pid)}-${String(process.ppid)}`)
+
+  // No suite boundary is reported here, so a group request would collapse the
+  // file's tests into one window. Warn and record per test.
+  if (granularityFromEnv() === 'group' && !warnedGranularity) {
+    warnedGranularity = true
+    process.stderr.write(
+      'cbd: the node:test adapter has no group boundary, so granularity "group" records per test.\n',
+    )
+  }
 
   const source = await inProcessSource()
   const recorder = new Recorder({

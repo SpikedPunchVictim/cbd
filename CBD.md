@@ -312,7 +312,7 @@ export interface RecorderOptions {
   sources: CoverageSource[]
   shardDir?: string                         // default <root>/.cbd/shards
   include?: string[]; exclude?: string[]
-  granularity?: 'test' | 'group' | 'file'   // default 'test'
+  granularity?: 'test' | 'group'             // default 'test'; group takes one window per runner group
   settleMs?: number                         // wait before testEnd's take, for trailing async work; default 0
   takeAtStart?: boolean                     // default true: a take at testStart moves leftovers to @between
 }
@@ -322,6 +322,7 @@ export class Recorder {
   runStart(meta: RunMeta): Promise<void>        // starts sources; next take goes to @load
   testStart(id: TestId): Promise<void>
   testEnd(id: TestId, outcome: Outcome): Promise<void>
+  groupEnd(): void                              // group granularity: one take for the tests since the last boundary
   runEnd(): Promise<RunSummary>                 // final take → @teardown; writes the shard trailer
 }
 
@@ -365,9 +366,11 @@ export function testKey(id: TestId): string   // "japa:key-server:tests/x.spec.t
 
 ### 6.3 Shard format
 
-`.cbd/shards/<UTC timestamp>-<random>.jsonl`, one JSON object per line. **Version 2**
+`.cbd/shards/<UTC timestamp>-<random>.jsonl`, one JSON object per line. **Version 3**
 (ADR-0002): a window records the executed functions' byte ranges, and the paths, lines
-and ordinals are resolved once, by `cbd build`.
+and ordinals are resolved once, by `cbd build`. Version 3 adds the `group` record, so one
+window's touches can be shared by every test in a runner group; version 2 shards are still
+read, and a version 2 header carrying a group record is refused.
 
 ```jsonc
 {"type":"shard","version":2,"commit":"3c5a43e6…","pid":8123,"startedAt":"2026-10-15T20:41:02Z"}
@@ -375,11 +378,17 @@ and ordinals are resolved once, by `cbd build`.
 {"type":"function","scriptId":"42","start":1200,"end":1688,"name":"encrypt"}
 {"type":"function","scriptId":"42","start":0,"end":2100,"name":""}
 {"type":"test","title":"rotation > rotates on 64GB","file":"tests/key-store.spec.ts","status":"passed","durationMs":412,"touches":{"42":[[1200,1688],[0,2100]]}}
+{"type":"group","tests":[{"title":"rotation > rotates on 64GB","file":"tests/key-store.spec.ts","status":"passed","durationMs":412}],"touches":{"42":[[1200,1688],[0,2100]]}}
 {"type":"load","touches":{"42":[[0,2100]]}}
 {"type":"between","touches":{"42":[[3300,3412]]}}
 {"type":"end","tests":214,"finishedAt":"2026-10-15T20:43:33Z"}
 ```
 
+- A **group** record is written when the run records at `granularity: "group"`: one `touches`
+  shared by every test in the record, expanded back into ordinary per-test windows by the build.
+  The union is what the group executed, so each test is credited with all of it — over-selection
+  inside the group and never under-selection. A group window also takes the gap between its
+  tests, which is why no `between` record appears in this mode.
 - A **script** row is written once per script, with the file's `size` and `mtimeMs` at
   recording time. The URL is the *relocated* one when a relocation rule applies, so a
   deployed lane's shard names bytes the checkout still has.
@@ -1006,8 +1015,10 @@ autocomplete comes from the schema shipped with the package:
 ```
 
 Every key is optional and absent keys take the safe default. An unknown key, or a value the
-selector does not implement, is an error rather than a silent fallback; `granularity` accepts only
-`"test"` in v1.
+selector does not implement, is an error rather than a silent fallback. `granularity` is `"test"`
+(one window per test) or `"group"` (one window per runner group, every test in it sharing the
+union); an adapter with no group boundary warns and records per test rather than collapsing the
+run into one window.
 
 ### 9.4 Library use
 
@@ -1048,7 +1059,7 @@ already has a map and a diff. The adapter seam (`Recorder`, the sources, `parseS
 | **Background work bleeds across tests** (an outbox poller, a timer, a request still in flight) | code credited to the wrong test, or to none | request-id correlation (ADR-0008) credits a request to the test that sent it, even when it finishes later; `takeAtStart` moves leftovers to `@between`; `settleMs`; `betweenPolicy: all`; `stats` reports the bucket's size so you know how big the problem is |
 | **Tests that depend on order** | a test touches code only because an earlier test left state behind | coverage still records what really ran in that order; a reordered run can differ, so `verify` should run in the CI order |
 | **Under-selection** (a real failure skipped) | the expensive failure | safe defaults (unknown → all, `@load` → all), `alwaysAll`, maps checked for age, `cbd verify` measures misses, and full runs still gate merges |
-| **Overhead of precise coverage and the inspector** | slower collection runs | collection is occasional; measure in the spike; `granularity: 'group'` halves the takes |
+| **Overhead of precise coverage and the inspector** | slower collection runs | collection is occasional; the take cost is V8 walking every loaded function (~13 ms at VS Code's size), so only fewer takes help; `granularity: 'group'` takes once per runner group instead of twice per test — 32,039 takes became ~1,349 on the `vs/platform` scope |
 | **`take()` cost grows with loaded functions** | slow per-test snapshots in a large server | `detailed: false`; filter early by URL; cache by script hash; measure per take in the spike |
 | **Two coverage tools on one isolate** | wrong or empty counts | adapters refuse to start when the framework's own V8 coverage is on |
 | **Source maps missing or wrong** | touches attributed to `dist/` files, or the wrong lines | fall back to the generated file and report it in `stats`; never guess |

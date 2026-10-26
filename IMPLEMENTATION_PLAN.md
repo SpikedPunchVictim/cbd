@@ -425,10 +425,19 @@ recorded 755.65 s — **489% overhead, so B2's ~10% target is not met by a wide 
 77.8 MB; build 17.18 s to a 192.6 MB map; parse 1.1–1.5 s; select 1.1–3.2 s; a 107-test subset
 on the same 629-file load ran in 17.72 s (**7.2×**). All-rate 20/20 subset for function-interior
 changes; a module-scope hunk selects everything because the single-process harness attributes the
-module body to every test. **The miss count is still open**: it needs a per-commit replay
-(≈13 min recording + 2 min full run per commit, ~5 h for 20). A miss count needs a
-repeatable command to produce it, and hand-calling `buildMap`/`saveMap` will not survive a
-20-commit replay. Reordering the labels would break their references in the commit history and in
+module body to every test. **Miss count, measured on the target suite**: `packages/core/scripts/replay.mjs` (coverage and
+outcome oracles) over five per-commit windows on grizzly `sdk-unit` — the ten first-parent commits
+touching `sdk/src` less the five that predate the suite's runner — gives **0 misses, 0 missed
+failures, 0 subset-only failures over 104 required tests**. Two earlier samples were vacuous for
+opposite reasons and are recorded in `.explore/B1-measurements.md` (VS Code: unknown test
+infrastructure escalated every step; a 20-commit grizzly window near HEAD: no in-scope code
+changed, so the correct answer was "run nothing").
+
+The same replay shows the payoff is not there yet: `r(count)` 92.7-95.7%, `S(count)` 4-7%,
+`S(time)` ~0. TypeScript commits are mostly imports and type-level edits at module scope, and one
+process runs the whole suite, so every test shares the module instance and a module-scope hunk
+selects all of them — correctly. The subset run also loads every spec file, so the time does not
+move. Both are properties of the suite's shape, not of the selector; see the two follow-up issues. Reordering the labels would break their references in the commit history and in
 `.explore/`, so the number stays and the ordering is stated here instead.
 
 ### Stage B2: stop normalizing in the hot loop
@@ -520,6 +529,56 @@ because running the tests is process orchestration and core stays free of `child
 The post-run build runs **in-process**, printing one line, rather than detached. A detached build
 can be raced by the next run reading a half-written map, and that is a silent-wrong-answer bug —
 the class this project keeps having to pay for.
+
+---
+
+### Stage B4: group windows
+
+**Goal**: bring recording overhead inside the ~10% B2 criterion by taking coverage once per
+runner group instead of twice per test.
+**Success criteria**: `granularity: "group"` in `cbd.config.json` (and `CBD_GRANULARITY` in the
+adapter contract) records one window per group; every test in the group carries the group's
+touches; the shard stores the touches once; `cbd build`/`select`/`explain` are unchanged
+downstream. Per-test remains the default; an adapter with no group wiring warns and keeps recording
+per test rather than collapsing the run into one window.
+**Tests**: scripted source — one take per `groupEnd`, tests sharing touches, no `@between` takes,
+a run with no group boundary flushing into one window, v2 shard refused; real mocha and japa runs;
+config and `cbd collect` env plumbing.
+**Status**: Complete (2026-10-25). Stages 1-3: recorder and shard v3; config,
+`CBD_GRANULARITY` and `collect`; mocha and japa group boundaries, with vitest, jest and node:test
+warning and staying per-test. Stage 4, the measurement on the same 629-file VS Code scope:
+**recorded 154/155 s against a 105 s median `T_full` — ~47% overhead, down from 489%**. Takes fell
+from 32,039 to 1,226 and their total from 415.5 s to 18.8 s; the shard from 81.4 MB to 17.4 MB;
+the map build from 17.2 s/192.6 MB to 5.8 s/71.1 MB. Selection for a function-interior change is
+95 tests, against 107 at test granularity. **The ~10% criterion is not met.** What remains is
+~19 s of takes (the floor at group granularity), ~4 s of recorder JS, and ~8 s of inert child
+preloads — 140 children inherit `NODE_OPTIONS` and load the full core graph to do nothing (since
+fixed: the mocha preload imports the core dynamically, so an inert child costs a bare node,
+~6 s off this run). The rest is the take floor, and going below it needs file granularity at the
+cost of coarser selection. First pass's attribution: 32,039 takes cost 415.5 s of 597.1 s (69.6%);
+`project` 9.9 s, table 11.3 s, `JSON.stringify` 0.2 s, `appendFileSync` 23.5 s. Even at zero take
+cost the run is 181.6 s against 128.3 s, so buffered shard writes are a follow-up, not this stage.
+
+**Why group and not a faster take.** The take cost tracks V8 walking the isolate's loaded
+functions (~200k here, 13.0 ms a take). No argument reduces it; the spike's curve already assumed
+`detailed: false`. The only lever is fewer calls. Halving them by dropping the `@between` take
+still leaves 208 s — 162% of `T_full`. VS Code's scope has 1,349 `suite()` calls, so grouping
+costs ~18 s of take, and the precision lost is over-selection inside a group (median one suite per
+file, ~12 tests per group), which is the safe direction.
+
+Two semantic consequences, both deliberate:
+
+- The gap between tests is not a bucket in group mode. It folds into the window of the group that
+  follows, which over-attributes rather than under-attributes. `@load` stays exact and
+  `@teardown` stays the tail.
+- A test whose group never closes (root-level tests, an adapter that emits no boundary) is flushed
+  at `runEnd` into that one window. Safe, and the reason the adapter opts in rather than the
+  recorder guessing.
+
+**Shard v3.** A group record carries one `touches` and the tests that share it. Storing the union
+per test would keep ~16k copies of a group's ranges; v3 stores it once and `summarizeShard`
+expands. Older versions are refused rather than read: a v2 reader that ignored a group record
+would produce a complete, well-formed map in which those tests reach nothing.
 
 ---
 

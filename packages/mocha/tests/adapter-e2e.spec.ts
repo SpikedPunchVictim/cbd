@@ -201,6 +201,44 @@ test('a plain mocha run, with only --import added, yields per-test windows', () 
   }
 })
 
+test('CBD_GRANULARITY=group records one window for the suite', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-grouped-'))
+  try {
+    const shardPath = join(dir, 'shard.jsonl')
+    runMocha(project.root, shardPath, { CBD_GRANULARITY: 'group' })
+
+    const records = parseShard(readFileSync(shardPath, 'utf8'), shardPath)
+    // `describe('calc')` is the one group; the root suite's end finds nothing
+    // pending. No test boundary took a window, which is the saving.
+    assert.equal(records.filter((record) => record.type === 'group').length, 1)
+    assert.equal(records.filter((record) => record.type === 'test').length, 0)
+
+    const summary = summarizeShard(records)
+    assert.deepEqual(
+      summary.tests.map((entry) => entry.title).sort(),
+      ['calc adds two numbers', 'calc is skipped', 'calc subtracts two numbers'],
+    )
+    // Every test in the group carries the same window — the union of what the
+    // group executed, which is over-selection and never under-selection.
+    const touches = summary.tests.map((entry) => entry.touches)
+    for (const window of touches) assert.equal(window, touches[0])
+
+    const scan: ScanOptions = {
+      projection: [{ from: join(project.root, 'out'), to: project.root }],
+      include: (file) => file.startsWith(join(project.root, 'src')),
+    }
+    const resolved = resolveShard({ name: 'shard.jsonl', records }, { scan })
+    const calc = join(project.root, 'src/calc.ts')
+    const keys = resolved.tests[0]?.touches.filter((ref) => ref[0] === calc).map((ref) => ref[1])
+    assert.deepEqual(keys, ['add@0', 'sub@0'])
+    assert.equal(summary.between.length, 0, 'the gap between tests is not a bucket in group mode')
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('CBD_SELECTION narrows a recording run to exactly the selected titles', () => {
   const project = makeProject()
   const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-selected-'))

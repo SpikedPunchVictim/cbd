@@ -62,6 +62,14 @@ export interface AdapterWiring {
    */
   scan?: ScanOptions
   /**
+   * `'group'` records one window per japa group instead of two per test.
+   *
+   * Opt-in: the plugin knows `group:end` is a boundary it can report. The recorder
+   * takes nothing at a test boundary in this mode, and a group that never closes
+   * is flushed at `runEnd`.
+   */
+  granularity?: 'test' | 'group'
+  /**
    * Whose coverage this is. Defaults to this process, which is right for an
    * in-process source and wrong for one reading a service — the service's
    * execution belongs in a shard naming the service.
@@ -287,8 +295,13 @@ export function installJapaAdapter(
     return finished
   }
 
+  const onGroupEnd = (): void => {
+    for (const recorder of recorders) recorder.groupEnd()
+  }
+
   emitter.on('test:start', onTestStart as JapaListener)
   emitter.on('test:end', onTestEnd as JapaListener)
+  emitter.on('group:end', onGroupEnd as JapaListener)
   emitter.on('runner:end', finish as JapaListener)
 
   return { recorders, finish }

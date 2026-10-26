@@ -30,6 +30,7 @@ interface Logged {
   selectionContent: string | null
   inspect: string | null
   allowRemote: string | null
+  granularity: string | null
 }
 
 function logOf(path: string): Logged {
@@ -81,6 +82,34 @@ test.group('cbd collect', () => {
       )
     } finally {
       cleanup()
+    }
+  })
+
+  test('the config granularity reaches the test process, and only "group" is set', () => {
+    const plain = prepared()
+    try {
+      invoke(plain.root, 'collect', '--', process.execPath, plain.runner, join(plain.root, 'log.ndjson'), plain.a, plain.spec)
+      assert.equal(logOf(join(plain.root, 'log.ndjson')).granularity, null)
+    } finally {
+      plain.cleanup()
+    }
+
+    const grouped = prepared({ config: { granularity: 'group' } })
+    try {
+      const result = invoke(
+        grouped.root,
+        'collect',
+        '--',
+        process.execPath,
+        grouped.runner,
+        join(grouped.root, 'log.ndjson'),
+        grouped.a,
+        grouped.spec,
+      )
+      assert.equal(result.code, EXIT.ok)
+      assert.equal(logOf(join(grouped.root, 'log.ndjson')).granularity, 'group')
+    } finally {
+      grouped.cleanup()
     }
   })
 

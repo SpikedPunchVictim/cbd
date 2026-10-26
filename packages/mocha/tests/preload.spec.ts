@@ -59,3 +59,46 @@ test('a child process spawned by the runner does not touch the shard', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+/**
+ * A preload that refuses the core module graph.
+ *
+ * Registered ahead of the adapter in `NODE_OPTIONS`, so a static import of the
+ * core anywhere in `auto.ts` fails the process. That is the invariant: an inert
+ * child (no shard, no selection) must cost a bare node, not the whole adapter.
+ */
+const GUARD = `import { registerHooks } from 'node:module'
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === '@spikedpunch/cbd/adapter') {
+      throw new Error('the inert preload loaded the core')
+    }
+    return nextResolve(specifier, context)
+  },
+})
+`
+
+test('an inert process loads neither the core nor the mocha adapter', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-inert-'))
+  const guard = join(dir, 'guard.mjs')
+  writeFileSync(guard, GUARD)
+  const env: NodeJS.ProcessEnv = { ...process.env }
+  delete env.CBD_SHARD
+  delete env.CBD_SELECTION
+  env.NODE_OPTIONS = `--import ${guard} --import ${AUTO}`
+  try {
+    const inert = spawnSync(process.execPath, ['-e', '0'], { env, encoding: 'utf8' })
+    assert.equal(inert.status, 0, inert.stderr)
+
+    // The control proves the guard works: the same preload in a recorded process
+    // does reach the core, so a silent guard could not pass this pair.
+    const recorded = spawnSync(process.execPath, ['-e', '0'], {
+      env: { ...env, CBD_SHARD: join(dir, 'run.ndjson'), CBD_COMMIT: 'c0ffee' },
+      encoding: 'utf8',
+    })
+    assert.notEqual(recorded.status, 0)
+    assert.match(`${recorded.stderr}${recorded.stdout}`, /inert preload loaded the core/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

@@ -122,7 +122,13 @@ export {
  * `CBD_SELECTION` and a runner reads it. The reader itself (`readSelection`) lives
  * behind the adapter seam with the other environment readers.
  */
-export { SELECTION_ENV, writeSelection, type SelectionFile, type SelectionTest } from './env.js'
+export {
+  GRANULARITY_ENV,
+  SELECTION_ENV,
+  writeSelection,
+  type SelectionFile,
+  type SelectionTest,
+} from './env.js'
 
 /**
  * The attach-target contract between `cbd collect --target` and an adapter.

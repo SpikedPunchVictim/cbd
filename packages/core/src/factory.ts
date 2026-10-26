@@ -69,6 +69,14 @@ export interface CbdConfig {
   configFile?: string
   /** Forwarded to `select`: include, alwaysAll, policies, testFiles, maxAgeCommits, strict. */
   select?: SelectConfig
+  /**
+   * When the recording takes coverage. `"test"` (default) at every test boundary,
+   * `"group"` once per runner group.
+   *
+   * Recording-only: the build and the selector read the same map either way.
+   * `cbd collect` forwards it to the recording process in `CBD_GRANULARITY`.
+   */
+  granularity?: 'test' | 'group'
 }
 
 export interface BuildOptions {

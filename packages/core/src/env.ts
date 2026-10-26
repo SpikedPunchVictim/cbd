@@ -38,6 +38,21 @@ import type { ScanOptions } from './normalize.js'
  */
 export const INCLUDE_SELF_ENV = 'CBD_INCLUDE_SELF'
 
+/**
+ * When the recording takes a coverage window: `test` (default) or `group`.
+ *
+ * `cbd collect` writes it from the config's `granularity`; a person running a
+ * suite through `NODE_OPTIONS` can set it directly. It is an environment variable
+ * for the same reason the scan rules are: the recorder lives in the test process,
+ * which `collect` only starts.
+ */
+export const GRANULARITY_ENV = 'CBD_GRANULARITY'
+
+/** The configured granularity, or `undefined` for the default (`test`). */
+export function granularityFromEnv(env: NodeJS.ProcessEnv = process.env): 'group' | undefined {
+  return env[GRANULARITY_ENV] === 'group' ? 'group' : undefined
+}
+
 export function scanFromEnv(env: NodeJS.ProcessEnv = process.env): ScanOptions | undefined {
   const value = (raw: string | undefined): string | undefined =>
     raw === undefined || raw === '' ? undefined : raw

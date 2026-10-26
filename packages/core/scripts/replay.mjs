@@ -50,6 +50,10 @@
  *     [--include <prefix,...>] [--always-all <glob,...>] [--json <out>] \
  *     [--selector-map base|commit] [--env KEY=VALUE ...] [--dry-run]
  *
+ * The repository's committed `cbd.config.json` supplies the selection policy
+ * (`include`, `testFiles`, `unknownPolicyFor`, `alwaysSelect`, ...). `--include`,
+ * `--always-all` and `--test-files` override it for one run.
+ *
  * The repository must be clean: the harness checks commits out in place. A
  * `--patch` is applied after each checkout, for a worktree whose recording
  * wiring is itself uncommitted (the grizzly clone).
@@ -70,6 +74,7 @@ import { resolve } from 'node:path'
 import {
   buildMap,
   headCommit,
+  loadConfig,
   matchesAnyGlob,
   parseUnifiedDiff,
   sameCommit,
@@ -165,13 +170,33 @@ const DEFAULT_TEST_FILES = ['**/*.spec.*', '**/*.test.*', '**/__tests__/**', '**
 const testFiles =
   options['test-files'] === undefined ? DEFAULT_TEST_FILES : options['test-files'].split(',').map((g) => g.trim())
 
+/**
+ * The repository's own selection policy, from its committed `cbd.config.json`.
+ *
+ * A replay that ignored the config would answer a different question from the
+ * product: grizzly's config marks `typescript/tools/**` as `unknownPolicyFor:
+ * ignore`, and without it every step whose cumulative diff touches the dev CLI
+ * escalated to `all` — 20 of 20 steps, measuring the harness rather than the
+ * selector. The CLI flags still win where they are given, so a caller can narrow
+ * `--include` or override `--test-files` for a one-off question.
+ */
+const configured = (() => {
+  try {
+    return loadConfig(repo)?.config.select ?? {}
+  } catch (error) {
+    throw new Error(`replay: cannot read ${repo}/cbd.config.json: ${String(error)}`)
+  }
+})()
+
 /** The policy both the scored and the load-failure paths select with. */
 const selectConfig = {
-  include: (path) => isIncluded(path),
-  alwaysAll,
-  unknownPolicy: 'all',
-  betweenPolicy: 'all',
-  testFiles,
+  ...configured,
+  include:
+    options.include === undefined && configured.include !== undefined
+      ? configured.include
+      : (path) => isIncluded(path),
+  ...(options['always-all'] === undefined ? {} : { alwaysAll }),
+  ...(options['test-files'] === undefined ? {} : { testFiles }),
 }
 
 const extraEnv = Object.fromEntries(
@@ -420,7 +445,10 @@ function requiredTitles(change, oracleMap, baseMap) {
 
   // A test file answers with its own tests (§8.3 rule 3), which rule 4/5 would
   // otherwise miss because the test's own body may touch no mapped function.
-  if (matchesAnyGlob(change.path, testFiles) !== null) {
+  // The oracle must use the same notion of "test file" as the selector, or a
+  // repository that scopes its test globs in `cbd.config.json` would have the
+  // oracle require tests the product deliberately answers by ordinary rules.
+  if (matchesAnyGlob(change.path, selectConfig.testFiles ?? DEFAULT_TEST_FILES) !== null) {
     for (const title of testsDefinedIn(map, change.path)) titles.add(title)
   }
 
@@ -567,11 +595,19 @@ for (const [index, step] of plan.entries()) {
     selected = universe
   } else {
     selected = [...new Set(selection.tests.map((testIndex) => mapForSelection.tests[testIndex].title))]
-    const selectionPath = resolve(dir, 'selection.json')
-    writeFileSync(selectionPath, JSON.stringify({ titles: selected }, null, 2))
-    const subsetShardPath = resolve(dir, 'subset.ndjson')
-    subset = runTests(dir, subsetShardPath, step.commit, selectionPath)
-    process.stdout.write(`replay:   subset ${subset.wall.toFixed(1)}s (exit ${subset.status})\n`)
+    if (selected.length === 0) {
+      // The selector answered "no test reaches this change" — the product's own
+      // behaviour is to run nothing (`cbd collect` does not hand a runner an empty
+      // filter, and an adapter refuses one). Running the command anyway would
+      // measure a full run against an empty selection and crash the adapter.
+      process.stdout.write('replay:   subset empty; nothing to run\n')
+    } else {
+      const selectionPath = resolve(dir, 'selection.json')
+      writeFileSync(selectionPath, JSON.stringify({ titles: selected }, null, 2))
+      const subsetShardPath = resolve(dir, 'subset.ndjson')
+      subset = runTests(dir, subsetShardPath, step.commit, selectionPath)
+      process.stdout.write(`replay:   subset ${subset.wall.toFixed(1)}s (exit ${subset.status})\n`)
+    }
   }
 
   const selectedSet = new Set(selected)
@@ -611,8 +647,17 @@ for (const [index, step] of plan.entries()) {
   if (subset !== null) {
     const subsetShardPath = resolve(dir, 'subset.ndjson')
     if (existsSync(subsetShardPath)) {
-      subsetSummary = summarizeShard(parseShard(readFileSync(subsetShardPath, 'utf8'), subsetShardPath))
-      subsetOnlyFailures = subsetSummary.tests
+      try {
+        subsetSummary = summarizeShard(
+          parseShard(readFileSync(subsetShardPath, 'utf8'), subsetShardPath),
+        )
+      } catch (error) {
+        // A subset run that wrote no complete shard has no outcomes to compare;
+        // the step's coverage and outcome oracles still stand. Refusing the whole
+        // report over it would lose every earlier step.
+        process.stderr.write(`replay:   subset shard unreadable: ${String(error)}\n`)
+      }
+      subsetOnlyFailures = (subsetSummary?.tests ?? [])
         .filter((test) => test.status === 'failed' && !fullFailed.includes(test.title))
         .map((test) => test.title)
     }
@@ -628,7 +673,9 @@ for (const [index, step] of plan.entries()) {
     rCount: universe.length === 0 ? 0 : selected.length / universe.length,
     rTime: totalMs === 0 ? 0 : selectedMs / totalMs,
     tFull: full.wall,
-    tSubset: subset === null ? full.wall : subset.wall,
+    // `all` costs a full run; an empty selection runs nothing, so its subset time is
+    // zero rather than the full run it deliberately skipped.
+    tSubset: subset !== null ? subset.wall : selection.mode === 'all' ? full.wall : 0,
     eTime: selectedMs / 1000,
     required: required.size,
     miss: miss.map(([title, file]) => ({ title, file })),

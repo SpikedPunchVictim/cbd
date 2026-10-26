@@ -322,6 +322,106 @@ test('each window lands in the bucket it belongs to', async () => {
   }
 })
 
+test('group granularity takes one window per group and shares it', () => {
+  const tree = makeTree()
+  try {
+    const source = scriptedSource([
+      payload(tree.url, { alpha: 1 }), // testStart A -> @load
+      payload(tree.url, { beta: 1 }), // groupEnd -> A and B
+      payload(tree.url, { gamma: 1 }), // groupEnd -> C
+      payload(tree.url, {}), // runEnd -> @teardown
+    ])
+    let takes = 0
+    const take = source.takeSync
+    source.takeSync = () => {
+      takes += 1
+      return take()
+    }
+
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source,
+      sink,
+      commit: 'c0ffee',
+      granularity: 'group',
+      scan: { projection: [{ from: tree.outDir, to: tree.root }] },
+    })
+
+    recorder.runStart()
+    recorder.testStart('alpha runs', null)
+    recorder.testEnd('alpha runs', 'passed')
+    recorder.testStart('beta runs', null)
+    recorder.testEnd('beta runs', 'passed')
+    recorder.groupEnd()
+    recorder.testStart('gamma runs', null)
+    recorder.testEnd('gamma runs', 'passed')
+    recorder.groupEnd()
+    recorder.runEnd()
+
+    const records = run(tree, sink.text)
+    // The load window, one take per group, and the teardown tail. Nothing at the
+    // test boundaries, which is the whole reason for the mode.
+    assert.equal(takes, 4)
+    assert.equal(records.filter((record) => record.type === 'group').length, 2)
+    assert.equal(records.filter((record) => record.type === 'test').length, 0)
+
+    const summary = summarizeShard(records)
+    assert.deepEqual(
+      summary.tests.map((test) => [test.title, startsOf(test.touches)]),
+      [
+        ['alpha runs', [rangeOf('beta')[0]]],
+        ['beta runs', [rangeOf('beta')[0]]],
+        ['gamma runs', [rangeOf('gamma')[0]]],
+      ],
+    )
+    assert.deepEqual(summary.between, [], 'the gap is not a bucket in group mode')
+    assert.deepEqual(summary.load.flatMap(startsOf), [rangeOf('alpha')[0]])
+  } finally {
+    tree.cleanup()
+  }
+})
+
+test('a group with no boundary flushes into one window at the end', () => {
+  const tree = makeTree()
+  try {
+    // An adapter that never reports a group boundary: without a take at the test
+    // boundary either, the run's tests share the window that `runEnd` flushes.
+    // Over-selection, never a dropped test.
+    const source = scriptedSource([
+      payload(tree.url, { alpha: 1 }), // testStart A -> @load
+      payload(tree.url, { beta: 1 }), // runEnd flush -> A and B
+      payload(tree.url, {}), // @teardown
+    ])
+    let takes = 0
+    const take = source.takeSync
+    source.takeSync = () => {
+      takes += 1
+      return take()
+    }
+
+    const sink = new StringSink()
+    const recorder = new Recorder({ source, sink, commit: 'c0ffee', granularity: 'group' })
+    recorder.runStart()
+    recorder.testStart('alpha runs', null)
+    recorder.testEnd('alpha runs', 'passed')
+    recorder.testStart('beta runs', null)
+    recorder.testEnd('beta runs', 'passed')
+    recorder.runEnd()
+
+    assert.equal(takes, 3)
+    const summary = summarizeShard(run(tree, sink.text))
+    assert.deepEqual(
+      summary.tests.map((test) => [test.title, startsOf(test.touches)]),
+      [
+        ['alpha runs', [rangeOf('beta')[0]]],
+        ['beta runs', [rangeOf('beta')[0]]],
+      ],
+    )
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('the end record counts the tests that were recorded', async () => {
   const tree = makeTree()
   try {

@@ -140,6 +140,7 @@ appendFileSync(
     selectionContent: selectionText,
     inspect: process.env.CBD_INSPECT ?? null,
     allowRemote: process.env.CBD_INSPECT_ALLOW_REMOTE ?? null,
+    granularity: process.env.CBD_GRANULARITY ?? null,
   }) + '\\n',
 )
 

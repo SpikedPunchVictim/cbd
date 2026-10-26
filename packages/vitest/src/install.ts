@@ -1,5 +1,7 @@
 /**
- * The Vitest adapter's work, with the runner's hook functions injected.
+ * The Vitest adapter's work, with the runner's hooks
+
+functions injected.
  *
  * **Why injection.** `import { beforeEach } from 'vitest'` must resolve to the
  * *consumer's* Vitest, or the hooks register in a different runner's state and never
@@ -23,10 +25,14 @@ import {
   installProcessTracking,
   installReadTracking,
   readSelection,
+  granularityFromEnv,
   scanFromEnv,
 } from '@spikedpunch/cbd/adapter'
 import { fileOf, shardPathFor, statusOf, titleOf, type VitestTaskLike } from './identity.js'
 import { withSelfRoot } from './self.js'
+
+/** Warn once per process, not once per test file. */
+let warnedGranularity = false
 
 /** The part of a hook's context this adapter reads. Structural, not Vitest's type. */
 export interface VitestHookContext {
@@ -71,6 +77,16 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
     process.stderr.write(
       'cbd: the Vitest adapter records the test process only; a separately started service is ' +
         'not collected, so a change to its code will run the whole suite.\n',
+    )
+  }
+
+  // The recording granularity is opt-in per adapter: this one has no suite
+  // boundary to report, so asking for groups would flush the whole file into one
+  // window. Say so and record per test instead.
+  if (granularityFromEnv() === 'group' && !warnedGranularity) {
+    warnedGranularity = true
+    process.stderr.write(
+      'cbd: the Vitest adapter has no group boundary, so granularity "group" records per test.\n',
     )
   }
 

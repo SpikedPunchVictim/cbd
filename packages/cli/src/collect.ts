@@ -34,6 +34,7 @@ import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } f
 import { basename, dirname, extname, join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import {
+  GRANULARITY_ENV,
   INSPECT_ALLOW_REMOTE_ENV,
   INSPECT_ENV,
   SELECTION_ENV,
@@ -161,6 +162,10 @@ function childEnv(
   if (options.target !== undefined) env[INSPECT_ENV] = options.target
   // Absent means "the target is loopback"; the adapter checks it again either way.
   if (options.allowRemote) env[INSPECT_ALLOW_REMOTE_ENV] = '1'
+  // Only "group" needs saying: the recorder's default is per test, and an adapter
+  // with no group wiring must not claim it.
+  if (options.config.granularity === 'group') env[GRANULARITY_ENV] = 'group'
+  else delete env[GRANULARITY_ENV]
   return env
 }
 
