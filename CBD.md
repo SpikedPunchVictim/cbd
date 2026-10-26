@@ -724,12 +724,12 @@ source changes.
 | a changed file is in the map, and a hunk intersects a mapped function's line range | the tests that touched that function |
 | a changed file is in the map, and a hunk has **any line** outside every function (imports, top-level constants, class field initializers) | every test that touched the file, **plus every test in the process that evaluated the module body** (`@load`/`@teardown`); `mode: all` when the map has no such attribution |
 | a changed function in the map **also executed at load** (its key is in `@load`) | its tests, **plus every test in the process that loaded the module** (`@load` observers); `mode: all` when the map has no such attribution. `@teardown` is excluded: it runs after the tests and cannot feed them |
-| a changed file a test **read**, or a file under a directory a test **listed** | the tests that read or listed it, with reason `read`; composes with the function and test-file rules. A **code file** (`.ts .tsx .js .jsx .mjs .cjs .mts .cts`) the map never saw is **not** answered by a read: it reaches the never-seen rule below, and the read reason is kept |
+| a changed file a test **read**, or a file under a directory a test **listed** | the tests that read or listed it, with reason `read`; composes with the function and test-file rules. A **code file** (`.ts .tsx .js .jsx .mjs .cjs .mts .cts .vue .svelte .astro`) the map never saw is **not** answered by a read: it reaches the never-seen rule below, and the read reason is kept |
 | a test declared an **opaque** dependency (`recordOpaque`) and any in-scope file changed | that test is selected, with reason `opaque` |
 | a changed file — or anything under a changed directory — is marked `partial` by an incremental map | `mode: all`, reason `partial` — the evidence could not be carried |
 | a changed file is in the map but no test touched it | nothing selected; reported as `untested` |
 | a changed file was **never seen** by the map and matches `include` | `mode: all` by default (`unknownPolicy: 'all' \| 'ignore' \| 'file-importers'`); `unknownPolicyFor` can override per glob |
-| a deleted file in the map | every test that touched it |
+| a deleted file in the map | every test that touched it; at least as strong as a module-scope edit, so a load or teardown file selects its observers and a `@between` file obeys `betweenPolicy`. A **renamed** file also counts its old path as deleted (a copy keeps its source and does not) |
 | a file touched by `@between` only | its tests cannot be known; `mode: all` by default (`betweenPolicy`) |
 | a change matches an `alwaysSelect` entry's `when`, or the entry has no `when` | the named tests are added, with reason `always`; an entry the map cannot resolve forces `mode: all` and warns |
 | a changed file is outside `include` and no rule claims it | ignored, and named in `selection.ignored` |
@@ -860,14 +860,21 @@ outside `include`, which is what lets an entry protect a source tree the normal 
 `process.env.FLAG` has no file edge: the value comes from the shell or CI, not from the diff.
 `recordEnv('FLAG')` names it; the shard and the map keep a 16-hex-character hash of the value the
 recording saw, never the value, and `select` compares the current environment against those hashes.
-A variable that moved selects the declaring tests, with reason `env-changed`. A map with no hash for
-a variable — one written before this existed — leaves it alone rather than selecting on every run.
+The hashes are kept **per test**, not pooled per variable: another test's recorded value says nothing
+about this one, and a test id recorded under several values (a CI matrix) keeps all of them and is
+selected only when the current value matches none. A variable that moved selects the declaring
+test, with reason `env-changed`; the rule runs before `sharedState`, so those tests pull in their
+neighbours. A test with no hash for a variable leaves it alone rather than selecting on every run.
+The hash is unsalted SHA-256 truncated to 64 bits: it keeps the value out of the map, but a
+low-entropy value (`1`, `true`, a region name) is recoverable by hashing candidates, so do not
+declare a variable whose value must stay confidential.
 An undeclared variable stays invisible, which is the same boundary as any unrecorded dependency.
 
 **`sharedState` is for tests that depend on their neighbours.** A test that patches a module-level
 value and a test that observes it are a pair; running one without the other is not a smaller run but
 a different one, and coverage cannot say so. The list names files; when a change selects a test that
-touched one of them, every test that touched it is added with reason `shared-state`. It is declared
+touched one of them, every test that touched it is added with reason `shared-state`, repeated to a
+fixpoint so the result does not depend on file order, and after every other rule has added its tests. A listed file that only ran at import counts as touched by its load observers (every test when the map has no per-shard attribution). It is declared
 rather than inferred on purpose: a neighbour closure over every shared module collapses to the whole
 suite. It does not model ordering, and `cbd verify` remains the measurement for what a subset missed.
 

@@ -1188,9 +1188,8 @@ test('shared state does nothing when no selected test touched the file', () => {
 // declaring test even when nothing in the diff did.
 test('a declared variable whose value changed selects the test that declared it', () => {
   const map = makeMap({
-    env: { FLAG: [hashEnvValue('on')] },
     tests: makeMap().tests.map((entry, index) =>
-      index === 0 ? { ...entry, env: ['FLAG'] } : entry,
+      index === 0 ? { ...entry, env: { FLAG: [hashEnvValue('on')] } } : entry,
     ),
   })
 
@@ -1216,10 +1215,164 @@ test('a declared variable whose value changed selects the test that declared it'
 test('a map with no recorded hash leaves declared variables alone', () => {
   const map = makeMap({
     tests: makeMap().tests.map((entry, index) =>
-      index === 0 ? { ...entry, env: ['FLAG'] } : entry,
+      index === 0 ? { ...entry, env: { FLAG: [] } } : entry,
     ),
   })
   const result = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { env: { FLAG: 'off' } })
   assert.deepEqual(result.tests.map((index) => map.tests[index]?.title), ['uses helper'])
   assert.deepEqual(reasonKinds(result), ['function'])
+})
+
+// --- rule 12, per test (bug hunt C1) -----------------------------------------
+// Hashes used to be pooled per variable across tests, so a value one test recorded
+// hid a change from every other test that declared the variable.
+test('C1: env hashes are per test, so another test recorded value does not hide a change', () => {
+  const map = makeMap({
+    tests: [
+      { title: 'adds', file: SPEC, env: { FOO: [hashEnvValue(undefined)] } },
+      { title: 'multiplies', file: SPEC, env: { FOO: [hashEnvValue('1')] } },
+      { title: 'uses helper', file: SPEC },
+    ],
+  })
+  const result = select(map, [], { env: { FOO: '1' } })
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0], 'only the test recorded with FOO unset moved')
+})
+
+test('C1: a test recorded under several values is selected only when the current one is new to it', () => {
+  const map = makeMap({
+    tests: [
+      { title: 'adds', file: SPEC, env: { FOO: [hashEnvValue('0'), hashEnvValue('1')] } },
+      { title: 'multiplies', file: SPEC },
+      { title: 'uses helper', file: SPEC },
+    ],
+  })
+  assert.deepEqual(select(map, [], { env: { FOO: '1' } }).tests, [])
+  assert.deepEqual(select(map, [], { env: { FOO: '2' } }).tests, [0])
+})
+
+test('C1: a test with no hash for a declared key is left alone', () => {
+  const map = makeMap({
+    tests: [
+      { title: 'adds', file: SPEC, env: { FOO: [] } },
+      { title: 'multiplies', file: SPEC },
+      { title: 'uses helper', file: SPEC },
+    ],
+  })
+  assert.deepEqual(select(map, [], { env: { FOO: '1' } }).tests, [])
+})
+
+// --- rule 11 fixpoint (C2) and ordering (C3) ---------------------------------
+const SH_A = '/repo/src/shared-a.ts'
+const SH_B = '/repo/src/shared-b.ts'
+
+test('C2: shared-state expansion reaches a fixpoint regardless of file order', () => {
+  // `a` is iterated before `b`. Selecting t0 pulls t1 in through b; t1 touches a,
+  // which must then pull t2 in.
+  const map = makeMap({
+    tests: [
+      { title: 't0', file: SPEC },
+      { title: 't1', file: SPEC },
+      { title: 't2', file: SPEC },
+    ],
+    files: {
+      [SH_A]: { 'a@0': { startLine: 1, endLine: 3, tests: [1, 2] } },
+      [SH_B]: { 'b@0': { startLine: 1, endLine: 3, tests: [0, 1] } },
+      [SRC]: { 'add@0': { startLine: 1, endLine: 3, tests: [0] } },
+    },
+  })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])], { sharedState: [SH_A, SH_B] })
+  assert.deepEqual(result.tests, [0, 1, 2])
+})
+
+test('C3: a test selected by a changed env variable pulls in its shared-state neighbours', () => {
+  const map = makeMap({
+    tests: [
+      { title: 't0', file: SPEC, env: { X: [hashEnvValue('old')] } },
+      { title: 't1', file: SPEC },
+      { title: 't2', file: SPEC },
+    ],
+    files: { [SH_A]: { 'a@0': { startLine: 1, endLine: 3, tests: [0, 1] } } },
+  })
+  const result = select(map, [], { sharedState: [SH_A], env: { X: 'new' } })
+  assert.deepEqual(result.tests, [0, 1])
+  assert.deepEqual(
+    result.reasons.map((reason) => reason.kind),
+    ['env-changed', 'shared-state'],
+  )
+})
+
+// --- C4: rename, C5: delete under betweenPolicy, C6: extensions --------------
+test('C4: a rename also selects the old path tests when the new path is ignored as unknown', () => {
+  const moved = '/repo/src/moved.ts'
+  const viaDefault = select(makeMap(), [change(moved, [], 'R', SRC)], { unknownPolicy: 'ignore' })
+  assert.equal(viaDefault.mode, 'subset')
+  assert.deepEqual(viaDefault.tests, [0, 1])
+
+  const viaFor = select(makeMap(), [change(moved, [{ start: 1, end: 1 }], 'R', SRC)], {
+    unknownPolicyFor: [{ paths: ['/repo/src/**'], policy: 'ignore' }],
+  })
+  assert.deepEqual(viaFor.tests, [0, 1])
+})
+
+test('C4: a copy keeps its source and does not select the source tests', () => {
+  const copy = '/repo/src/copy.ts'
+  const result = select(makeMap(), [change(copy, [], 'C', SRC)], { unknownPolicy: 'ignore' })
+  assert.deepEqual(result.tests, [])
+})
+
+test('C5: deleting a file that only ran between windows honours betweenPolicy', () => {
+  const map = makeMap({
+    files: {
+      ...makeMap().files,
+      [BETWEEN_ONLY]: { 'timer@0': { startLine: 5, endLine: 8, tests: [0] } },
+    },
+    between: [[BETWEEN_ONLY, 'timer@0', 5, 8]],
+  })
+  const deletion = [change(BETWEEN_ONLY, [{ start: 1, end: 9 }], 'D')]
+  const strict = select(map, deletion)
+  assert.equal(strict.mode, 'all')
+  assert.ok(reasonKinds(strict).includes('all:between'))
+  const lenient = select(map, deletion, { betweenPolicy: 'ignore' })
+  assert.equal(lenient.mode, 'subset')
+  assert.deepEqual(lenient.tests, [0])
+})
+
+for (const ext of ['vue', 'svelte', 'astro']) {
+  test(`C6: an unseen .${ext} file answered only by a read still reaches the unknown-file rule`, () => {
+    const file = `/repo/src/App.${ext}`
+    const map = makeMap({ reads: { [file]: [1] } })
+    const result = select(map, [change(file, [{ start: 1, end: 1 }])])
+    assert.equal(result.mode, 'all')
+    assert.ok(reasonKinds(result).includes('all:unknown-file'))
+  })
+}
+
+test('C7: a shared-state file touched only during load expands to its load observers', () => {
+  const map = makeMap({
+    tests: [
+      { title: 't0', file: SPEC },
+      { title: 't1', file: SPEC },
+      { title: 't2', file: SPEC },
+    ],
+    files: { [SRC]: { 'add@0': { startLine: 1, endLine: 3, tests: [0] } } },
+    load: [[SH_A, 'init@0', 1, 3]],
+    loadShards: { [SH_A]: [0] },
+    shardTests: [[0, 1]],
+  })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])], { sharedState: [SH_A] })
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('C7: without per-shard attribution a load-only shared file means every test', () => {
+  const map = makeMap({
+    tests: [
+      { title: 't0', file: SPEC },
+      { title: 't1', file: SPEC },
+    ],
+    files: { [SRC]: { 'add@0': { startLine: 1, endLine: 3, tests: [0] } } },
+    load: [[SH_A, 'init@0', 1, 3]],
+  })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])], { sharedState: [SH_A] })
+  assert.deepEqual(result.tests, [0, 1])
 })

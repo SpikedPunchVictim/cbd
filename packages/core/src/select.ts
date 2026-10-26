@@ -79,7 +79,7 @@ export interface MapInfo {
 }
 
 /** Extensions of files that execute code, so coverage should have seen them. */
-const CODE_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx)$/i
+const CODE_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx|vue|svelte|astro)$/i
 
 export interface Selection {
   mode: 'subset' | 'all'
@@ -434,10 +434,21 @@ function testFileChange(
 
 export function select(
   map: CoverageMap,
-  changes: Change[],
+  changedFiles: Change[],
   config: SelectConfig = {},
   mapInfo?: Partial<MapInfo>,
 ): Selection {
+  // A rename is the old path going away and a new one appearing. The new path is
+  // processed as itself; the old path's tests touched code that moved, so it is also
+  // processed as a deletion. A copy keeps its source, so it adds nothing.
+  const changes: Change[] = changedFiles.flatMap((change) =>
+    change.status === 'R' &&
+    change.from !== undefined &&
+    !samePath(change.from, change.path) &&
+    !(config.configFile !== undefined && samePath(change.from, config.configFile))
+      ? [change, { path: change.from, status: 'D' as const, hunks: [] }]
+      : [change],
+  )
   const include = config.include ?? ((): boolean => true)
   const alwaysAll = config.alwaysAll ?? []
   const testFiles = config.testFiles ?? DEFAULT_TEST_FILES
@@ -698,6 +709,10 @@ export function select(
           // The module is gone: every test that loaded it can observe the
           // removal, not just the ones that executed one of its functions.
           selectLoadObservers(path, tests)
+        } else if (betweenFiles.has(path) && betweenPolicy === 'all') {
+          // Removing a file is at least as strong as editing its module scope.
+          unmapped.push(path)
+          forceAll('between', path)
         } else {
           for (const index of tests) selected.add(index)
           reasons.push({ kind: 'file', file: path, tests })
@@ -822,25 +837,6 @@ export function select(
     reasons.push({ kind: 'always', tests })
   }
 
-  // Rule 11 — declared shared state: a test that depends on module state another
-  // test mutates must not run without it, or a subset becomes a different run.
-  // Coverage cannot see the dependency, so the list is declared; any test that
-  // touched a listed file is pulled in when one selected test did.
-  if (config.sharedState !== undefined && config.sharedState.length > 0 && !forced) {
-    for (const [file, functions] of Object.entries(map.files)) {
-      if (matchesAnyGlob(file, config.sharedState) === null) continue
-      const touched = new Set<number>()
-      for (const entry of Object.values(functions)) {
-        for (const index of entry.tests) touched.add(index)
-      }
-      if (![...touched].some((index) => selected.has(index))) continue
-      const added = uniqueSorted([...touched].filter((index) => !selected.has(index)))
-      if (added.length === 0) continue
-      for (const index of touched) selected.add(index)
-      reasons.push({ kind: 'shared-state', file, tests: added })
-    }
-  }
-
   // Rule 12 — declared environment: `recordEnv` names the variables a test reads,
   // and the map keeps a hash of the value the recording saw. A value that has moved
   // since selects that test even though no file changed and coverage cannot see the
@@ -849,15 +845,54 @@ export function select(
   if (!forced) {
     const environment = config.env ?? process.env
     for (const [index, test] of map.tests.entries()) {
-      const keys = test.env
-      if (keys === undefined || keys.length === 0 || selected.has(index)) continue
-      const changed = keys.filter((key) => {
-        const seen = map.env?.[key]
-        return seen !== undefined && !seen.includes(hashEnvValue(environment[key]))
-      })
+      const recorded = test.env
+      if (recorded === undefined || selected.has(index)) continue
+      // Per test: another test's recorded value says nothing about this one. A test
+      // seen under several values (one id from several shards) keeps all of them and
+      // is selected only when the current value is none of them.
+      const changed = Object.entries(recorded)
+        .filter(
+          ([key, hashes]) =>
+            hashes.length > 0 && !hashes.includes(hashEnvValue(environment[key])),
+        )
+        .map(([key]) => key)
+        .sort()
       if (changed.length === 0) continue
       selected.add(index)
       reasons.push({ kind: 'env-changed', keys: changed, tests: [index] })
+    }
+  }
+
+  // Rule 11 — declared shared state: a test that depends on module state another
+  // test mutates must not run without it, or a subset becomes a different run.
+  // Coverage cannot see the dependency, so the list is declared; any test that
+  // touched a listed file is pulled in when one selected test did.
+  if (config.sharedState !== undefined && config.sharedState.length > 0 && !forced) {
+    // A test pulled in through one file can touch another, so repeat until a pass
+    // adds nothing; the result must not depend on the order of `map.files`.
+    // Every rule that adds tests has run above, so they all feed this closure.
+    for (let grew = true; grew; ) {
+      grew = false
+      // A file that ran only at import has no function entry, so it is also read
+      // from the load bucket; its observers touched it. A map with no per-shard
+      // attribution cannot say which, so that means every test.
+      const candidates = new Set([...Object.keys(map.files), ...loadFiles])
+      for (const file of candidates) {
+        if (matchesAnyGlob(file, config.sharedState!) === null) continue
+        const touched = new Set<number>()
+        for (const entry of Object.values(map.files[file] ?? {})) {
+          for (const index of entry.tests) touched.add(index)
+        }
+        if (loadFiles.has(file)) {
+          for (const index of loadObservers(file) ?? map.tests.keys()) touched.add(index)
+        }
+        if (![...touched].some((index) => selected.has(index))) continue
+        const added = uniqueSorted([...touched].filter((index) => !selected.has(index)))
+        if (added.length === 0) continue
+        for (const index of touched) selected.add(index)
+        reasons.push({ kind: 'shared-state', file, tests: added })
+        grew = true
+      }
     }
   }
 

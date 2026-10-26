@@ -22,11 +22,24 @@ until a tag is pushed and the publish workflow runs.
   changes inside the span over-selected. The same collision occurred when two scripts resolved to one
   source file. `mergeShards` now renumbers every key across all shards from `(file, name, range)`, and
   the within-window union keeps ranges apart. The shard format is unchanged, so existing shards do
-  not need re-recording: rebuild the map with `cbd build` from them.
+  not need re-recording: rebuild the map with `cbd build` from them. Renumbering visits each distinct
+  touch array once, so a group recording, where every test of a group shares one array, does not pay
+  for it once per test.
 - **`carryMap` no longer unions different functions that share a key.** The base and the new run
   were numbered by different builds, so an equal key could name two functions and their ranges were
   widened into one. A carried entry now reuses a key only for the same name and range (using the
-  relocated lines) and otherwise takes the next free ordinal.
+  relocated lines) and otherwise takes the next free ordinal. It also reuses the key the new run's
+  load, between and teardown buckets give that function, so a change to a carried function that ran
+  at load still selects the load observers.
+- **`granularity: "group"` records one window per runner group.** One take per test boundary cost
+  489% on VS Code's `vs/platform` scope; one per group cut the takes from 32,039 to 1,226 and the
+  overhead to about 47%. Every test in a group carries the group's union, so a group run
+  over-selects within the group. There is no `@between` window between groups: hook and late async
+  work is charged to the next group's tests. `cbd collect` passes the setting in
+  `CBD_GRANULARITY`. The japa adapter and mocha's `auto` entry end groups; jest, Vitest and
+  `node:test` warn and record per test. Shards are now version 3 (a `group` record was added), and
+  0.0.4 refuses them rather than misreading them. This version still reads version 2 shards, so
+  existing recordings keep building.
 - **A changed function that ran at load selects its file's load observers.** A function that also
   executed during import may have computed a value later tests consume, so the tests that called it
   again were not the only ones that could observe the change. It now adds the load observers (all
@@ -47,17 +60,30 @@ until a tag is pushed and the publish workflow runs.
 - **A declared environment variable selects the tests that read it.** A test that branches on
   `process.env.FLAG` has no file edge, so a flag flipped in CI or the shell left the selection
   answering for the old value. `recordEnv('FLAG')` names the variable; the shard and the map keep a
-  16-hex hash of the value the recording saw — never the value — and `select` compares the current
-  environment against those hashes, selecting the declaring tests with reason `env-changed`. An
-  older map with no hash for the variable leaves it alone rather than selecting on every run, and
-  an undeclared variable stays invisible, which is the same boundary as any unrecorded dependency.
+  16-hex hash of the value the recording saw, per test, and never the value; `select` compares the
+  current environment against each test's own hashes, selecting that test with reason `env-changed`
+  when none matches. Hashes are not pooled across tests, so one test recorded under `FOO=1` cannot
+  hide a change from another recorded with `FOO` unset, and a test id recorded under several values
+  (a CI matrix) keeps all of them. A call made during a spec's import phase is recorded for that
+  spec's tests. A test with no hash for the variable is left alone rather than selected on every
+  run, and an undeclared variable stays invisible, which is the same boundary as any unrecorded
+  dependency. The hash is unsalted and truncated, so a low-entropy value (`1`, `true`, a region
+  name) can be recovered by guessing; do not declare a variable whose value must stay confidential.
 - **`sharedState` runs neighbours together.** A subset is not a smaller run when a test depends on
   module state another test mutates — a patched sleep, a seeded clock, a singleton wired in one test
   and read in the next. Coverage cannot see that dependency, so the new `select.sharedState` config
   key declares the files: when a change selects a test that touched a listed file, every test that
-  touched it is added, with reason `shared-state`. It is opt-in and deliberately not inferred; a
+  touched it is added, with reason `shared-state`. The expansion repeats to a fixpoint, so a test
+  pulled in through one file also pulls in its neighbours on another, and it counts a listed file that only ran at import (the load
+  bucket) as touched by its load observers, and it runs after every other
+  rule, so tests added by a changed environment variable are expanded too. It is opt-in and deliberately not inferred; a
   neighbour closure over every shared module collapses to the full suite, and `cbd verify` remains
   the measurement for what a subset missed.
+- **A rename or a deletion is judged by what the old file did.** A renamed file was processed only
+  by its new path, so with `unknownPolicy: 'ignore'` (or a matching `unknownPolicyFor`) the tests of
+  the old path were never selected; the old path is now also treated as a deletion. A deleted file
+  that ran only between test windows now honours `betweenPolicy` like a module-scope edit. Unseen
+  `.vue`, `.svelte` and `.astro` files reach the unknown-file rule like other code files.
 - **A file the service reads selects the test that drove it.** Read tracking ran only in the test
   process, so a service that read a routing table, a config keyed by line, or a fixture had no edge
   from that file to the tests that drove it — a change to the data did not select them. The

@@ -81,7 +81,12 @@ export interface ResolvedShard {
   between: TouchRef[]
   teardown: TouchRef[]
   /** Import-phase reads, already relocated/filtered by the build's scan. */
-  loadReads: Array<{ file: string | null; reads: string[]; dirReads: string[] }>
+  loadReads: Array<{
+    file: string | null
+    reads: string[]
+    dirReads: string[]
+    env?: Record<string, string>
+  }>
   /**
    * Files whose generated text the recording could not produce.
    *
@@ -478,6 +483,7 @@ export function resolveShard(input: ShardInput, options: ResolveOptions = {}): R
     file: record.file,
     reads: readPaths(record.reads),
     dirReads: dirPaths(record.dirReads),
+    ...(record.env === undefined ? {} : { env: record.env }),
   }))
   const cache = options.cache ?? new FileCache()
 

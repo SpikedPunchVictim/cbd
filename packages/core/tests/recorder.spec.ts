@@ -1232,3 +1232,38 @@ test('a declared environment variable is recorded as a hash, never a value', () 
     else process.env.CBD_TEST_FLAG = previous
   }
 })
+
+// A `recordEnv` call in a spec's import phase (a module-level read, a hook that runs
+// before the first test window) has no open test. It used to reach no recorder at
+// all and was dropped without a word; it is now filed with the spec scope, like the
+// import-phase reads, and the build attributes it to the spec's tests.
+test('a variable declared during the spec import phase is recorded with the spec scope', () => {
+  const source: Source = {
+    kind: 'clean',
+    supportsSync: true,
+    takeSync: () => [],
+    take: async () => [],
+    scripts: () => new Map(),
+    close: () => {},
+  }
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'env' })
+  const previous = process.env.CBD_TEST_SPEC_FLAG
+  try {
+    process.env.CBD_TEST_SPEC_FLAG = 'secret-value'
+    recorder.runStart()
+    recorder.specStart('/repo/tests/a.spec.ts')
+    recordEnv('CBD_TEST_SPEC_FLAG')
+    recorder.testStart('a', '/repo/tests/a.spec.ts')
+    recorder.testEnd('a', 'passed')
+    recorder.runEnd()
+
+    const load = parseShard(sink.text).find((value) => value.type === 'loadReads')
+    assert.ok(load?.type === 'loadReads')
+    assert.deepEqual(Object.keys(load.env ?? {}), ['CBD_TEST_SPEC_FLAG'])
+    assert.doesNotMatch(sink.text, /secret-value/)
+  } finally {
+    if (previous === undefined) delete process.env.CBD_TEST_SPEC_FLAG
+    else process.env.CBD_TEST_SPEC_FLAG = previous
+  }
+})

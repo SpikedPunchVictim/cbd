@@ -1021,28 +1021,85 @@ test('a service shard keeps the owners of attributed windows as load observers',
 
 // Declared variables keep their hashes in the map and their names on the test; the
 // value itself never reaches either.
-test('declared environment variables merge by name and hash', () => {
+test('declared environment variables merge per test by name and hash', () => {
   const map = mergeShards(
     [
       shard('s1', [
         { ...testRecord('declares', []), env: { FLAG: 'aaaa0000aaaa0000' } },
       ]),
       shard('s2', [
+        { ...testRecord('declares', []), env: { FLAG: 'bbbb1111bbbb1111' } },
         {
           ...testRecord('declares elsewhere', []),
-          env: { FLAG: 'bbbb1111bbbb1111', MODE: 'cccc2222cccc2222' },
+          env: { FLAG: 'cccc2222cccc2222', MODE: 'dddd3333dddd3333' },
         },
       ]),
     ],
     { commit: 'c0ffee' },
   )
-  assert.deepEqual(map.env, {
-    // Two recordings saw different values; both are kept so selection can tell.
-    FLAG: ['aaaa0000aaaa0000', 'bbbb1111bbbb1111'],
-    MODE: ['cccc2222cccc2222'],
-  })
   const declares = map.tests.find((entry) => entry.title === 'declares')
-  assert.deepEqual(declares?.env, ['FLAG'])
+  // One test id seen under two values keeps both.
+  assert.deepEqual(declares?.env, { FLAG: ['aaaa0000aaaa0000', 'bbbb1111bbbb1111'] })
+  // Another test's hashes are not pooled into it.
+  const elsewhere = map.tests.find((entry) => entry.title === 'declares elsewhere')
+  assert.deepEqual(elsewhere?.env, {
+    FLAG: ['cccc2222cccc2222'],
+    MODE: ['dddd3333dddd3333'],
+  })
+})
+
+test('carryMap: a carried test keeps its own env hashes and a dropped test leaves none behind', () => {
+  const base = mergeShards(
+    [
+      shard('s1', [
+        { ...testRecord('kept', [ref(B, 'b@0', 1, 2)]), file: '/repo/tests/b.spec.ts', env: { X: 'aaaa0000aaaa0000' } },
+        { ...testRecord('dropped', [ref(A, 'add@0', 1, 3)]), file: '/repo/tests/a.spec.ts', env: { X: 'bbbb1111bbbb1111' } },
+      ]),
+    ],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  const next = mergeShards([shard('s2', [])], { commit: 'beef', builtAt: 'T2' })
+  const carried = carryMap(base, next, new Set([A]))
+  assert.deepEqual(carried.tests.map((test) => test.title), ['kept'])
+  assert.deepEqual(carried.tests[0]?.env, { X: ['aaaa0000aaaa0000'] })
+  assert.equal(JSON.stringify(carried).includes('bbbb1111bbbb1111'), false)
+})
+
+test('carryMap: a carried function keeps the key its load ref already uses', () => {
+  const F = '/repo/src/f.ts'
+  const S = '/repo/tests/old.spec.ts'
+  const base = {
+    version: 1, commit: 'b', builtAt: 'T',
+    tests: [{ id: 'x', title: 'old', file: S }],
+    files: { [F]: { 'f@0': { startLine: 30, endLine: 40, tests: [0] } } },
+    load: [], between: [], teardown: [], seen: [F, S], shards: ['s'], reads: {}, dirReads: {},
+  } as unknown as CoverageMap
+  const next = {
+    version: 1, commit: 'n', builtAt: 'T',
+    tests: [{ id: 'y', title: 'new', file: '/repo/tests/new.spec.ts' }],
+    files: { [F]: { 'f@1': { startLine: 50, endLine: 60, tests: [0] } } },
+    load: [[F, 'f@0', 30, 40]], between: [], teardown: [], seen: [F], shards: ['s2'], reads: {}, dirReads: {},
+  } as unknown as CoverageMap
+  const carried = carryMap(base, next, new Set())
+  const keys = Object.entries(carried.files[F] ?? {}).filter(([, entry]) => entry.startLine === 30)
+  assert.deepEqual(keys.map(([key]) => key), ['f@0'], 'same name and range as the load ref')
+  const result = select(carried, [{ path: F, status: 'M', hunks: [{ start: 35, end: 35 }] }])
+  assert.equal(result.mode, 'all', 'the load function is hit, so its observers cannot be named')
+})
+
+test('import-phase env hashes are attributed to the tests of the scoped spec', () => {
+  const resolved = shard('s1', [
+    { ...testRecord('in a', []), file: '/repo/tests/a.spec.ts' },
+    { ...testRecord('in b', []), file: '/repo/tests/b.spec.ts' },
+  ])
+  resolved.loadReads = [
+    { file: '/repo/tests/a.spec.ts', reads: [], dirReads: [], env: { FLAG: 'aaaa0000aaaa0000' } },
+  ]
+  const map = mergeShards([resolved], { commit: 'c0ffee' })
+  assert.deepEqual(map.tests.find((entry) => entry.title === 'in a')?.env, {
+    FLAG: ['aaaa0000aaaa0000'],
+  })
+  assert.equal(map.tests.find((entry) => entry.title === 'in b')?.env, undefined)
 })
 
 test('two shards that ran different anonymous functions keep distinct keys and ranges', () => {

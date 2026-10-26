@@ -654,7 +654,12 @@ export class Recorder {
    * (a process that imports several spec files). The build attributes a scoped
    * record to that spec's tests and an unscoped one to every test in the shard.
    */
-  #spec: { file: string | null; reads: Set<string>; dirReads: Set<string> } | null = null
+  #spec: {
+    file: string | null
+    reads: Set<string>
+    dirReads: Set<string>
+    env: Set<string>
+  } | null = null
   /** Reads noted while a test window is open; cleared at each boundary. */
   #reads = new Set<string>()
   #dirReads = new Set<string>()
@@ -822,18 +827,40 @@ export class Recorder {
    */
   specStart(file: string | null = null): void {
     if (this.#spec !== null) return
-    this.#spec = { file, reads: new Set(), dirReads: new Set() }
+    const spec = { file, reads: new Set<string>(), dirReads: new Set<string>(), env: new Set<string>() }
+    this.#spec = spec
+    // `recordEnv` has no open test here, and the record API reaches no recorder
+    // outside a window, so the call would be dropped without a word. Point it at the
+    // spec scope; `testStart` or `runEnd` releases it when the import phase is over.
+    this.#releaseSink?.()
+    this.#releaseSink = activateRecordSink({
+      noteRead: () => {},
+      noteReadDir: () => {},
+      noteOpaque: () => {},
+      noteDependency: () => {},
+      noteEnv: (keys) => {
+        for (const key of keys) spec.env.add(key)
+      },
+    })
   }
 
   #flushSpecReads(): void {
     const spec = this.#spec
     this.#spec = null
-    if (spec === null || (spec.reads.size === 0 && spec.dirReads.size === 0)) return
+    if (spec === null) return
+    this.#releaseSink?.()
+    this.#releaseSink = null
+    if (spec.reads.size === 0 && spec.dirReads.size === 0 && spec.env.size === 0) return
+    // Hashed here, at the end of the import phase: the value in force when the
+    // first test is about to run, and never the value itself.
+    const env: Record<string, string> = {}
+    for (const key of [...spec.env].sort()) env[key] = hashEnvValue(process.env[key])
     this.#windows.commit({
       type: 'loadReads',
       file: spec.file,
       ...(spec.reads.size === 0 ? {} : { reads: [...spec.reads].sort() }),
       ...(spec.dirReads.size === 0 ? {} : { dirReads: [...spec.dirReads].sort() }),
+      ...(spec.env.size === 0 ? {} : { env }),
     })
   }
 

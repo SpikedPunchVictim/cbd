@@ -206,8 +206,8 @@ export interface ShardTest {
   /**
    * Environment variables the test declared, by **hash** of the value it saw.
    *
-   * The value is never recorded: a shard is a repository artefact and CI secrets
-   * must not land in one. Selection compares the hash of the current value against
+   * The value is never recorded: a shard is a repository artefact. The hash is
+   * unsalted and truncated, so a low-entropy value is still recoverable by guessing. Selection compares the hash of the current value against
    * these, so a changed flag selects the declaring test with no file change and no
    * coverage edge.
    */
@@ -239,6 +239,8 @@ export interface ShardLoadReads {
   file: string | null
   reads?: string[]
   dirReads?: string[]
+  /** Environment variables declared during the import phase, by hash. */
+  env?: Record<string, string>
 }
 
 /**

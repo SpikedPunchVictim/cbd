@@ -56,12 +56,16 @@ export interface TestEntry {
   status?: 'passed' | 'failed' | 'skipped'
   durationMs?: number
   /**
-   * Environment variables the test declared with `recordEnv`, by name.
+   * Environment variables the test declared with `recordEnv`, by name, each with
+   * the hashes the recording saw.
    *
-   * The values live in `CoverageMap.env` as hashes; this is the per-test edge that
-   * says which tests a changed variable selects.
+   * Per test, never pooled across tests: another test's value says nothing about
+   * this one. More than one hash means the same test id was recorded under
+   * different values (shards of a CI matrix); selection keeps all of them. Only a
+   * hash is stored, never the value. It is unsalted and truncated, so a
+   * low-entropy value (`1`, `true`, a region name) can be recovered by guessing.
    */
-  env?: string[]
+  env?: Record<string, string[]>
 }
 
 export interface CoverageMap {
@@ -81,14 +85,6 @@ export interface CoverageMap {
   reads?: Record<string, number[]>
   /** Directories listed by tests; a change to any file under one selects the lister. */
   dirReads?: Record<string, number[]>
-  /**
-   * Declared environment variables, by the hashes observed at record time.
-   *
-   * More than one hash means the variable changed between recordings being merged.
-   * A value is never stored — only the fingerprint — so this file can live in the
-   * repository's state directory without carrying a CI secret.
-   */
-  env?: Record<string, string[]>
   /**
    * Tests that declared an invisible dependency, by the reason they gave.
    *
@@ -281,7 +277,12 @@ function renumberShards(shards: ResolvedShard[]): ResolvedShard[] {
     `${ref[0]}\u0000${nameOf(ref[1])}\u0000${String(ref[2])}\u0000${String(ref[3])}`
 
   const byFile = new Map<string, Map<string, Fn>>()
+  // A group-granularity shard hands every test of the group the same touch array,
+  // so each distinct array is visited and rewritten once, not once per test.
+  const visited = new WeakSet<TouchRef[]>()
   const visit = (refs: TouchRef[]): void => {
+    if (visited.has(refs)) return
+    visited.add(refs)
     for (const ref of refs) {
       let fns = byFile.get(ref[0])
       if (fns === undefined) {
@@ -315,8 +316,15 @@ function renumberShards(shards: ResolvedShard[]): ResolvedShard[] {
     }
   }
 
-  const rewrite = (refs: TouchRef[]): TouchRef[] =>
-    refs.map((ref) => [ref[0], keys.get(identity(ref))!, ref[2], ref[3]])
+  const rewritten = new WeakMap<TouchRef[], TouchRef[]>()
+  const rewrite = (refs: TouchRef[]): TouchRef[] => {
+    let out = rewritten.get(refs)
+    if (out === undefined) {
+      out = refs.map((ref) => [ref[0], keys.get(identity(ref))!, ref[2], ref[3]])
+      rewritten.set(refs, out)
+    }
+    return out
+  }
   return shards.map((shard) => ({
     ...shard,
     tests: shard.tests.map((test) => ({ ...test, touches: rewrite(test.touches) })),
@@ -346,8 +354,6 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
   const reads = new Map<string, Set<number>>()
   const dirReads = new Map<string, Set<number>>()
   const opaque = new Map<string, Set<number>>()
-  /** Declared variable -> every hash observed for it across the merged shards. */
-  const envHashes = new Map<string, Set<string>>()
   const included: string[] = []
   const partial = new Set<string>()
   const unhealthy: string[] = []
@@ -478,16 +484,12 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
       allTests.push(index)
       if (test.touches.length > 0) touchedTests.add(testKey)
       for (const [key, hash] of Object.entries(test.env ?? {})) {
-        let seen = envHashes.get(key)
-        if (seen === undefined) {
-          seen = new Set()
-          envHashes.set(key, seen)
-        }
-        seen.add(hash)
         const entry = tests[index]
-        if (entry !== undefined && !(entry.env ?? []).includes(key)) {
-          entry.env = [...(entry.env ?? []), key].sort()
-        }
+        if (entry === undefined) continue
+        const recorded = (entry.env ??= {})
+        const hashes = (recorded[key] ??= [])
+        if (!hashes.includes(hash)) hashes.push(hash)
+        hashes.sort()
       }
       for (const reason of test.opaque ?? []) {
         let set = opaque.get(reason)
@@ -532,6 +534,15 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
         if (matched.length > 0) targets = matched
       }
       if (targets.length === 0) continue
+      for (const [key, hash] of Object.entries(record.env ?? {})) {
+        for (const index of targets) {
+          const entry = tests[index]
+          if (entry === undefined) continue
+          const hashes = ((entry.env ??= {})[key] ??= [])
+          if (!hashes.includes(hash)) hashes.push(hash)
+          hashes.sort()
+        }
+      }
       for (const path of record.reads) {
         for (const kept of readPaths(path)) {
           let set = reads.get(kept)
@@ -639,9 +650,6 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     reads: indexed(reads),
     dirReads: indexed(dirReads),
     ...(opaque.size === 0 ? {} : { opaque: indexed(opaque) }),
-    ...(envHashes.size === 0
-      ? {}
-      : { env: Object.fromEntries([...envHashes].map(([key, hashes]) => [key, [...hashes].sort()])) }),
     seen: [...seen].sort(),
     shards: included,
     dirty: options.dirty === true,
@@ -887,16 +895,30 @@ export function carryMap(
     // key of an entry that is the same function, otherwise take the next free
     // ordinal for the name rather than widening whatever already holds `key`.
     const name = key.slice(0, key.lastIndexOf('@'))
+    const ordinalOf = (candidate: string): number =>
+      Number(candidate.slice(candidate.lastIndexOf('@') + 1))
     let targetKey: string | undefined
     let free = 0
     for (const [candidate, entry] of Object.entries(target)) {
       if (candidate.slice(0, candidate.lastIndexOf('@')) !== name) continue
       if (entry.startLine === startLine && entry.endLine === endLine) targetKey = candidate
-      free = Math.max(free, Number(candidate.slice(candidate.lastIndexOf('@') + 1)) + 1)
+      free = Math.max(free, ordinalOf(candidate) + 1)
+    }
+    // The buckets are the new run's and keep their own keys. Selection joins a
+    // function to them by `file\0key`, so a carried function must take the key its
+    // bucket ref already uses, and a fresh ordinal must not collide with one.
+    for (const bucket of [next.load, next.between, next.teardown]) {
+      for (const [bucketFile, bucketKey, bucketStart, bucketEnd] of bucket) {
+        if (bucketFile !== file || bucketKey.slice(0, bucketKey.lastIndexOf('@')) !== name) continue
+        if (targetKey === undefined && bucketStart === startLine && bucketEnd === endLine) {
+          targetKey = bucketKey
+        }
+        free = Math.max(free, ordinalOf(bucketKey) + 1)
+      }
     }
     const existing = targetKey === undefined ? undefined : target[targetKey]
     if (existing === undefined) {
-      target[`${name}@${String(free)}`] = { startLine, endLine, tests: [at] }
+      target[targetKey ?? `${name}@${String(free)}`] = { startLine, endLine, tests: [at] }
       return
     }
     if (!existing.tests.includes(at)) existing.tests.push(at)
@@ -958,11 +980,6 @@ export function carryMap(
     tests,
     files,
     ...(Object.keys(opaque).length === 0 ? {} : { opaque }),
-    // Hashes are keyed by variable, not by test: a carried test keeps its declared
-    // keys on its entry, and the set of values that were recorded is the base's
-    // union the new run's. Dropping the base's would make a variable look unchanged
-    // since the carried run could not re-observe it.
-    ...(mergeEnv(next.env, base.env) === undefined ? {} : { env: mergeEnv(next.env, base.env) }),
     reads: merge(next.reads, readByTest),
     dirReads: merge(next.dirReads, dirByTest),
     load: next.load,
@@ -974,21 +991,6 @@ export function carryMap(
     ...(unhealthy.length === 0 ? {} : { unhealthy }),
     carried: { base: base.commit, tests: carried.length },
   }
-}
-
-/** Union of two `env` indexes: variable -> every hash either side observed. */
-function mergeEnv(
-  a: Record<string, string[]> | undefined,
-  b: Record<string, string[]> | undefined,
-): Record<string, string[]> | undefined {
-  if (a === undefined && b === undefined) return undefined
-  const out: Record<string, string[]> = {}
-  for (const source of [a, b]) {
-    for (const [key, hashes] of Object.entries(source ?? {})) {
-      out[key] = [...new Set([...(out[key] ?? []), ...hashes])].sort()
-    }
-  }
-  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /**

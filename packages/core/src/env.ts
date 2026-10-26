@@ -272,7 +272,12 @@ function selectionTests(parsed: unknown, path: string): SelectionTest[] | undefi
  *
  * `recordEnv` names the variables a test consulted; the shard and the map keep
  * only this hash, never the value. Selection compares the current environment's
- * hash against the recorded ones, so a secret in CI is never written to `.cbd`.
+ * hash against the recorded ones.
+ *
+ * The hash is unsalted SHA-256 truncated to 64 bits. That keeps the value out of
+ * `.cbd` in the sense that it is not stored, but it is not a secret store: a
+ * low-entropy value (`1`, `true`, a region name) is recoverable by hashing the
+ * candidates. Do not declare a variable whose value must stay confidential.
  * An absent variable hashes differently from an empty one: "unset" and "set to
  * nothing" are different answers to most code.
  */
