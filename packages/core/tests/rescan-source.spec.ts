@@ -37,6 +37,7 @@ import { test } from '@japa/runner'
 import { Recorder } from '../src/recorder.js'
 import { FileSink, parseShard } from '../src/shard.js'
 import { rescanningSocketSource, socketSource } from '../src/adapter.js'
+import { INSTRUMENT_PROTOCOL } from '../src/instrument-protocol.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { launchService, waitForSocket, type RunningService } from './support/service.js'
 
@@ -306,6 +307,235 @@ test('a process that died before its socket answered is read from its exit snaps
     assert.ok(
       names.has('persistKey'),
       `the dead child's work must be recorded: ${[...names].join(', ') || '(nothing)'}`,
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    child?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+// A snapshot that parses as JSON but is not a snapshot (`null`) used to throw out of
+// the harvest, and on the background path that was an unhandled rejection.
+test('a snapshot file of the wrong shape is skipped, not thrown', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let source: QueuedSource | null = null
+  const rejections: unknown[] = []
+  const onRejection = (error: unknown): void => {
+    rejections.push(error)
+  }
+  process.on('unhandledRejection', onRejection)
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 20 })
+    writeFileSync(join(dir, 'pid-999999.coverage.json'), 'null')
+    await sleep(150)
+    await source.take()
+    await sleep(50)
+    assert.deepEqual(rejections.map(String), [])
+  } finally {
+    process.off('unhandledRejection', onRejection)
+    source?.close()
+    lane?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A process whose first look finds no exit write yet is alive. It must be looked at
+// again once it has exited, or its whole lifetime is lost.
+test('a live process whose snapshot has no exit yet is harvested after it exits', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let child: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 300, discoveryIntervalMs: 60_000 })
+    child = launchService({ CBD_SOCKET_DIR: dir })
+    await child.ready
+    await waitForSocket(child.socketPath)
+    child.run('store')
+    await until(child, 'stored:')
+    await sleep(900) // the periodic snapshot (no exit write) now exists
+    const pid = child.proc.pid as number
+    process.kill(pid, 'SIGSTOP') // alive but unresponsive, so it cannot be attached
+    await source.take()
+    process.kill(pid, 'SIGCONT')
+    const proc = child.proc
+    const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()))
+    child.run('quit')
+    await exited
+
+    let seen = false
+    for (let i = 0; i < 3; i += 1) {
+      const payload = await source.take()
+      if (
+        payload.some(
+          (script) =>
+            script.scriptId.startsWith(`${String(pid)}:`) &&
+            script.functions.some(
+              (fn) => fn.functionName === 'persistKey' && (fn.ranges[0]?.count ?? 0) > 0,
+            ),
+        )
+      ) {
+        seen = true
+      }
+    }
+    assert.ok(seen, 'the child exited after the first look and its lifetime was never read')
+  } finally {
+    source?.close()
+    lane?.stop()
+    child?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// The socket path and the snapshot path both lead to the same exit write. Delivering
+// it through both credits one lifetime twice.
+test('an exit snapshot reached by both paths is delivered once', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let child: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+    child = launchService({ CBD_SOCKET_DIR: dir })
+    await child.ready
+    await waitForSocket(child.socketPath)
+    child.run('store')
+    await until(child, 'stored:')
+    const pid = child.proc.pid as number
+    const proc = child.proc
+    const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()))
+    child.run('quit')
+    await exited
+    // A stale socket file: the socket path's connect fails and falls back to the harvest.
+    writeFileSync(join(dir, `pid-${String(pid)}.sock`), '')
+
+    const payload = await source.take()
+    const ids = payload
+      .map((script) => script.scriptId)
+      .filter((id) => id.startsWith(`${String(pid)}:`))
+    assert.ok(ids.length > 0, 'the child was not harvested at all')
+    assert.equal(new Set(ids).size, ids.length, 'one lifetime was delivered twice')
+  } finally {
+    source?.close()
+    lane?.stop()
+    child?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a harvested child\'s script rows stay visible in scripts() after delivery', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let child: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+    child = launchService({ CBD_SOCKET_DIR: dir })
+    await child.ready
+    await waitForSocket(child.socketPath)
+    child.run('store')
+    await until(child, 'stored:')
+    const pid = String(child.proc.pid)
+    const proc = child.proc
+    const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()))
+    child.run('quit')
+    await exited
+
+    const payload = await source.take()
+    assert.ok(payload.some((script) => script.scriptId.startsWith(`${pid}:`)))
+    assert.ok(
+      [...source.scripts().keys()].some((key) => key.startsWith(`${pid}:`)),
+      'the harvested rows were dropped at delivery, so the build cannot resolve its scripts',
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    child?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// Windows reuses pids. A file judged unharvestable for one process must not shadow
+// the next process that gets the same pid.
+test('a reused pid with a new snapshot is a new process to harvest', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+    const path = join(dir, 'pid-777777.coverage.json')
+    const snapshot = (extra: object): string =>
+      JSON.stringify({
+        protocol: INSTRUMENT_PROTOCOL,
+        pid: 777777,
+        startedAtUs: 1e15,
+        atUs: 1e15,
+        scripts: [],
+        windows: [],
+        ...extra,
+      })
+    // Another collector's file: has a session, so never this run's evidence.
+    writeFileSync(path, snapshot({ session: 'old' }))
+    await source.take()
+    await sleep(30)
+    writeFileSync(
+      path,
+      snapshot({
+        startedAtUs: 2e15,
+        endedAtUs: 2e15,
+        untaken: [{ scriptId: '1', url: 'file:///x.js', functions: [] }],
+      }),
+    )
+    const payload = await source.take()
+    assert.ok(
+      payload.some((script) => script.scriptId === '777777:1'),
+      'the reused pid\'s lifetime was shadowed by the earlier verdict',
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a file a harvested child read is delivered with its lifetime', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let child: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    const route = join(dir, 'routing.json')
+    writeFileSync(route, '{}\n')
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+    child = launchService({ CBD_SOCKET_DIR: dir })
+    await child.ready
+    await waitForSocket(child.socketPath)
+    child.run('store')
+    await until(child, 'stored:')
+    child.run(`read ${route}`)
+    await until(child, 'read ')
+    const proc = child.proc
+    const exited = new Promise<void>((resolve) => proc.once('exit', () => resolve()))
+    child.run('quit')
+    await exited
+
+    const pending = source.dispatch()
+    await pending.settle()
+    const capture = await pending.settleTagged?.()
+    assert.ok(
+      capture?.reads?.includes(realpathSync(route)),
+      `the harvested child's read was lost: ${JSON.stringify(capture?.reads)}`,
     )
   } finally {
     source?.close()

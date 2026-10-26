@@ -223,6 +223,13 @@ export interface ShardTest {
 export interface ShardBucket {
   type: 'load' | 'between' | 'teardown'
   touches: ShardTouch
+  /**
+   * Files a service read outside any test window. Additive: a shard written
+   * before this field existed means what it said. The build attributes them like
+   * import-phase reads, to every test in the shard.
+   */
+  reads?: string[]
+  dirReads?: string[]
 }
 
 /**
@@ -241,6 +248,14 @@ export interface ShardLoadReads {
   dirReads?: string[]
   /** Environment variables declared during the import phase, by hash. */
   env?: Record<string, string>
+  /**
+   * Set when the reads came from a service's out-of-window bucket rather than a
+   * spec's import phase. A service's module loader reads the source of every module it
+   * runs, so the build drops a bucket read of a file the shard has coverage for: that
+   * file already has function evidence, and a read edge would send every change to it
+   * to every test in the shard.
+   */
+  bucket?: true
 }
 
 /**
@@ -504,10 +519,25 @@ export function summarizeShard(records: ShardRecord[]): {
           ...(dirReads === undefined ? {} : { dirReads }),
         })
       }
-    } else if (record.type === 'load') load.push(record.touches)
-    else if (record.type === 'between') between.push(record.touches)
-    else if (record.type === 'teardown') teardown.push(record.touches)
-    else if (record.type === 'loadReads') loadReads.push(record)
+    } else if (
+      record.type === 'load' ||
+      record.type === 'between' ||
+      record.type === 'teardown'
+    ) {
+      const bucket = record.type === 'load' ? load : record.type === 'between' ? between : teardown
+      bucket.push(record.touches)
+      // Out-of-window reads have no test to name, so they are filed like reads from
+      // a module-scope import the adapter could not attribute: against every test.
+      if (record.reads !== undefined || record.dirReads !== undefined) {
+        loadReads.push({
+          type: 'loadReads',
+          file: null,
+          bucket: true,
+          ...(record.reads === undefined ? {} : { reads: record.reads }),
+          ...(record.dirReads === undefined ? {} : { dirReads: record.dirReads }),
+        })
+      }
+    } else if (record.type === 'loadReads') loadReads.push(record)
     else if (record.type === 'health') health.push(record)
     else if (record.type === 'script') scripts.push(record)
     else if (record.type === 'function') functions.push(record)

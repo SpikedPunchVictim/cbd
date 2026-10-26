@@ -32,8 +32,9 @@ import {
   type CoverageMap,
 } from '../src/map.js'
 import type { ResolvedShard, ResolvedTest } from '../src/resolve.js'
-import type { ShardHeader, TouchRef } from '../src/shard.js'
+import type { ShardHeader, ShardRecord, TouchRef } from '../src/shard.js'
 import { select } from '../src/select.js'
+import { resolveShard } from '../src/resolve.js'
 
 const A = '/repo/src/a.ts'
 const B = '/repo/src/b.ts'
@@ -1150,4 +1151,32 @@ test('carryMap keeps a base function whose key equals a different function in th
     '<anonymous>@0': { startLine: 96, endLine: 98, tests: [0] },
     '<anonymous>@1': { startLine: 178, endLine: 180, tests: [1] },
   })
+})
+
+test('a change to a file a service read at startup selects the shard\'s tests', () => {
+  // The service read its routing file in the load take: no test window was open.
+  const records: ShardRecord[] = [
+    { ...header(), role: 'service' },
+    { type: 'load', touches: {}, reads: ['/repo/routing.json'] },
+    { type: 'test', title: 'a', file: null, status: 'passed', durationMs: 1, touches: {} },
+    { type: 'test', title: 'b', file: null, status: 'passed', durationMs: 1, touches: {} },
+    { type: 'end', tests: 2, finishedAt: 'T1' },
+  ]
+  const map = mergeShards([resolveShard({ name: 's.ndjson', records })], { commit: 'c0ffee' })
+  const result = select(map, [
+    { path: '/repo/routing.json', status: 'M', hunks: [{ start: 1, end: 1 }] },
+  ])
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('a service\'s loader read of a module it also executed is not a read edge', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('a', [ref(A, 'f@0', 1, 3)]), testRecord('b', [])], {
+        loadReads: [{ file: null, reads: [A, '/repo/routing.json'], dirReads: [], bucket: true }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.reads, { '/repo/routing.json': [0, 1] })
 })

@@ -497,7 +497,9 @@ async function start(dir: string): Promise<void> {
       unacked.size === 0 &&
       untaken.size === 0 &&
       scripts.size === 0 &&
-      requestWindows.length === 0
+      requestWindows.length === 0 &&
+      readFiles.size === 0 &&
+      readDirs.size === 0
     ) {
       return
     }
@@ -538,7 +540,12 @@ async function start(dir: string): Promise<void> {
       // exit write needs them, where they are the last chance to leave what no
       // reply carried.
       ...(complete
-        ? { untaken: [...untaken.values()], pendingRequests: [...requestWindows] }
+        ? {
+            untaken: [...untaken.values()],
+            pendingRequests: [...requestWindows],
+            ...(readFiles.size === 0 ? {} : { untakenReads: [...readFiles] }),
+            ...(readDirs.size === 0 ? {} : { untakenDirReads: [...readDirs] }),
+          }
         : {}),
     }
     const target = snapshotPath(dir, process.pid)
@@ -727,16 +734,20 @@ async function start(dir: string): Promise<void> {
     const session = connectionSessions.get(connection)
     if (session !== undefined) latestSession = session
     const coverage = await exclusive(async () => {
-      await accumulate()
-      const payload = [...untaken.values()]
-      untaken = new Map()
-      deliveredRequests = requestWindows.splice(0, requestWindows.length)
-      // Drained with the coverage, for the same reason: a read belongs to the window
-      // that closes here, and two takes must not split one window's reads.
+      // Drained BEFORE the coverage await, not after. `accumulate` yields to the
+      // inspector, and a read made during that yield would otherwise be charged to
+      // this window while the code that ran alongside it is counted in the next.
+      // Drained first, a read is never earlier than the coverage it belongs with: the
+      // worst case is that it travels one window late with its code, which selects
+      // the same tests, instead of one window early, which selects the wrong ones.
       deliveredReads = [...readFiles]
       deliveredDirReads = [...readDirs]
       readFiles.clear()
       readDirs.clear()
+      await accumulate()
+      const payload = [...untaken.values()]
+      untaken = new Map()
+      deliveredRequests = requestWindows.splice(0, requestWindows.length)
       // Drained, not copied. `scriptParsed` fires once per script, so a row sent
       // twice would be the same row twice. Drained inside the take queue so two
       // takes cannot split the rows between them.
@@ -752,6 +763,8 @@ async function start(dir: string): Promise<void> {
         scripts: delivered,
         ids,
         requests: deliveredRequests,
+        ...(deliveredReads.length === 0 ? {} : { reads: deliveredReads }),
+        ...(deliveredDirReads.length === 0 ? {} : { dirReads: deliveredDirReads }),
       })
       return payload
     })
@@ -983,6 +996,11 @@ async function start(dir: string): Promise<void> {
       snapshotTimer = null
     }
     restoreEmit?.()
+    // The handoff ends this instrument's session; its fs patches must not outlive it
+    // and keep noting reads into sets nobody will drain.
+    // The handoff ends this instrument's session; its fs patches must not outlive it
+    // and keep noting reads into sets nobody will drain.
+    stopReadTracking()
     removeSocket()
     removeSnapshot()
     try {

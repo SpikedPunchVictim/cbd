@@ -104,6 +104,7 @@
  * dies and is replaced that quickly inside one test run is not a shape worth a stat
  * per boundary to catch.
  */
+import { statSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { DEFAULT_INSPECTOR_TIMEOUT_MS } from './inspector.js'
 import {
@@ -116,7 +117,7 @@ import {
   socketPaths,
   socketSource,
 } from './socket.js'
-import { SOCKET_DIR_ENV, nowUs, snapshotPath, type ScriptRow, type SnapshotFile } from '../instrument-protocol.js'
+import { INSTRUMENT_PROTOCOL, SOCKET_DIR_ENV, nowUs, snapshotPath, type ScriptRow, type SnapshotFile } from '../instrument-protocol.js'
 import type {
   DriftStats,
   PendingTake,
@@ -225,9 +226,23 @@ export async function rescanningSocketSource(
     scripts: ScriptRow[]
     ids: string[]
     requests: TakeCapture['requests']
+    /** Files the process read since its last take; absent when none. */
+    reads?: string[]
+    dirReads?: string[]
   }
+  /** Harvests waiting for the next boundary. Drained on delivery. */
   const harvested: Harvest[] = []
-  const harvestedPids = new Set<number>()
+  /**
+   * Every harvest ever made, kept after delivery. The script table and the missing-text
+   * list describe the whole run, so a delivered harvest's rows must stay in them: the
+   * build resolves a harvested process's ranges through exactly those rows.
+   */
+  const everHarvested: Harvest[] = []
+  /**
+   * Process identities already harvested or reserved: pid plus the instrument's start
+   * time, because a pid can be reused by a later process and that is a new lifetime.
+   */
+  const harvestedKeys = new Set<string>()
 
   /** Processes born before this are another run's: their files can share the directory. */
   const recordingStartedUs = nowUs()
@@ -250,7 +265,7 @@ export async function rescanningSocketSource(
   let mergedRows = -1
 
   function scripts(): ReadonlyMap<string, ScriptInfo> {
-    let rows = harvested.length
+    let rows = everHarvested.length
     for (const target of targets) rows += target.source.scripts().size
     if (rows === mergedRows) return merged
 
@@ -259,7 +274,7 @@ export async function rescanningSocketSource(
     for (const target of targets) {
       for (const [id, info] of target.source.scripts()) merged.set(`${String(target.pid)}:${id}`, info)
     }
-    for (const harvest of harvested) {
+    for (const harvest of everHarvested) {
       for (const row of harvest.scripts) {
         merged.set(`${String(harvest.pid)}:${row.id}`, {
           url: row.url,
@@ -280,27 +295,64 @@ export async function rescanningSocketSource(
    */
   async function harvestPid(pid: number | undefined): Promise<Harvest | null> {
     if (pid === undefined) return null
-    if (harvestedPids.has(pid)) return null
     if (targets.some((target) => target.pid === pid)) return null
 
+    let modifiedMs: number | undefined
     let file: SnapshotFile
     try {
       // The snapshot lives in the directory its socket would have been in.
-      file = JSON.parse(await readFile(snapshotPath(dir, pid), 'utf8')) as SnapshotFile
+      const path = snapshotPath(dir, pid)
+      try {
+        modifiedMs = statSync(path).mtimeMs
+      } catch {
+        // Read below decides; a missing file is simply not harvestable.
+      }
+      file = JSON.parse(await readFile(path, 'utf8')) as SnapshotFile
     } catch {
       return null
     }
-    const lifetime = snapshotLifetime(file, recordingStartedUs)
-    if (lifetime === null) return null
+    // Valid JSON of the wrong shape (`null`, a number) is not a snapshot. Nothing a
+    // later look would learn, so it is final.
+    if (typeof file !== 'object' || file === null || !Array.isArray(file.scripts)) {
+      markAttempted(pid, modifiedMs)
+      return null
+    }
 
-    harvestedPids.add(pid)
-    return {
+    // Reserved before anything else happens and with no await since the check: the
+    // socket path and the snapshot path can reach the same file in one boundary, and
+    // two of them past a check that only the later one fills in would deliver one
+    // lifetime twice.
+    const key = `${String(pid)}:${String(file.startedAtUs)}`
+    if (harvestedKeys.has(key)) return null
+    harvestedKeys.add(key)
+
+    const lifetime = snapshotLifetime(file, recordingStartedUs)
+    if (lifetime === null) {
+      harvestedKeys.delete(key)
+      // A file from this run with no exit write yet belongs to a process that is
+      // still alive; it must be read again once it has gone. Anything else will not
+      // become harvestable by waiting.
+      const alive =
+        file.protocol === INSTRUMENT_PROTOCOL &&
+        file.session === undefined &&
+        file.startedAtUs >= recordingStartedUs &&
+        file.endedAtUs === undefined
+      if (!alive) markAttempted(pid, modifiedMs)
+      return null
+    }
+
+    markAttempted(pid, modifiedMs)
+    const harvest: Harvest = {
       pid,
       coverage: lifetime.coverage,
       scripts: lifetime.scripts,
       ids: lifetime.ids,
       requests: lifetime.requests,
+      ...(lifetime.reads === undefined ? {} : { reads: lifetime.reads }),
+      ...(lifetime.dirReads === undefined ? {} : { dirReads: lifetime.dirReads }),
     }
+    everHarvested.push(harvest)
+    return harvest
   }
 
   /** One harvest as a window's capture, in that process's script-id namespace. */
@@ -315,6 +367,8 @@ export async function rescanningSocketSource(
         ids: window.ids,
         coverage: prefix(window.coverage),
       })),
+      ...(harvest.reads === undefined ? {} : { reads: harvest.reads }),
+      ...(harvest.dirReads === undefined ? {} : { dirReads: harvest.dirReads }),
     }
   }
 
@@ -444,7 +498,12 @@ export async function rescanningSocketSource(
    * handler leaves only the bounded periodic file, and that one is not recoverable
    * by any rule — retrying would pay a read per test to learn nothing.
    */
-  const harvestAttempted = new Set<number>()
+  const harvestAttempted = new Map<number, number | undefined>()
+
+  /** Records that this version of the pid's snapshot will never become harvestable. */
+  function markAttempted(pid: number, modifiedMs: number | undefined): void {
+    harvestAttempted.set(pid, modifiedMs)
+  }
 
   /**
    * Processes that exited before any socket could answer: a normal exit unlinks the
@@ -454,9 +513,18 @@ export async function rescanningSocketSource(
     for (const path of snapshotPaths(dir)) {
       const pid = pidOfSnapshotPath(path)
       if (pid === undefined || pid === process.pid) continue
-      if (harvestAttempted.has(pid) || harvestedPids.has(pid)) continue
       if (targets.some((target) => target.pid === pid)) continue
-      harvestAttempted.add(pid)
+      // Skipped only while the file is the one already judged: a reused pid writes a
+      // new file, and that is a new process to look at.
+      if (harvestAttempted.has(pid)) {
+        let modifiedMs: number | undefined
+        try {
+          modifiedMs = statSync(path).mtimeMs
+        } catch {
+          continue
+        }
+        if (harvestAttempted.get(pid) === modifiedMs) continue
+      }
 
       const opening = harvestPid(pid)
       if (boundary) {
@@ -629,7 +697,7 @@ export async function rescanningSocketSource(
       // A harvested process is gone: its generated text can never be fetched, so a
       // script of its that carries a map is exactly the case the partial marker
       // exists for.
-      ...harvested.flatMap((harvest) =>
+      ...everHarvested.flatMap((harvest) =>
         harvest.scripts
           .filter((row) => row.sourceMapURL !== undefined && row.sourceMapURL !== '')
           .map((row) => `${String(harvest.pid)}:${row.id}`),

@@ -527,6 +527,15 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     // adapter could not name the file (a process that imports several specs),
     // every test in the shard does. A scope whose tests are not in the map falls
     // back to the shard rather than dropping the read.
+    // Files this shard has function evidence for. A service's loader reads every module
+    // it runs, so a bucket read of one of these is incidental and is dropped; keeping it
+    // would send every change to that file to every test in the shard.
+    const executedHere = new Set<string>()
+    for (const ref of [...resolved.load, ...resolved.between, ...resolved.teardown]) {
+      executedHere.add(ref[0])
+    }
+    for (const test of resolved.tests) for (const ref of test.touches) executedHere.add(ref[0])
+
     for (const record of resolved.loadReads) {
       let targets = allTests
       if (record.file !== null) {
@@ -545,6 +554,7 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
       }
       for (const path of record.reads) {
         for (const kept of readPaths(path)) {
+          if (record.bucket === true && executedHere.has(kept)) continue
           let set = reads.get(kept)
           if (set === undefined) {
             set = new Set()

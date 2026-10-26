@@ -769,11 +769,22 @@ export class Recorder {
   }
 
   #bucket(kind: 'load' | 'between' | 'teardown'): void {
-    this.#emit((capture) =>
-      hasTouches(capture.window.touches)
-        ? { type: kind, touches: capture.window.touches }
-        : null,
-    )
+    this.#emit((capture) => {
+      // Reads a service made outside any test (its startup config, a file between
+      // tests, at teardown) arrive with this window. Without them a change to that
+      // file would select nothing; the bucket carries them so the build files them
+      // against the whole shard.
+      const reads = unionSorted([], capture.reads)
+      const dirReads = unionSorted([], capture.dirReads)
+      const touched = hasTouches(capture.window.touches)
+      if (!touched && reads.length === 0 && dirReads.length === 0) return null
+      return {
+        type: kind,
+        touches: capture.window.touches,
+        ...(reads.length === 0 ? {} : { reads }),
+        ...(dirReads.length === 0 ? {} : { dirReads }),
+      }
+    })
   }
 
   /**

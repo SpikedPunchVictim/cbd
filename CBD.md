@@ -388,7 +388,14 @@ read, and a version 2 header carrying a group record is refused.
   shared by every test in the record, expanded back into ordinary per-test windows by the build.
   The union is what the group executed, so each test is credited with all of it — over-selection
   inside the group and never under-selection. A group window also takes the gap between its
-  tests, which is why no `between` record appears in this mode.
+  tests, which is why no `between` record appears in this mode. **The trade-off:** the
+  `@between` safety net is gone. Without a `between` record, code that ran only between tests is
+  credited to the group's tests instead of escalating under `betweenPolicy`, so the selection is
+  narrower for such code than in per-test mode. An adapter must call `groupEnd` at its runner's
+  group boundary (mocha's programmatic `installMochaAdapter` does, as does `auto`; both guard it)
+  to claim group support.
+- A `load`, `between` or `teardown` record may carry `reads`/`dirReads`: files a service read
+  outside any test window, which the build attributes to every test in the shard.
 - A **script** row is written once per script, with the file's `size` and `mtimeMs` at
   recording time. The URL is the *relocated* one when a relocation rule applies, so a
   deployed lane's shard names bytes the checkout still has.
@@ -778,7 +785,15 @@ reads during test-file import or between tests, and any process the instrument n
 A **service or child process the collector holds** is no longer in that list: the instrument
 installs the same tracker inside the target, drains the paths with each take, and the collector
 writes them into the test record for the boundary that closes the window, beside the test
-process's own reads. An instrument older than the field reports none. `alwaysSelect` remains for
+process's own reads. An instrument older than the field reports none (the protocol version is
+unchanged: the fields are optional, so a bump would only make an older instrument unusable). A
+service's reads outside any test window — its startup config in the load take, a file read between
+tests, a teardown read — travel on the `load`/`between`/`teardown` record as `reads`/`dirReads`
+and are filed against every test in that shard, the way an unscoped import-phase read is — except a read of a file the shard also has function coverage for (a service's loader reads every module it runs), which keeps its function evidence instead of becoming a read edge. The reads
+a take drained survive a lost reply and a process that exits: they are kept with the unacknowledged
+window and in the exit snapshot, so recovery and the exit harvest return them with the coverage.
+A read is drained before the take's coverage await, so it is never charged to an earlier window than
+the code that ran with it. `alwaysSelect` remains for
 what no observed process read — a tool that reads a file it was spawned with, a native addon, a
 process whose environment could not be set.
 

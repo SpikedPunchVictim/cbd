@@ -34,6 +34,15 @@
 import { join } from 'node:path'
 import type { GeneratedScript, V8ScriptCoverage } from './types.js'
 
+/**
+ * Not bumped when `TakeResult` gained `reads`/`dirReads` or the snapshot gained
+ * `reads`/`untakenReads`. A mismatch is a hard failure on both sides (`hello` throws,
+ * and a snapshot of another version is refused by recovery), so a bump would make an
+ * older instrument unusable to gain a field that is optional everywhere. Every one of
+ * these fields may be absent: an instrument that predates them reports no reads, which
+ * is the old behaviour, and a collector treats an absent field as "none". Bump only for
+ * a change an older peer would misread rather than ignore.
+ */
 export const INSTRUMENT_PROTOCOL = 1
 
 /**
@@ -241,6 +250,14 @@ export interface SnapshotWindow {
    */
   ids?: string[]
   requests?: RequestWindow[]
+  /**
+   * The files the process read during this window, kept for the same reason as the
+   * coverage: a recovered window that dropped its reads would lose the file
+   * dependencies of exactly the window whose reply was lost. Absent in a snapshot
+   * written before this field existed, which reads as none.
+   */
+  reads?: string[]
+  dirReads?: string[]
 }
 
 /** What an instrumented process leaves beside its socket. */
@@ -301,6 +318,15 @@ export interface SnapshotFile {
    * delivers them while the process is alive.
    */
   pendingRequests?: RequestWindow[]
+  /**
+   * Files read since the last take, in the exit write only.
+   *
+   * The same exit-only bound as `untaken`: they are what a process that read a file
+   * and then died leaves behind, and a harvest that returned coverage without them
+   * would drop the dependency.
+   */
+  untakenReads?: string[]
+  untakenDirReads?: string[]
 }
 
 /** The file the instrument writes, derived from the pid it belongs to. */

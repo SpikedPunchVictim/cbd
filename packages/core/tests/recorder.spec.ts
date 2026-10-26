@@ -641,6 +641,8 @@ function taggedSource(
     coverage: V8ScriptCoverage[]
     ids: string[]
     requests: Array<{ ids: string[]; coverage: V8ScriptCoverage[] }>
+    reads?: string[]
+    dirReads?: string[]
   }>,
 ): QueuedSource {
   let index = 0
@@ -1266,4 +1268,33 @@ test('a variable declared during the spec import phase is recorded with the spec
     if (previous === undefined) delete process.env.CBD_TEST_SPEC_FLAG
     else process.env.CBD_TEST_SPEC_FLAG = previous
   }
+})
+
+test('a service read taken in the load, between and teardown windows is recorded, not dropped', async () => {
+  const source = taggedSource([
+    { coverage: [], ids: [], requests: [], reads: ['/svc/startup.json'] },
+    { coverage: [], ids: [], requests: [] },
+    { coverage: [], ids: [], requests: [], reads: ['/svc/between.json'], dirReads: ['/svc/dir'] },
+    { coverage: [], ids: [], requests: [] },
+    { coverage: [], ids: [], requests: [], reads: ['/svc/teardown.json'] },
+  ])
+  const sink = new StringSink()
+  const recorder = new Recorder({ source, sink, commit: 'c0ffee' })
+  recorder.runStart()
+  recorder.testStart('a', null)
+  recorder.testEnd('a', 'passed')
+  recorder.testStart('b', null)
+  recorder.testEnd('b', 'passed')
+  recorder.runEnd()
+  await recorder.drained()
+
+  const { loadReads } = summarizeShard(parseShard(sink.text))
+  assert.deepEqual(
+    loadReads.flatMap((record) => record.reads ?? []).sort(),
+    ['/svc/between.json', '/svc/startup.json', '/svc/teardown.json'],
+  )
+  assert.deepEqual(
+    loadReads.flatMap((record) => record.dirReads ?? []),
+    ['/svc/dir'],
+  )
 })

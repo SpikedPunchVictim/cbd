@@ -92,6 +92,13 @@ until a tag is pushed and the publish workflow runs.
   own, attributed to the boundary that closes the window exactly as coverage is. `settleTagged()`
   is now present on every queued source because it carries the reads as well as the correlation
   tags; an older instrument reports none, and the build's include filter still decides what counts.
+  Reads a service makes outside any window (its startup config, a file read between tests, at
+  teardown) ride the `load`/`between`/`teardown` record and select every test in the shard (a module the
+  service's loader read and the shard also has coverage for keeps its function evidence instead); they
+  are persisted with the unacknowledged window and the exit snapshot, so a lost reply, snapshot
+  recovery and the exit harvest return them too. A take drains its reads before its coverage await,
+  so a read is never charged to an earlier window than the code that ran with it. The instrument
+  protocol stays at 1: the new fields are optional, and a bump would hard-fail older instruments.
 - **A child that dies before it is attached is read from its exit snapshot.** A test that
   shells out to a Node CLI usually watches it exit inside the test window, and a normal exit
   unlinks the instrument's socket — so the re-scan that finds services a suite starts could not
@@ -101,8 +108,20 @@ until a tag is pushed and the publish workflow runs.
   delivers it to the boundary that discovered the process, as a live target's first take is.
   Three conditions keep it this run's evidence: no collector session in the file, an exit write
   (`endedAtUs`), and a process born after the recording started. A pid already held through its
-  socket is never harvested, so nothing is counted twice. `discoveryIntervalMs` lets a caller
-  tune the look-for-new-targets interval.
+  socket is never harvested, so nothing is counted twice, even when the socket path and the
+  snapshot path reach the same file in one boundary. A snapshot with no exit write yet belongs to
+  a live process and is read again at later boundaries; a file of the wrong shape is skipped
+  rather than thrown; a reused pid is a new process (bookkeeping is keyed by pid and start time).
+  A harvested process's script rows stay in the source's table after delivery, so a
+  loader-injected `sourceMappingURL` still resolves. `discoveryIntervalMs` lets a caller
+  tune the look-for-new-targets interval. `instrument.stop()` now also restores the patched
+  `node:fs` functions.
+- **Group recording reaches mocha's programmatic entry and cannot crash a run.** Only
+  `@spikedpunch/cbd-mocha/auto` reported suite ends, so `installMochaAdapter` with
+  `granularity: 'group'` recorded no windows; it now wires `groupEnd` too. The mocha `suite end`
+  and japa `group:end` listeners are guarded like the test boundaries: a recorder that cannot
+  write is one line on stderr, not an uncaught exception. Group mode still has no `@between`
+  net; CBD.md states the trade-off.
 - **Diff parsing matches real path names.** git appends a TAB to a `---`/`+++` line when the
   path contains a space, and the parser kept it: with an `include` of `src/**/*.ts` a change to
   `src/my file.ts` matched no glob and was dropped as out of scope. The `diff --git` header is

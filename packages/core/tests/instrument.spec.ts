@@ -623,6 +623,38 @@ test.group('instrument module', () => {
    * leaves nothing behind: no socket for another collector to attach to, and no
    * snapshot for a harvester to attribute to a window nobody took.
    */
+  test('stopping restores the fs functions the read tracker patched', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-standdown-'))
+    const script = `
+      (async () => {
+        const fs = require('node:fs')
+        const socket = process.env.CBD_SOCKET_DIR + '/pid-' + process.pid + '.sock'
+        for (let i = 0; i < 400 && !fs.existsSync(socket); i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 5))
+        }
+        const wrapped = fs.readFileSync.name !== 'readFileSync'
+        await globalThis.__cbdInstrument?.stop()
+        console.log(JSON.stringify({ wrapped, restored: fs.readFileSync.name === 'readFileSync' }))
+      })()
+    `
+    try {
+      const result = spawnSync(process.execPath, ['-e', script], {
+        cwd: PACKAGE_ROOT,
+        env: {
+          ...process.env,
+          CBD_SOCKET_DIR: dir,
+          NODE_OPTIONS: `--import ${INSTRUMENT_SPECIFIER}`,
+        },
+        encoding: 'utf8',
+        timeout: 10_000,
+      })
+      assert.equal(result.status, 0, result.stderr)
+      assert.deepEqual(JSON.parse(result.stdout.trim()), { wrapped: true, restored: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   test('stands down on request, taking its socket and snapshot with it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cbd-standdown-'))
     // `-e` rather than a fixture file: the question is what the *entry point* can

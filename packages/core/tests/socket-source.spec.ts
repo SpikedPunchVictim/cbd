@@ -21,7 +21,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import { SocketSourceError, discoverSockets, socketSource } from '../src/adapter.js'
-import { recoverFromSnapshot } from '../src/source/socket.js'
+import { recoverFromSnapshot, snapshotLifetime } from '../src/source/socket.js'
 import { INSTRUMENT_PROTOCOL, type SnapshotFile } from '../src/instrument-protocol.js'
 import type { QueuedSource, V8ScriptCoverage } from '../src/types.js'
 import { sourceContract } from './support/source-contract.js'
@@ -552,6 +552,36 @@ test.group('snapshot recovery identity', () => {
     scripts: [],
     windows: [],
     ...overrides,
+  })
+
+  test('a recovered window carries the files its lost reply read', () => {
+    const snapshot = file({
+      windows: [
+        {
+          takeId: 2,
+          session: 'run-a',
+          coverage: [],
+          reads: ['/svc/routes.json'],
+          dirReads: ['/svc/dir'],
+        },
+      ],
+    })
+    const recovered = recoverFromSnapshot(snapshot, 2, 0, 'run-a')
+    assert.deepEqual(recovered?.reads, ['/svc/routes.json'])
+    assert.deepEqual(recovered?.dirReads, ['/svc/dir'])
+  })
+
+  test('a harvested exit lifetime carries the files read since the last take', () => {
+    const exited = file({
+      session: undefined,
+      endedAtUs: 5,
+      untaken: [],
+      untakenReads: ['/svc/config.json'],
+      untakenDirReads: ['/svc/conf.d'],
+    })
+    const lifetime = snapshotLifetime(exited, 0)
+    assert.deepEqual(lifetime?.reads, ['/svc/config.json'])
+    assert.deepEqual(lifetime?.dirReads, ['/svc/conf.d'])
   })
 
   test('a matched snapshot window with no coverage is still recovered', () => {

@@ -400,6 +400,9 @@ export interface Recovered {
   /** The correlation tags the lost reply carried, so recovery does not drop them. */
   ids: string[]
   requests: RequestWindow[]
+  /** The files the lost window read; absent when it read none. */
+  reads?: string[]
+  dirReads?: string[]
   /**
    * Whether a window numbered for this take was found, rather than the unnumbered
    * fallback. Numbered windows belong to one take and can be read as often as that
@@ -448,8 +451,20 @@ export function snapshotLifetime(file: SnapshotFile, bornAfterUs: number): Recov
   if (file.startedAtUs < bornAfterUs) return null
   const coverage = file.untaken ?? []
   const requests = file.pendingRequests ?? []
-  if (coverage.length === 0 && requests.length === 0) return null
-  return { coverage, scripts: file.scripts, ids: [], requests, matched: false }
+  const reads = file.untakenReads ?? []
+  const dirReads = file.untakenDirReads ?? []
+  if (coverage.length === 0 && requests.length === 0 && reads.length === 0 && dirReads.length === 0) {
+    return null
+  }
+  return {
+    coverage,
+    scripts: file.scripts,
+    ids: [],
+    requests,
+    ...(reads.length === 0 ? {} : { reads }),
+    ...(dirReads.length === 0 ? {} : { dirReads }),
+    matched: false,
+  }
 }
 
 /**
@@ -478,6 +493,8 @@ export function recoverFromSnapshot(
   const coverage: V8ScriptCoverage[] = []
   const ids: string[] = []
   const requests: RequestWindow[] = []
+  const reads: string[] = []
+  const dirReads: string[] = []
   let matched = false
   for (const window of file.windows) {
     if (window.session !== session) continue
@@ -485,6 +502,8 @@ export function recoverFromSnapshot(
       coverage.push(...window.coverage)
       ids.push(...(window.ids ?? []))
       requests.push(...(window.requests ?? []))
+      reads.push(...(window.reads ?? []))
+      dirReads.push(...(window.dirReads ?? []))
       matched = true
     }
   }
@@ -509,12 +528,30 @@ export function recoverFromSnapshot(
     if (file.session !== session) return null
     coverage.push(...(file.untaken ?? []))
     requests.push(...(file.pendingRequests ?? []))
+    reads.push(...(file.untakenReads ?? []))
+    dirReads.push(...(file.untakenDirReads ?? []))
   }
   // A matched window with no coverage is still evidence: the window existed, its
   // script rows must be absorbed, and its take must be acknowledged so the
   // snapshot stops offering it. Only "no window and no fallback" is a null.
-  if (coverage.length === 0 && requests.length === 0 && !matched) return null
-  return { coverage, scripts: file.scripts, ids, requests, matched }
+  if (
+    coverage.length === 0 &&
+    requests.length === 0 &&
+    reads.length === 0 &&
+    dirReads.length === 0 &&
+    !matched
+  ) {
+    return null
+  }
+  return {
+    coverage,
+    scripts: file.scripts,
+    ids,
+    requests,
+    ...(reads.length === 0 ? {} : { reads: [...new Set(reads)].sort() }),
+    ...(dirReads.length === 0 ? {} : { dirReads: [...new Set(dirReads)].sort() }),
+    matched,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -907,7 +944,13 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
             if (fallbackTaken) return { coverage: [], ids: [], requests: [] }
             fallbackTaken = true
           }
-          return { coverage: window.coverage, ids: window.ids, requests: window.requests }
+          return {
+            coverage: window.coverage,
+            ids: window.ids,
+            requests: window.requests,
+            ...(window.reads === undefined ? {} : { reads: window.reads }),
+            ...(window.dirReads === undefined ? {} : { dirReads: window.dirReads }),
+          }
         }
         reportLoss(error)
         throw error
