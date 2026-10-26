@@ -296,7 +296,9 @@ export function installJapaAdapter(
   }
 
   const onGroupEnd = (): void => {
-    for (const recorder of recorders) recorder.groupEnd()
+    guarded(() => {
+      for (const recorder of recorders) recorder.groupEnd()
+    })
   }
 
   emitter.on('test:start', onTestStart as JapaListener)

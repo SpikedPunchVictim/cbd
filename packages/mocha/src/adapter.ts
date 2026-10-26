@@ -143,6 +143,15 @@ export function mochaWindowHooks(recorder: Recorder): {
  */
 export function installMochaAdapter(mocha: Mocha, recorder: Recorder): InstalledAdapter {
   mocha.rootHooks(mochaWindowHooks(recorder))
+  // A recorder built for group granularity takes nothing at a test boundary, so an
+  // adapter that never reports the suite end would hand back a shard with no windows.
+  // `run` is wrapped on the instance because the runner only exists once it returns.
+  const run = mocha.run.bind(mocha) as (...args: unknown[]) => Mocha.Runner
+  mocha.run = ((...args: unknown[]): Mocha.Runner => {
+    const runner = run(...args)
+    attachGroupEnd(runner, recorder)
+    return runner
+  }) as Mocha['run']
   return {
     recorder,
     async finish() {
@@ -150,4 +159,32 @@ export function installMochaAdapter(mocha: Mocha, recorder: Recorder): Installed
       await recorder.runEnd()
     },
   }
+}
+
+/**
+ * One window per suite, when the recording asked for group granularity.
+ *
+ * The listener is inert in per-test mode (`groupEnd` is a no-op there). Mocha emits
+ * `suite end` from its own event loop and does not await or catch a listener, so a
+ * throw from the recorder (a sink that cannot write) would be an uncaught exception
+ * that kills the run with no footer. One line on stderr is the non-fatal answer, as
+ * in the japa adapter.
+ */
+export function attachGroupEnd(
+  runner: { on(event: 'suite end', listener: () => void): unknown },
+  recorder: Pick<Recorder, 'groupEnd'>,
+): void {
+  let reported = false
+  runner.on('suite end', () => {
+    try {
+      recorder.groupEnd()
+    } catch (error) {
+      if (reported) return
+      reported = true
+      process.stderr.write(
+        `cbd: a recorder step failed (${error instanceof Error ? error.message : String(error)}); ` +
+          'this shard is incomplete and the build may refuse it.\n',
+      )
+    }
+  })
 }

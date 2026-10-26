@@ -208,6 +208,22 @@ test.group('installJapaAdapter', () => {
     assert.deepEqual(second.calls, [['groupEnd']])
   })
 
+  test('a recorder that throws at a group boundary does not escape the listener', () => {
+    const { recorder } = stubRecorder()
+    ;(recorder as unknown as { groupEnd: () => void }).groupEnd = () => {
+      throw new Error('ENOSPC')
+    }
+    const { emitter, emit } = fakeEmitter()
+    installJapaAdapter(emitter, [recorder])
+    const realWrite = process.stderr.write.bind(process.stderr)
+    process.stderr.write = (() => true) as typeof process.stderr.write
+    try {
+      assert.doesNotThrow(() => emit('group:end', { title: 'a group' }))
+    } finally {
+      process.stderr.write = realWrite
+    }
+  })
+
   test('runner:end writes the footer, drains and closes, without an explicit finish call', async () => {
     const { recorder, calls } = stubRecorder()
     const { emitter, emit } = fakeEmitter()

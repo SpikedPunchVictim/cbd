@@ -86,7 +86,7 @@ if (shardPath !== undefined || selecting) {
   // Loaded here rather than at the top of the module: an inert process (a child a
   // test spawned) must not pay for the core graph. See the docblock.
   const core = await import('@spikedpunch/cbd/adapter')
-  const { beginShard, installMochaAdapter } = await import('./adapter.js')
+  const { attachGroupEnd, beginShard, installMochaAdapter } = await import('./adapter.js')
   // Read before the suite is imported: a malformed or empty selection must fail
   // here, while the message can still say which file is wrong, rather than after
   // mocha has already loaded every test file.
@@ -161,7 +161,7 @@ if (shardPath !== undefined || selecting) {
     // listener is inert in per-test mode (`groupEnd` is a no-op). A suite end is
     // asynchronous, so attaching after `run` returns still sees every one; a
     // root-level test with no suite boundary of its own is flushed at `runEnd`.
-    runner.on('suite end', () => recorder.groupEnd())
+    attachGroupEnd(runner, recorder)
     return runner
   }
 }
