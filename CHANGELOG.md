@@ -26,7 +26,14 @@ until a tag is pushed and the publish workflow runs.
   missing a code file means the recording was incomplete, so it now reaches the unknown-file rule and
   `unknownPolicy`/`unknownPolicyFor` decide; non-code files (fixtures, schemas) keep their read
   answer. Code imported by the japa runner entry before the plugin installs is such a case: safe, but
-  every change to it runs everything.
+  every change to it runs everything unless the new `register` preload (next entry) records it.
+- **A japa preload records code imported before the plugin installs.** The plugin starts recording
+  inside `configure`, so a shared test-kit or config module the runner entry imports above it ran
+  unrecorded, was unknown to the map, and ran everything whenever it changed.
+  `NODE_OPTIONS="--import @spikedpunch/cbd-japa/register"` starts recording before the entry's
+  imports run; the `cbd()` plugin then joins that session instead of starting a second, and the
+  early execution lands in `@load`. It is inert without `CBD_SHARD`, and a plugin-only setup behaves
+  as before.
 - **A declared environment variable selects the tests that read it.** A test that branches on
   `process.env.FLAG` has no file edge, so a flag flipped in CI or the shell left the selection
   answering for the old value. `recordEnv('FLAG')` names the variable; the shard and the map keep a

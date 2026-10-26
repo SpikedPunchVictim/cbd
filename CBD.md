@@ -525,6 +525,13 @@ Wiring facts the implementation rests on, all measured (`.explore/A0-japa-hooks.
 - **There is no `auto.ts`, deliberately.** `@japa/runner` exports only functions and its plugin list
   is module-private, so there is nothing for a `--import` module to patch. One explicit line in
   `configure` is the integration.
+- **A `register` preload moves the start of recording earlier.** The plugin starts recording when
+  japa installs it, so anything the runner entry imports above `configure` (a shared test-kit, a
+  config module) runs unrecorded and is unknown to the map. `--import @spikedpunch/cbd-japa/register`
+  opens the session before the entry runs and parks it; the plugin adopts it instead of starting a
+  second, so those executions land in `@load`. The plugin line stays — the preload cannot install
+  the window hooks — and a plugin-only setup behaves as before. The preload is inert without
+  `CBD_SHARD`, which it reads and removes so a spawned child does not reopen the shard.
 - **The adapter's own files are excluded from the scan.** So are core's. `NODE_OPTIONS` reaches the
   test runner too (ADR-0005), and a workspace link resolves outside `node_modules`, where the
   default prefilter cannot hide the tool. `CBD_INCLUDE_SELF=1` lifts that floor for the
@@ -872,7 +879,9 @@ executes nothing by nature, so its reads still answer it.
 
 **Japa blind spot.** Code imported by the runner entry (`bin/test.ts`) before the plugin installs
 is invisible to coverage, because the recorder is not yet attached when it is evaluated. With the
-rule above such files are safe, but every change to one of them runs everything.
+rule above such files are safe, but every change to one of them runs everything. The
+`--import @spikedpunch/cbd-japa/register` preload closes the gap: it starts recording before the
+entry's imports run (§7.1), so those files are in the map.
 
 A **never seen** file is the important case: a TypeScript file containing only types, a `const enum`
 that the compiler inlines into its users, a SQL file, a JSON fixture read with `fs`, an environment

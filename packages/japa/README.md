@@ -39,6 +39,22 @@ pnpm exec cbd collect -- pnpm test
 The plugin installs japa's test-start/test-end hooks and writes shard records to `CBD_SHARD`. japa
 exposes its emitter to plugins directly, so no patching and no `/auto` entry is needed.
 
+### Code your entry imports before the plugin
+
+The plugin starts recording when japa installs it, inside `configure`. Anything your `bin/test.ts`
+imports above that line (a shared test-kit, a config module) has already run, so it never reaches the
+map, and a change to it is an unknown file that runs the whole suite. The `register` preload starts
+recording earlier:
+
+```sh
+NODE_OPTIONS="--import @spikedpunch/cbd-japa/register" pnpm exec cbd collect -- pnpm test
+```
+
+Keep `plugins: [cbd()]` in `configure`: the plugin joins the session the preload started rather than
+starting a second one, and what ran before the first test is recorded as load-time execution. The
+preload is inert when `CBD_SHARD` is unset. Shard, commit and scan settings come from the environment
+when the preload is used; the same options passed to `cbd()` do not apply to its session.
+
 ### A service the suite drives
 
 When `CBD_SOCKET_DIR` is set, the plugin records the instrumented service as well as the test process,

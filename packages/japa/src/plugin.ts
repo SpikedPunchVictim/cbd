@@ -21,6 +21,11 @@
  * with a loader hook that rewrote the consumer's own entry point would be a far
  * larger and more fragile thing than the line it saved.
  *
+ * **What a `register` preload can still do** is start recording earlier. Code the
+ * runner entry imports above `configure` runs before this plugin installs; the
+ * `--import` entry in `register.ts` opens the session first, and this plugin adopts
+ * it. The plugin line stays required: only it can reach the emitter.
+ *
  * **One variable decides whether there is a service to record.** `CBD_SOCKET_DIR`
  * is the same variable the service's own environment sets to turn on the injected
  * instrument module (ADR-0005), inherited down the tree. So the plugin does not
@@ -256,6 +261,88 @@ export async function recordersFor(
   return recorders
 }
 
+/**
+ * A recording that has started and not yet been handed an emitter.
+ *
+ * It exists as a value because two entry points start recording and one of them
+ * runs long before japa does: the `register` preload opens it while Node is still
+ * resolving `--import`, and the plugin adopts it once japa hands over its emitter.
+ */
+export interface RecordingSession {
+  recorders: Recorder[]
+  correlator: Correlator | undefined
+  stopReads: () => void
+  stopProcesses: () => void
+}
+
+/** Where the preload leaves its session. Keyed globally so two copies of this module agree. */
+const SESSION_SLOT = Symbol.for('@spikedpunch/cbd-japa/session')
+type SessionHolder = { [SESSION_SLOT]?: RecordingSession | null }
+
+/**
+ * Opens the recorders and the trackers for one run, and enters the load phase.
+ *
+ * Everything that must happen before the first test file is imported happens
+ * here, in the order it always did when this was the plugin's body. Nothing in it
+ * needs japa, which is what lets the preload run it first.
+ */
+export async function startRecording(
+  shard: string,
+  options: Pick<CbdOptions, 'commit' | 'scan'> = {},
+): Promise<RecordingSession> {
+  const scan = options.scan ?? scanFromEnv()
+  const commit = envValue(options.commit) ?? envValue(process.env.CBD_COMMIT) ?? 'unknown'
+  // A service is what correlation is for. With none, an id on every request
+  // would buy nothing, and patching the process's HTTP client for nothing is
+  // exactly the kind of side effect this module exists not to have.
+  const dir = process.env[SOCKET_DIR_ENV]
+  const correlator =
+    dir === undefined || dir === '' || process.env[CORRELATION_ENV] === 'off'
+      ? undefined
+      : new Correlator()
+  if (correlator !== undefined) {
+    // Before the test files are imported, so a service a test spawns inherits
+    // this and is correlating from its first line. The collector cannot rely on
+    // winning the race between "the child started" and "the re-scan attached":
+    // measured, that gap is most of a fast test, and a request in it would be
+    // attributed by time.
+    process.env[CORRELATION_HEADER_ENV] = CORRELATION_HEADER
+  }
+  const recorders = await recordersFor(process.env, shard, {
+    commit,
+    ...(scan === undefined ? {} : { scan }),
+    ...(granularityFromEnv() === undefined ? {} : { granularity: 'group' }),
+    ...(correlator === undefined ? {} : { owners: correlator }),
+  })
+  // Installed after the sources are open, so a service that cannot be reached
+  // leaves no patched HTTP client behind.
+  correlator?.install()
+  // The test process reads; the service's reads happen in its own process and
+  // are not observable here. Only the first recorder is the in-process one.
+  const stopReads = installReadTracking(recorders[0]!)
+  // The spec files are about to import; reads made there belong to their tests.
+  recorders[0]!.specStart(null)
+  const stopProcesses = installProcessTracking(recorders[0]!)
+  return { recorders, correlator, stopReads, stopProcesses }
+}
+
+/** Leaves a started session for the plugin to adopt. A second one is refused. */
+export function parkSession(session: RecordingSession): void {
+  const holder = globalThis as SessionHolder
+  if (holder[SESSION_SLOT] != null) {
+    throw new Error('cbd: a japa recording session is already parked in this process')
+  }
+  holder[SESSION_SLOT] = session
+}
+
+/** Takes the parked session. Once taken it is gone, so a second plugin call records nothing. */
+function takeParkedSession(): RecordingSession | undefined {
+  const holder = globalThis as SessionHolder
+  const session = holder[SESSION_SLOT] ?? undefined
+  holder[SESSION_SLOT] = null
+  return session
+}
+
 export function cbd(options: CbdOptions = {}): JapaPlugin {
   return async function cbdPlugin(japa): Promise<void> {
     // The parameter is japa's own PluginFn shape; the cast is the two fields this
@@ -264,47 +351,21 @@ export function cbd(options: CbdOptions = {}): JapaPlugin {
     const { config, emitter } = japa as unknown as JapaPluginApi
     if (options.enabled === false) return
 
+    // A preload that already started recording wins over the shard named here: the
+    // execution before this line is in its session, and a second session would
+    // write the same shard from a later start. The preload took its settings from
+    // the environment, so `shard`, `commit` and `scan` given here do not apply to it.
     const shard = envValue(options.shard) ?? envValue(process.env.CBD_SHARD)
-    if (shard !== undefined) {
-      const scan = options.scan ?? scanFromEnv()
-      const commit = envValue(options.commit) ?? envValue(process.env.CBD_COMMIT) ?? 'unknown'
-      // A service is what correlation is for. With none, an id on every request
-      // would buy nothing, and patching the process's HTTP client for nothing is
-      // exactly the kind of side effect this module exists not to have.
-      const dir = process.env[SOCKET_DIR_ENV]
-      const correlator =
-        dir === undefined || dir === '' || process.env[CORRELATION_ENV] === 'off'
-          ? undefined
-          : new Correlator()
-      if (correlator !== undefined) {
-        // Before the test files are imported, so a service a test spawns inherits
-        // this and is correlating from its first line. The collector cannot rely on
-        // winning the race between "the child started" and "the re-scan attached":
-        // measured, that gap is most of a fast test, and a request in it would be
-        // attributed by time.
-        process.env[CORRELATION_HEADER_ENV] = CORRELATION_HEADER
-      }
-      const recorders = await recordersFor(process.env, shard, {
-        commit,
-        ...(scan === undefined ? {} : { scan }),
-        ...(granularityFromEnv() === undefined ? {} : { granularity: 'group' }),
-        ...(correlator === undefined ? {} : { owners: correlator }),
-      })
-      // Installed after the sources are open, so a service that cannot be reached
-      // leaves no patched HTTP client behind.
-      correlator?.install()
-      // The test process reads; the service's reads happen in its own process and
-      // are not observable here. Only the first recorder is the in-process one.
-      const stopReads = installReadTracking(recorders[0]!)
-      // The spec files are about to import; reads made there belong to their tests.
-      recorders[0]!.specStart(null)
-      const stopProcesses = installProcessTracking(recorders[0]!)
-      emitter.on('runner:end', stopReads)
-      emitter.on('runner:end', stopProcesses)
+    const session =
+      takeParkedSession() ??
+      (shard === undefined ? undefined : await startRecording(shard, options))
+    if (session !== undefined) {
+      emitter.on('runner:end', session.stopReads)
+      emitter.on('runner:end', session.stopProcesses)
       installJapaAdapter(
         emitter,
-        recorders,
-        correlator === undefined ? {} : { correlation: correlator },
+        session.recorders,
+        session.correlator === undefined ? {} : { correlation: session.correlator },
       )
     }
 

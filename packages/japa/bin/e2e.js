@@ -15,6 +15,9 @@
  *             started with) and `CBD_FIXTURE_URL` (where it is listening); both are
  *             the caller's to set, because both describe a service this process did
  *             not start and must not start — `cbd-a3v.3.4`.
+ *   early   — the `record` wiring, but the entry imports a helper before the plugin is
+ *             installed, as a consumer's shared test-kit would be. Whether the helper is
+ *             recorded depends on whether the run carries the `register` preload.
  *   straddle — the same wiring over a service that keeps working after it answers, so
  *             that a test can leave server execution running past its own window —
  *             `cbd-a3v.3.5`.
@@ -50,6 +53,10 @@ const files =
           ? ['fixture/own-service-tests/*.spec.js']
           : ['fixture/tests/*.spec.js']
 
+// A module the entry itself imports ahead of `configure`: with only the plugin, coverage
+// has not started by now; with the preload it has.
+if (mode === 'early') await import('../fixture/early/helper.js')
+
 const plugins = []
 if (mode === 'only') plugins.push(cbd({ only: ['alpha-grouped'] }))
 // The service mode is the `record` mode plus a `CBD_SOCKET_DIR` in the environment:
@@ -57,6 +64,7 @@ if (mode === 'only') plugins.push(cbd({ only: ['alpha-grouped'] }))
 // service's own start-up already had to set that variable (ADR-0005).
 if (
   mode === 'record' ||
+  mode === 'early' ||
   mode === 'service' ||
   mode === 'straddle' ||
   mode === 'deployed' ||

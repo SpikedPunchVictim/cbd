@@ -45,6 +45,52 @@ function readShard(path: string): ShardRecord[] {
     .map((line) => JSON.parse(line) as ShardRecord)
 }
 
+// A shared helper the runner entry imports before `configure` runs executes before the
+// plugin can start recording. The `register` preload starts it earlier, so those files
+// reach the map instead of being unknown to it.
+test.group('japa preload e2e', () => {
+  const REGISTER = fileURLToPath(new URL('../src/register.js', import.meta.url))
+
+  function shardWith(preload: boolean): ShardRecord[] {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      const env: NodeJS.ProcessEnv = { CBD_SHARD: shard }
+      if (preload) env.NODE_OPTIONS = `--import ${REGISTER}`
+      runE2e('early', env)
+      return readShard(shard)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  const hasHelper = (records: ShardRecord[]): boolean =>
+    records.some(
+      (record) =>
+        record.type === 'script' && String(record.url).endsWith('/fixture/early/helper.js'),
+    )
+
+  test('a module imported before the plugin installs is recorded with the preload', () => {
+    assert.ok(hasHelper(shardWith(true)))
+  })
+
+  test('a module imported before the plugin installs is absent without the preload', () => {
+    assert.ok(!hasHelper(shardWith(false)))
+  })
+
+  test('the preload is inert when CBD_SHARD is unset', () => {
+    const out = runE2e('full', { CBD_SHARD: '', NODE_OPTIONS: `--import ${REGISTER}` })
+    assert.equal(passedCount(out), 4)
+  })
+
+  test('the plugin joins the preload session instead of starting a second shard', () => {
+    const records = shardWith(true)
+    assert.equal(records.filter((r) => r.type === 'shard').length, 1)
+    assert.equal(records.filter((r) => r.type === 'test').length, 4)
+    assert.equal(records.at(-1)?.type, 'end')
+  })
+})
+
 test.group('japa adapter e2e', () => {
   test('an unselected run runs the whole fixture suite', () => {
     assert.equal(passedCount(runE2e('full')), 4)
