@@ -78,6 +78,24 @@ test.group('japa preload e2e', () => {
     assert.ok(!hasHelper(shardWith(false)))
   })
 
+  test('the preload attributes the early execution to load, not to a test', () => {
+    const records = shardWith(true)
+    const script = records.find(
+      (record) =>
+        record.type === 'script' && String(record.url).endsWith('/fixture/early/helper.js'),
+    )
+    assert.ok(script !== undefined, 'the helper has no script record')
+    const id = String(script.scriptId)
+    const touched = (record: ShardRecord): boolean =>
+      id in ((record.touches as Record<string, unknown> | undefined) ?? {})
+
+    assert.ok(records.some((r) => r.type === 'load' && touched(r)), 'load does not hold it')
+    assert.deepEqual(
+      records.filter((r) => r.type === 'test' && touched(r)).map((r) => r.title),
+      [],
+    )
+  })
+
   test('the preload is inert when CBD_SHARD is unset', () => {
     const out = runE2e('full', { CBD_SHARD: '', NODE_OPTIONS: `--import ${REGISTER}` })
     assert.equal(passedCount(out), 4)
