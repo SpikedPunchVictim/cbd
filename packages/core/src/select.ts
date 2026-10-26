@@ -78,6 +78,9 @@ export interface MapInfo {
   builtAt: string
 }
 
+/** Extensions of files that execute code, so coverage should have seen them. */
+const CODE_EXTENSION = /\.(?:[cm]?[jt]s|[jt]sx)$/i
+
 export interface Selection {
   mode: 'subset' | 'all'
   /**
@@ -452,6 +455,8 @@ export function select(
   let forced = false
 
   const loadFiles = new Set(map.load.map((ref) => ref[0]))
+  /** `file\0key` of every function that executed during import. */
+  const loadFunctions = new Set(map.load.map((ref) => `${ref[0]}\u0000${ref[1]}`))
   const teardownFiles = new Set(map.teardown.map((ref) => ref[0]))
   const betweenFiles = new Set(map.between.map((ref) => ref[0]))
   const seen = new Set(map.seen)
@@ -554,6 +559,22 @@ export function select(
       }
     }
   }
+
+  /**
+   * Whether a changed file the map has no function evidence for still needs the
+   * rule ladder in `noTouches`, given that a read may already have answered it.
+   *
+   * A read answers a file that executes nothing (a fixture, a schema). A code file
+   * coverage never saw is different: it means the recording was incomplete — code
+   * imported before the adapter installed, say — and a read edge cannot prove such
+   * a file unaffected. It goes to the unknown-file rule, so `unknownPolicy` and
+   * `unknownPolicyFor` still decide, and the read reason is kept either way.
+   */
+  const needsLadder = (path: string, answeredByRead: boolean): boolean =>
+    !answeredByRead ||
+    loadFiles.has(path) ||
+    teardownFiles.has(path) ||
+    (!seen.has(path) && CODE_EXTENSION.test(path))
 
   // Rule 0 — the config itself. A config change means the map cannot answer for
   // any file, so it is checked before the loop and forces all once, naming the
@@ -681,7 +702,7 @@ export function select(
           for (const index of tests) selected.add(index)
           reasons.push({ kind: 'file', file: path, tests })
         }
-      } else if (!answeredByRead || loadFiles.has(path) || teardownFiles.has(path)) {
+      } else if (needsLadder(path, answeredByRead)) {
         noTouches(path)
       }
       continue
@@ -696,6 +717,12 @@ export function select(
         const entry = functions[key]!
         for (const index of entry.tests) selected.add(index)
         reasons.push({ kind: 'function', file: path, fn: key, tests: [...entry.tests] })
+        // A function that also ran while the module was imported may have computed
+        // a value any later test in that process consumes (a cached table, a
+        // registered handler), so the tests that called it again are not the only
+        // ones that can observe the change. `@teardown` runs after the tests and
+        // cannot feed them, so only the load bucket counts here.
+        if (loadFunctions.has(`${path}\u0000${key}`)) selectLoadObservers(path, entry.tests)
       }
 
       // A hunk outside every function — imports, top-level constants, a class
@@ -734,7 +761,7 @@ export function select(
     // the map never loaded; for one the suite did load, the load answer must
     // still run, because the read answer names only the tests that read the file
     // as data (see `selectLoadObservers`).
-    if (!answeredByRead || loadFiles.has(path) || teardownFiles.has(path)) noTouches(path)
+    if (needsLadder(path, answeredByRead)) noTouches(path)
   }
 
   // Always-select — tests that cannot appear in coverage, such as an oracle that

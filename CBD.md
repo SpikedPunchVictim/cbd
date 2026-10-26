@@ -707,7 +707,8 @@ source changes.
 | a changed file is a test file (it defines tests the map knows, or is a helper that statically contains a registration call) | select the tests the map knows in that file and **warn that an added test cannot be named** (`testFilePolicy: 'known'`, the default); `'all'` forces the suite; a new test file the map has never seen → all |
 | a changed file is in the map, and a hunk intersects a mapped function's line range | the tests that touched that function |
 | a changed file is in the map, and a hunk has **any line** outside every function (imports, top-level constants, class field initializers) | every test that touched the file, **plus every test in the process that evaluated the module body** (`@load`/`@teardown`); `mode: all` when the map has no such attribution |
-| a changed file a test **read**, or a file under a directory a test **listed** | the tests that read or listed it, with reason `read`; composes with the function and test-file rules |
+| a changed function in the map **also executed at load** (its key is in `@load`) | its tests, **plus every test in the process that loaded the module** (`@load` observers); `mode: all` when the map has no such attribution. `@teardown` is excluded: it runs after the tests and cannot feed them |
+| a changed file a test **read**, or a file under a directory a test **listed** | the tests that read or listed it, with reason `read`; composes with the function and test-file rules. A **code file** (`.ts .tsx .js .jsx .mjs .cjs .mts .cts`) the map never saw is **not** answered by a read: it reaches the never-seen rule below, and the read reason is kept |
 | a test declared an **opaque** dependency (`recordOpaque`) and any in-scope file changed | that test is selected, with reason `opaque` |
 | a changed file — or anything under a changed directory — is marked `partial` by an incremental map | `mode: all`, reason `partial` — the evidence could not be carried |
 | a changed file is in the map but no test touched it | nothing selected; reported as `untested` |
@@ -857,6 +858,21 @@ suite. It does not model ordering, and `cbd verify` remains the measurement for 
 **Ignored is not empty.** A changed file outside `include` (and not claimed by `alwaysAll` or an
 `alwaysSelect.when`) is dropped from the selection, but it is named in `selection.ignored`; without
 it a consumer cannot tell "nothing changed" from "a change I was told to ignore" (`cbd-0na.6`).
+
+**A function that ran at load can feed later tests.** A changed function that executed while the
+module was imported may have computed a value (a cached table, a registered handler) that any later
+test in the same process consumes, so selecting only the tests that called it again under-selects.
+Such a hit also selects the file's load observers, exactly as a module-scope hunk does. Only the
+`@load` bucket counts; teardown code runs after the tests.
+
+**A read does not clear an unseen code file.** A code file coverage never saw means the recording
+was incomplete, so a read or listing edge cannot prove it unaffected. It goes to the never-seen rule
+and `unknownPolicy` / `unknownPolicyFor` apply as usual. A non-code file (a JSON fixture, a schema)
+executes nothing by nature, so its reads still answer it.
+
+**Japa blind spot.** Code imported by the runner entry (`bin/test.ts`) before the plugin installs
+is invisible to coverage, because the recorder is not yet attached when it is evaluated. With the
+rule above such files are safe, but every change to one of them runs everything.
 
 A **never seen** file is the important case: a TypeScript file containing only types, a `const enum`
 that the compiler inlines into its users, a SQL file, a JSON fixture read with `fs`, an environment

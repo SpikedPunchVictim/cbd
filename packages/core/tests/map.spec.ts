@@ -194,7 +194,9 @@ test('a whole map has neither partial files nor an unhealthy marker', () => {
   assert.equal(map.unhealthy, undefined)
 })
 
-test('line ranges widen when shards disagree, and never narrow', () => {
+test('the same name with different ranges in two shards stays two functions', () => {
+  // Keys are per-process ordinals, so equal keys with different ranges are different
+  // functions; unioning them used to invent one function spanning both.
   const map = mergeShards(
     [
       shard('s1', [testRecord('x', [ref(A, 'add@0', 4, 6)])]),
@@ -202,7 +204,11 @@ test('line ranges widen when shards disagree, and never narrow', () => {
     ],
     { commit: 'c0ffee' },
   )
-  assert.deepEqual(map.files[A]?.['add@0'], { startLine: 2, endLine: 8, tests: [0, 1] })
+  // The enclosing range sorts first, so it takes the first ordinal.
+  assert.deepEqual(map.files[A], {
+    'add@0': { startLine: 2, endLine: 8, tests: [1] },
+    'add@1': { startLine: 4, endLine: 6, tests: [0] },
+  })
 })
 
 // Amendment 5. A test that aborted early executed less than it should have, so
@@ -224,18 +230,18 @@ test('a test that did not pass is kept out of the map by default', () => {
   assert.deepEqual(permissive.tests.map((t) => t.title), ['green', 'red', 'skipped'])
 })
 
-test('load and between buckets merge across shards with the widest range', () => {
+test('load and between buckets merge across shards by function identity', () => {
   const map = mergeShards(
     [
       shard('s1', [], { load: [ref(A, '<module>@0', 0, 9)] }),
       shard('s2', [], {
-        load: [ref(A, '<module>@0', 0, 12)],
+        load: [ref(A, '<module>@0', 0, 9)],
         between: [ref(B, 'timer@0', 2, 2)],
       }),
     ],
     { commit: 'c0ffee' },
   )
-  assert.deepEqual(map.load, [[A, '<module>@0', 0, 12]])
+  assert.deepEqual(map.load, [[A, '<module>@0', 0, 9]])
   assert.deepEqual(map.between, [[B, 'timer@0', 2, 2]])
 })
 
@@ -1037,4 +1043,54 @@ test('declared environment variables merge by name and hash', () => {
   })
   const declares = map.tests.find((entry) => entry.title === 'declares')
   assert.deepEqual(declares?.env, ['FLAG'])
+})
+
+test('two shards that ran different anonymous functions keep distinct keys and ranges', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('first', [ref(A, '<anonymous>@0', 96, 98)])]),
+      shard('s2', [testRecord('second', [ref(A, '<anonymous>@0', 178, 180)])]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  const ranges = Object.values(map.files[A]!).map((entry) => [entry.startLine, entry.endLine])
+  assert.deepEqual(ranges, [
+    [96, 98],
+    [178, 180],
+  ])
+  assert.deepEqual(Object.keys(map.files[A]!), ['<anonymous>@0', '<anonymous>@1'])
+})
+
+test('a hunk at module scope between two shards\' anonymous functions is module scope', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('first', [ref(A, '<anonymous>@0', 96, 98)])]),
+      shard('s2', [testRecord('second', [ref(A, '<anonymous>@0', 178, 180)])]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  const result = select(map, [{ path: A, status: 'M', hunks: [{ start: 99, end: 99 }] }])
+  // Outside both functions the answer is every test that touched the file, not a
+  // function hit on a phantom 96-180 range.
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0, 1])
+  assert.ok(!result.reasons.some((reason) => reason.kind === 'function'))
+})
+
+test('carryMap keeps a base function whose key equals a different function in the new run', () => {
+  const SPEC_A = '/repo/tests/a.spec.ts'
+  const SPEC_B = '/repo/tests/b.spec.ts'
+  const base = mergeShards(
+    [shard('s1', [{ ...testRecord('old', [ref(A, '<anonymous>@0', 178, 180)]), file: SPEC_A }])],
+    { commit: 'c0ffee', builtAt: 'T1' },
+  )
+  const next = mergeShards(
+    [shard('s2', [{ ...testRecord('new', [ref(A, '<anonymous>@0', 96, 98)]), file: SPEC_B }])],
+    { commit: 'beef', builtAt: 'T2' },
+  )
+  const carried = carryMap(base, next, new Set([A]), (_file, range) => range)
+  assert.deepEqual(carried.files[A], {
+    '<anonymous>@0': { startLine: 96, endLine: 98, tests: [0] },
+    '<anonymous>@1': { startLine: 178, endLine: 180, tests: [1] },
+  })
 })

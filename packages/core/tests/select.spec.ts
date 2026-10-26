@@ -227,6 +227,33 @@ test('rule 5: a @load file selects the tests in the process that loaded it', () 
   assert.deepEqual(reasonKinds(result), ['file'])
 })
 
+test('rule 5: a changed function that also ran at load adds its file\'s load observers', () => {
+  // `add@0` executed during import, so a test that never called it again can still
+  // consume what it computed.
+  const map = makeMap({
+    load: [[SRC, 'add@0', 1, 3]],
+    shardTests: [[2]],
+    loadShards: { [SRC]: [0] },
+  })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0, 2])
+  assert.deepEqual(reasonKinds(result), ['function', 'file'])
+})
+
+test('rule 5: a changed function that ran at load, in a map without attribution, forces all', () => {
+  const map = makeMap({ load: [[SRC, 'add@0', 1, 3]] })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.equal(result.mode, 'all')
+})
+
+test('rule 5: a changed function that only ran in teardown adds no observers', () => {
+  const map = makeMap({ teardown: [[SRC, 'add@0', 1, 3]] })
+  const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [0])
+})
+
 test('rule 5: a @load file still answers a change inside a function precisely', () => {
   const map = makeMap({ load: [[SRC, '<module>@0', 0, 30]] })
   const result = select(map, [change(SRC, [{ start: 2, end: 2 }])])
@@ -665,9 +692,43 @@ test('a change to a read file selects the tests that read it', () => {
 })
 
 test('a change under a listed directory selects the test that listed it', () => {
-  const result = select(makeMap(), [change(`${LISTED}/new.spec.ts`, [{ start: 1, end: 1 }])])
+  // A non-code file executes nothing, so the listing is its whole answer.
+  const result = select(makeMap(), [change(`${LISTED}/new.json`, [{ start: 1, end: 1 }])])
   assert.deepEqual(result.tests, [2])
   assert.deepEqual(reasonKinds(result), ['read'])
+})
+
+test('an unknown code file under a listed directory escalates despite the listing', () => {
+  // Coverage never saw it, so the recording was incomplete and a listing cannot
+  // prove the file unaffected. The read reason is kept.
+  const result = select(makeMap(), [change(`${LISTED}/new.spec.ts`, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['read', 'all:unknown-file'])
+})
+
+test('an unknown code file that a test read exactly escalates', () => {
+  const READ_CODE = '/repo/src/read-only.ts'
+  const map = makeMap({ reads: { [READ_CODE]: [1] } })
+  const result = select(map, [change(READ_CODE, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['read', 'all:unknown-file'])
+})
+
+test('an unknown code file that unknownPolicyFor ignores does not escalate', () => {
+  const READ_CODE = '/repo/src/read-only.ts'
+  const map = makeMap({ reads: { [READ_CODE]: [1] } })
+  const result = select(map, [change(READ_CODE, [{ start: 1, end: 1 }])], {
+    unknownPolicyFor: [{ paths: ['/repo/src/**'], policy: 'ignore' }],
+  })
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [1])
+})
+
+test('a seen code file that a test read keeps its read answer', () => {
+  const map = makeMap({ reads: { [UNTESTED]: [1] } })
+  const result = select(map, [change(UNTESTED, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'subset')
+  assert.deepEqual(result.tests, [1])
 })
 
 test('readers compose with the function rule', () => {

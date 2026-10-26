@@ -5,6 +5,28 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **Function keys are numbered per build, not per process.** A key such as `<anonymous>@0` was an
+  ordinal assigned inside one process, so two shards that executed different arrows of the same file
+  both produced `<anonymous>@0`, and the merge unioned them into one function spanning both. A
+  module-scope change between them then looked function-interior (under-selection) and unrelated
+  changes inside the span over-selected. The same collision occurred when two scripts resolved to one
+  source file. `mergeShards` now renumbers every key across all shards from `(file, name, range)`, and
+  the within-window union keeps ranges apart. The shard format is unchanged, so existing shards do
+  not need re-recording: rebuild the map with `cbd build` from them.
+- **`carryMap` no longer unions different functions that share a key.** The base and the new run
+  were numbered by different builds, so an equal key could name two functions and their ranges were
+  widened into one. A carried entry now reuses a key only for the same name and range (using the
+  relocated lines) and otherwise takes the next free ordinal.
+- **A changed function that ran at load selects its file's load observers.** A function that also
+  executed during import may have computed a value later tests consume, so the tests that called it
+  again were not the only ones that could observe the change. It now adds the load observers (all
+  tests, for a map without per-shard attribution). Teardown is excluded.
+- **An unseen code file escalates even when a read answered it.** A `.ts`/`.js` (and variants) file
+  the map never saw, under a listed directory or read exactly, selected only its readers. Coverage
+  missing a code file means the recording was incomplete, so it now reaches the unknown-file rule and
+  `unknownPolicy`/`unknownPolicyFor` decide; non-code files (fixtures, schemas) keep their read
+  answer. Code imported by the japa runner entry before the plugin installs is such a case: safe, but
+  every change to it runs everything.
 - **A declared environment variable selects the tests that read it.** A test that branches on
   `process.env.FLAG` has no file edge, so a flag flipped in CI or the shell left the selection
   answering for the old value. `recordEnv('FLAG')` names the variable; the shard and the map keep a

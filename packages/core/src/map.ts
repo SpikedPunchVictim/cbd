@@ -262,12 +262,78 @@ function mergeRefs(target: Map<string, TouchRef>, refs: TouchRef[]): void {
 }
 
 /**
+ * Renumber every function key across the whole build.
+ *
+ * A key's ordinal is assigned per script from the functions that one process
+ * executed, so it is not an identity beyond that process: shard A's `<anonymous>@0`
+ * (an arrow on line 96) and shard B's `<anonymous>@0` (a different arrow on line
+ * 178) are the same key for different functions, and merging by key would union
+ * them into one 96-178 function. A function is `(file, name, startLine, endLine)`.
+ * Collect the distinct ones per file across every ref of every shard, order them by
+ * position (an enclosing function before a nested one), and number them per name,
+ * so the same function gets the same key whichever shard saw it. Two functions with
+ * an identical identity share a key, which loses nothing a selection can observe.
+ */
+function renumberShards(shards: ResolvedShard[]): ResolvedShard[] {
+  type Fn = { name: string; start: number; end: number }
+  const nameOf = (key: string): string => key.slice(0, key.lastIndexOf('@'))
+  const identity = (ref: TouchRef): string =>
+    `${ref[0]}\u0000${nameOf(ref[1])}\u0000${String(ref[2])}\u0000${String(ref[3])}`
+
+  const byFile = new Map<string, Map<string, Fn>>()
+  const visit = (refs: TouchRef[]): void => {
+    for (const ref of refs) {
+      let fns = byFile.get(ref[0])
+      if (fns === undefined) {
+        fns = new Map()
+        byFile.set(ref[0], fns)
+      }
+      fns.set(identity(ref), { name: nameOf(ref[1]), start: ref[2], end: ref[3] })
+    }
+  }
+  const eachRefList = (shard: ResolvedShard): TouchRef[][] => [
+    ...shard.tests.map((test) => test.touches),
+    shard.load,
+    shard.between,
+    shard.teardown,
+  ]
+  for (const shard of shards) for (const refs of eachRefList(shard)) visit(refs)
+
+  const keys = new Map<string, string>()
+  for (const fns of byFile.values()) {
+    const ordered = [...fns.entries()].sort(
+      ([, a], [, b]) =>
+        a.start - b.start ||
+        b.end - a.end ||
+        (a.name < b.name ? -1 : a.name > b.name ? 1 : 0),
+    )
+    const next = new Map<string, number>()
+    for (const [id, fn] of ordered) {
+      const ordinal = next.get(fn.name) ?? 0
+      next.set(fn.name, ordinal + 1)
+      keys.set(id, `${fn.name}@${String(ordinal)}`)
+    }
+  }
+
+  const rewrite = (refs: TouchRef[]): TouchRef[] =>
+    refs.map((ref) => [ref[0], keys.get(identity(ref))!, ref[2], ref[3]])
+  return shards.map((shard) => ({
+    ...shard,
+    tests: shard.tests.map((test) => ({ ...test, touches: rewrite(test.touches) })),
+    load: rewrite(shard.load),
+    between: rewrite(shard.between),
+    teardown: rewrite(shard.teardown),
+  }))
+}
+
+/**
  * The merge half of a build: resolved shards -> the on-disk map.
  *
  * Separate from resolution so the merge can be tested without a tree of generated
  * files, and so all file I/O stays in one place. `buildMap` is the two together.
  */
-export function mergeShards(shards: ResolvedShard[], options: MapBuildOptions): CoverageMap {
+export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions): CoverageMap {
+  const shards = renumberShards(rawShards)
   const tests: TestEntry[] = []
   const testIndex = new Map<string, number>()
   const files = new Map<string, Map<string, FunctionEntry>>()
@@ -816,13 +882,23 @@ export function carryMap(
     at: number,
   ): void => {
     const target = (files[file] ??= {})
-    const existing = target[key]
+    // The base and the new run were numbered by different builds, so an equal key
+    // can name two different functions. A function is its name and range: reuse the
+    // key of an entry that is the same function, otherwise take the next free
+    // ordinal for the name rather than widening whatever already holds `key`.
+    const name = key.slice(0, key.lastIndexOf('@'))
+    let targetKey: string | undefined
+    let free = 0
+    for (const [candidate, entry] of Object.entries(target)) {
+      if (candidate.slice(0, candidate.lastIndexOf('@')) !== name) continue
+      if (entry.startLine === startLine && entry.endLine === endLine) targetKey = candidate
+      free = Math.max(free, Number(candidate.slice(candidate.lastIndexOf('@') + 1)) + 1)
+    }
+    const existing = targetKey === undefined ? undefined : target[targetKey]
     if (existing === undefined) {
-      target[key] = { startLine, endLine, tests: [at] }
+      target[`${name}@${String(free)}`] = { startLine, endLine, tests: [at] }
       return
     }
-    existing.startLine = Math.min(existing.startLine, startLine)
-    existing.endLine = Math.max(existing.endLine, endLine)
     if (!existing.tests.includes(at)) existing.tests.push(at)
   }
 

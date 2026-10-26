@@ -14,10 +14,14 @@
  *   under-select; guessing would attribute a range to whatever now sits at that
  *   offset, silently.
  *
- *   **Ordinals come from the union over every window.** The recorder emits a
- *   function row the first time any window reports it, so the set here is complete
- *   even when V8's first sighting of a script was partial. Sorting that union by
- *   source position is the proper fix for the A4 anonymous-arrow collision.
+ *   **Ordinals here are per script; the build renumbers them per build.** The
+ *   recorder emits a function row the first time any window reports it, so the set
+ *   here is complete for this process even when V8's first sighting of a script was
+ *   partial. But a shard only knows the functions its own process executed, so two
+ *   shards (or two scripts resolving to one source file) can hand the same key to
+ *   different functions. `mergeShards` therefore renumbers every key across the
+ *   whole build from each function's `(file, name, range)`; the keys produced here
+ *   are only a transport between the two steps.
  *
  *   **Anything unresolvable is dropped, never guessed.** A script with no readable
  *   map resolves to no identities, and the file simply does not enter the map. A
@@ -137,7 +141,17 @@ interface Identity {
  */
 const rangeKey = (start: number, end: number): string => `${String(start)}\u0000${String(end)}`
 
-const refId = (ref: TouchRef): string => `${ref[0]}\u0000${ref[1]}`
+/**
+ * A ref's identity inside a window: file, key **and range**.
+ *
+ * Keys are only unique per script. Two scripts that resolve to one source file (a
+ * tsx-run test process and a built server, say) can each own a `<anonymous>@0` for
+ * different functions; unioning them here would hand `mergeShards` one widened
+ * range it can no longer pull apart. Keeping the range in the identity leaves the
+ * functions distinct for the build-wide renumbering.
+ */
+const refId = (ref: TouchRef): string =>
+  `${ref[0]}\u0000${ref[1]}\u0000${String(ref[2])}\u0000${String(ref[3])}`
 
 function unionInto(target: Map<string, TouchRef>, refs: TouchRef[]): void {
   for (const ref of refs) {
@@ -354,9 +368,9 @@ function identitiesFor(
     located.push({ fn, startLine: at.line, endLine: end?.line ?? at.line, file })
   }
 
-  // Within one script, resolved source order is the file's order. The union is
-  // complete here — every function any window executed — which is what makes this
-  // ordinal stable and why the A4 collision cannot recur.
+  // Within one script, resolved source order is the file's order. This ordinal is
+  // per script and covers only what this process executed, so it is not a build
+  // identity: `mergeShards` renumbers every key across the build before merging.
   located.sort(
     (a, b) => a.startLine - b.startLine || a.fn.start - b.fn.start || a.fn.end - b.fn.end,
   )

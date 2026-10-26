@@ -526,10 +526,19 @@ test('lists the sources', () => {
     )
 
     git(root, 'checkout', '--', 'data/schema.txt')
-    writeFileSync(join(root, 'src/new.js'), 'export const added = true\n')
+    // A non-code file under the listed directory is answered by the listing.
+    writeFileSync(join(root, 'src/notes.txt'), 'added\n')
     const listed = select(root)
     assert.equal(listed.status, 0)
     assert.deepEqual(listed.result.selected.map((entry) => entry.title), ['lists the sources'])
+
+    // A code file coverage never saw cannot be cleared by the listing: the
+    // recording may be incomplete, so it escalates.
+    rmSync(join(root, 'src/notes.txt'))
+    writeFileSync(join(root, 'src/new.js'), 'export const added = true\n')
+    const unseenCode = select(root)
+    assert.equal(unseenCode.status, 3, 'an answer of "all" is exit 3')
+    assert.equal(unseenCode.result.selection.mode, 'all')
   } finally {
     cleanup()
   }

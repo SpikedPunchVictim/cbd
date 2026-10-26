@@ -214,6 +214,34 @@ test('ordinals come from the union, not from the first window that saw a functio
   }
 })
 
+// A module loaded twice in one process (a re-required module, a cache-busting
+// query) is two scripts for one file. Each script numbers only the functions it
+// executed, so both arrows are `<anonymous>@0` here; one window touching both must
+// keep their ranges apart for the build-wide renumbering in `mergeShards`.
+test('one window keeps two scripts\' same-key functions of one file apart', () => {
+  const tree = makeTree()
+  try {
+    const resolved = resolveShard(
+      shard([
+        header(),
+        script(tree),
+        { ...script(tree), scriptId: '2' },
+        fn(arrowOne[0], arrowOne[1], ''),
+        { ...fn(arrowTwo[0], arrowTwo[1], ''), scriptId: '2' },
+        { type: 'test', title: 'both', file: null, status: 'passed', durationMs: 1, touches: { '1': [arrowOne], '2': [arrowTwo] } },
+        end(1),
+      ]),
+    )
+    const touches = resolved.tests[0]!.touches.map((ref) => [ref[1], ref[2], ref[3]])
+    assert.deepEqual(touches.sort(), [
+      ['<anonymous>@0', 5, 5],
+      ['<anonymous>@0', 6, 6],
+    ])
+  } finally {
+    tree.cleanup()
+  }
+})
+
 // ADR-0002's new failure mode: an offset means nothing against different bytes.
 // `cbd-xnp.2`: Jest's VM wrapper and the first function it contains can share a
 // start offset, so identity is the range, not the start.
