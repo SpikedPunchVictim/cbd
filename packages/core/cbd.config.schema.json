@@ -30,6 +30,12 @@
       "items": { "type": "string" },
       "description": "Globs naming files whose module state tests share. A change that selects a test touching such a file also selects every test that touched it."
     },
+    "emitCheck": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 },
+      "description": "Opt-in. Maps globs of TypeScript files to the tsconfig used to decide whether a change outside every function can affect runtime. The project's own typescript (resolved from the tsconfig's directory) transpiles the base and current version; if the module-scope JavaScript is identical, those hunks no longer select every test that loaded the file. Needs typescript 5 or 6 (7 has no JS transpile API); anything unresolved or failing keeps the normal rule. A tsconfig with noEmit still works: only its other options are used.",
+      "examples": [{ "typescript/sdk/src/**": "typescript/sdk/tsconfig.test.json" }]
+    },
     "alwaysSelect": {
       "type": "array",
       "description": "Tests every matching subset must include, for oracles that read sources as text and cannot appear in coverage. An entry the map cannot resolve forces mode: all and warns.",

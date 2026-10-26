@@ -19,6 +19,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { changesSince, commitsSince, headCommit, mergeChanges, type Change } from './changes.js'
+import { moduleScopeUnchangedFiles } from './emit-check.js'
 import { matchesAnyGlob } from './glob.js'
 import {
   buildMap,
@@ -825,10 +826,22 @@ export function createCbd(config: CbdConfig): Cbd {
         return result
       }
 
+      // Opt-in: the project's own TypeScript says which modified files kept their
+      // module scope. Both the range's base and the map's commit must agree, since
+      // the map recorded the module as it was at its own commit.
+      const moduleScopeUnchanged = moduleScopeUnchangedFiles({
+        root,
+        changes,
+        entries: config.select?.emitCheck ?? [],
+        refs: [...new Set([since, loaded.map.commit])],
+        worktree: options.worktree !== false,
+      }).files
+
       const info = summarize(loaded)
       const base = selectCore(loaded.map, changes, {
         ...config.select,
         definesTests,
+        ...(moduleScopeUnchanged.size === 0 ? {} : { moduleScopeUnchanged }),
         ...(config.configFile === undefined ? {} : { configFile: config.configFile }),
         ...(configChanged ? { configChanged: true } : {}),
         ...(options.strict === undefined ? {} : { strict: options.strict }),

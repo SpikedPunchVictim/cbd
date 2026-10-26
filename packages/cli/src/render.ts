@@ -71,6 +71,8 @@ function reasonLine(root: string, reason: Reason): string {
       return `${shown(root, reason.file)} (shared state, ${plural(reason.tests.length, 'test')})`
     case 'env-changed':
       return `${reason.keys.join(', ')} changed (declared by ${plural(reason.tests.length, 'test')})`
+    case 'module-scope-unchanged':
+      return `${shown(root, reason.file)} (module scope unchanged at runtime; file-level selection skipped)`
     case 'all':
       return reason.file === undefined
         ? reason.why

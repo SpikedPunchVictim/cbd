@@ -856,6 +856,27 @@ already does for a file reached *only* by `@load`. A shard marked `role: 'servic
 exception to "the whole process": it is not where the tests ran, and its recorder names every test
 title, so only the tests that actually touched the service are observers.
 
+**`emitCheck` narrows the module-scope rule for TypeScript, by asking the project's compiler.** On a
+one-process suite every test is a load observer, so an edit the compiler erases (an import used only
+as a type, an interface, an alias, an annotation) selected the whole suite. With the opt-in
+`"emitCheck": { "src/**": "tsconfig.test.json" }` (globs to a tsconfig, repository-relative), CBD
+transpiles the base and the current version of each *modified* matching `.ts`/`.tsx`/`.mts`/`.cts`
+file with the `typescript` installed next to that tsconfig and **that tsconfig's options**, replaces
+every function body in the emitted JavaScript with `{}`, and compares the printed result. Identical
+means nothing that runs when the module is evaluated changed, so the hunks outside every mapped
+function select nothing and the selection carries a `module-scope-unchanged` reason naming the
+file. Nothing else is relaxed: a hunk inside a mapped function still selects that function (and its
+load observers if it also ran at load); an added, deleted or renamed file, a file the map has never
+seen, and a file reached only at load keep their rules; and a hunk inside a function the map never
+recorded selects nothing, because no recorded test ran it. Source maps are off and comments are
+removed for the comparison only. The base is checked at both the range's base and the map's own
+commit, and both must match. Anything uncertain keeps today's rule: `typescript` not resolvable from
+the tsconfig's directory, TypeScript 7 (it has no JavaScript transpile API), an unreadable tsconfig,
+a transpile error, no matching glob. The tsconfig matters: `emitDecoratorMetadata` makes a property
+type observable, `verbatimModuleSyntax` keeps imports, so use the one the tests run under. Its
+`noEmit` is ignored, as `transpileModule` ignores it. CBD adds no dependency; `typescript` is the
+consumer's.
+
 `alwaysAll` is checked **before** `include`, because it is a statement that a change there is beyond
 the map's ability to answer, not a filter. The example config above lists `**/migrations/**` there
 although `include` covers only `src/**`; checking `include` first silently dropped those changes,

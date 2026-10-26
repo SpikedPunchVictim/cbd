@@ -28,7 +28,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -539,6 +539,87 @@ test('lists the sources', () => {
     const unseenCode = select(root)
     assert.equal(unseenCode.status, 3, 'an answer of "all" is exit 3')
     assert.equal(unseenCode.result.selection.mode, 'all')
+  } finally {
+    cleanup()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// emitCheck — the project's own TypeScript decides whether module scope changed
+// ---------------------------------------------------------------------------
+
+test('emitCheck: an erased module-scope edit selects nothing; a real one and a function edit still do', () => {
+  const TYPESCRIPT = realpathSync(
+    fileURLToPath(new URL('../../../core/node_modules/typescript5', import.meta.url)),
+  )
+  const original = `export interface Shape {
+  n: number
+}
+
+export function double(n: number): number {
+  return n * 2
+}
+`
+  const { root, cleanup } = scenario('emit', {
+    // Node strips these annotations itself, so the scenario needs no build step.
+    'src/mod.ts': original,
+    'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }),
+    'cbd.config.json': JSON.stringify({
+      include: ['src/**', 'tests/**'],
+      emitCheck: { 'src/**': 'tsconfig.json' },
+    }),
+    'tests/mod.spec.js': `import assert from 'node:assert/strict'
+import { test } from '@japa/runner'
+import { double } from '../src/mod.ts'
+
+test.group('mod', () => {
+  test('doubles', () => {
+    assert.equal(double(2), 4)
+  })
+  test('does not call it', () => {
+    assert.ok(true)
+  })
+})
+`,
+  })
+  try {
+    // The consumer's own TypeScript, gitignored like any node_modules.
+    mkdirSync(join(root, 'node_modules'))
+    symlinkSync(TYPESCRIPT, join(root, 'node_modules/typescript'), 'dir')
+    record(root, baseEnv(root))
+    const mod = join(root, 'src/mod.ts')
+
+    // An alias and an interface member are erased: nothing can observe them.
+    writeFileSync(
+      mod,
+      original.replace('n: number\n', 'n: number\n  label?: string\n') + 'export type Id = string\n',
+    )
+    const kinds = (run: ReturnType<typeof select>): string[] =>
+      run.result.selection.reasons.map((reason) => reason.kind)
+    // Node's type stripping makes the recorder see the .ts file as read by both
+    // tests, so a `read` reason may select them; the module-scope answer is what
+    // the opt-in changes, and that is the reason asserted here.
+    const erased = select(root)
+    assert.equal(erased.status, 0)
+    assert.equal(erased.result.selection.mode, 'subset')
+    assert.ok(kinds(erased).includes('module-scope-unchanged'), JSON.stringify(kinds(erased)))
+    assert.ok(!kinds(erased).includes('file'), 'no file-level answer for an erased edit')
+
+    // A value at module scope runs when the module loads: both tests loaded it.
+    writeFileSync(mod, original + 'export const limit = 3\n')
+    const value = select(root)
+    assert.ok(kinds(value).includes('file'), JSON.stringify(kinds(value)))
+    assert.ok(!kinds(value).includes('module-scope-unchanged'))
+    assert.deepEqual(value.result.selected.map((entry) => entry.title).sort(), [
+      'does not call it',
+      'doubles',
+    ])
+
+    // A function body is the function rule's business, unchanged by the opt-in.
+    writeFileSync(mod, original.replace('n * 2', 'n + n'))
+    const inside = select(root)
+    assert.ok(kinds(inside).includes('function'), JSON.stringify(kinds(inside)))
+    assert.ok(!kinds(inside).includes('file'))
   } finally {
     cleanup()
   }

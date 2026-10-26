@@ -108,6 +108,33 @@ test.group('cbd.config.json', () => {
     }
   })
 
+  test('emitCheck maps globs to a tsconfig, both made absolute', () => {
+    const { root, cleanup } = tempRoot()
+    try {
+      const config = parseConfig(
+        { emitCheck: { 'sdk/src/**': 'sdk/tsconfig.test.json', 'lib/**': 'tsconfig.json' } },
+        root,
+      )
+      assert.deepEqual(config.select?.emitCheck, [
+        { glob: join(root, 'sdk/src/**'), tsconfig: join(root, 'sdk/tsconfig.test.json') },
+        { glob: join(root, 'lib/**'), tsconfig: join(root, 'tsconfig.json') },
+      ])
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('emitCheck must be an object of non-empty strings', () => {
+    const { root, cleanup } = tempRoot()
+    try {
+      assert.throws(() => parseConfig({ emitCheck: ['src/**'] }, root), /"emitCheck" must be an object/)
+      assert.throws(() => parseConfig({ emitCheck: { 'src/**': 3 } }, root), /"emitCheck"/)
+      assert.throws(() => parseConfig({ emitCheck: { 'src/**': '' } }, root), /"emitCheck"/)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('an unknown key is refused rather than ignored', () => {
     const { root, cleanup } = tempRoot()
     try {

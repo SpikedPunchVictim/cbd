@@ -5,6 +5,16 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **`emitCheck` stops erased TypeScript edits from selecting every test that loaded the file.** On a
+  one-process suite the module-scope rule named every test for an edit to an import, interface or
+  type alias, although the compiler erases them. The opt-in config key `emitCheck` maps globs to a
+  tsconfig; for each modified matching file CBD transpiles the base and current version with the
+  project's own `typescript` and that tsconfig, hollows out function bodies, and when the rest is
+  identical the hunks outside every mapped function select nothing and the output says
+  `module-scope-unchanged`. Function hunks, the load rule, the unknown-file ladder and added,
+  deleted or renamed files are unchanged, and an unresolvable `typescript` (including 7.x, which has
+  no JavaScript transpile API), a transpile error or no matching glob keeps today's behaviour.
+  No new dependency.
 - **A japa subset run no longer imports the spec files it did not select.** The title filter is
   applied after japa has imported every spec file, so a subset cost as much as the full run and the
   time a selection saved measured as zero. When the selection names each test's file (the v2 file

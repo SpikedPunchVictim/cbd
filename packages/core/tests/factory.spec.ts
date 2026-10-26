@@ -5,9 +5,19 @@
  * would prove the wiring but not that `build` writes what `select` later reads.
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { createCbd } from '../src/factory.js'
 import { loadMap, saveMap, type CoverageMap } from '../src/map.js'
@@ -475,6 +485,47 @@ test.group('createCbd', () => {
       assert.equal(map.distance, 0)
       assert.equal(map.dirty, false)
     } finally {
+      cleanup()
+    }
+  })
+
+  test('emitCheck narrows an erased module-scope edit and leaves a real one alone', () => {
+    const { repo, a, cleanup } = prepared()
+    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-factory-')))
+    try {
+      // The project's TypeScript lives next to its tsconfig, outside the repository.
+      mkdirSync(join(toolchain, 'node_modules'))
+      symlinkSync(
+        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        join(toolchain, 'node_modules', 'typescript'),
+        'dir',
+      )
+      const tsconfig = join(toolchain, 'tsconfig.json')
+      writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig }]
+      const original = readFileSync(a, 'utf8')
+
+      const plain = createCbd({ root: repo.root })
+      plain.build()
+      repo.write('src/a.ts', `${original}export type Id = string\n`)
+      assert.deepEqual(plain.select().selection.tests, [0, 1], 'without the opt-in, module scope widens')
+
+      const narrowed = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(narrowed.tests, [])
+      assert.deepEqual(
+        narrowed.reasons.map((reason) => reason.kind),
+        ['module-scope-unchanged'],
+      )
+
+      repo.write('src/a.ts', `${original}export const id = 1\n`)
+      const real = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(real.tests, [0, 1])
+      assert.deepEqual(
+        real.reasons.map((reason) => reason.kind),
+        ['file'],
+      )
+    } finally {
+      rmSync(toolchain, { recursive: true, force: true })
       cleanup()
     }
   })

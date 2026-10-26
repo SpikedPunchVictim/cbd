@@ -25,7 +25,8 @@
   "devDependencies": {
     "@japa/runner": "^5.4.0",
     "@types/node": "^26.6.5",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "typescript5": "npm:typescript@5.9.3"
   },
   "files": [
     "dist/src",

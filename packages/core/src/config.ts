@@ -43,6 +43,12 @@ export interface CbdConfigFile {
    * test touching such a file pulls in every test that touched it.
    */
   sharedState?: string[]
+  /**
+   * Opt-in compile-time check. Maps globs of TypeScript files to the tsconfig whose
+   * emit decides whether a change to module scope is visible at runtime. The
+   * project's own `typescript` is used; absent means today's module-scope rule.
+   */
+  emitCheck?: Record<string, string>
   unknownPolicy?: 'all' | 'ignore'
   /**
    * Per-glob overrides for a file the map has never seen. First matching entry
@@ -77,6 +83,7 @@ const KEYS = new Set([
   'alwaysAll',
   'alwaysSelect',
   'sharedState',
+  'emitCheck',
   'unknownPolicy',
   'unknownPolicyFor',
   'betweenPolicy',
@@ -319,6 +326,23 @@ function unknownPolicyFor(
   })
 }
 
+/** `emitCheck`: glob -> tsconfig, both made absolute against the root. */
+function emitCheck(raw: unknown, root: string, path: string): SelectConfig['emitCheck'] | undefined {
+  if (raw === undefined) return undefined
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`cbd: ${path} "emitCheck" must be an object mapping globs to a tsconfig path`)
+  }
+  return Object.entries(raw as Record<string, unknown>).map(([glob, tsconfig]) => {
+    if (glob === '' || typeof tsconfig !== 'string' || tsconfig === '') {
+      throw new Error(`cbd: ${path} "emitCheck" entry "${glob}" must map a glob to a non-empty tsconfig path`)
+    }
+    return {
+      glob: isAbsolute(glob) ? glob : join(root, glob),
+      tsconfig: isAbsolute(tsconfig) ? tsconfig : join(root, tsconfig),
+    }
+  })
+}
+
 function selectFrom(file: Record<string, unknown>, root: string, path: string): SelectConfig {
   const include = strings(file.include, 'include', path)
   const exclude = strings(file.exclude, 'exclude', path)
@@ -332,6 +356,7 @@ function selectFrom(file: Record<string, unknown>, root: string, path: string): 
   }
   const alwaysAll = strings(file.alwaysAll, 'alwaysAll', path)
   const sharedState = strings(file.sharedState, 'sharedState', path)
+  const emitChecks = emitCheck(file.emitCheck, root, path)
   const alwaysSelected = alwaysSelect(file.alwaysSelect, root, path)
   const unknownPolicyOverrides = unknownPolicyFor(file.unknownPolicyFor, root, path)
   const testFiles = strings(file.testFiles, 'testFiles', path)
@@ -360,6 +385,7 @@ function selectFrom(file: Record<string, unknown>, root: string, path: string): 
   if (alwaysAll !== undefined) select.alwaysAll = absoluteGlobs(root, alwaysAll)
   if (alwaysSelected !== undefined) select.alwaysSelect = alwaysSelected
   if (sharedState !== undefined) select.sharedState = absoluteGlobs(root, sharedState)
+  if (emitChecks !== undefined && emitChecks.length > 0) select.emitCheck = emitChecks
   if (unknownPolicyOverrides !== undefined) select.unknownPolicyFor = unknownPolicyOverrides
   if (testFiles !== undefined) select.testFiles = absoluteGlobs(root, testFiles)
   if (testFilePolicy !== undefined) select.testFilePolicy = testFilePolicy
