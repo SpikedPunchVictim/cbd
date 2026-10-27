@@ -463,14 +463,18 @@ exported from `@spikedpunch/cbd`. They take no test id; the open window receives
 made between two tests, or after the last one, belongs to no test, so the build files it against
 every test in the shard (the `@between`/`@teardown` reading: over-selection, never a dropped
 dependency); for `recordOpaque` that marks every test opaque. A call made while a spec file is
-importing, or after the run is closed, is ignored, which leaves the file unknown and escalates
-to `all`. A read is
+importing is filed against that spec's tests (below). A call made after the run is closed is
+ignored, which leaves the file unknown and escalates to `all`; the API cannot tell a closed shard
+from a run that is not recording, so it does not warn. A read is
 kept in the map only when it is under the project root and inside `include`, and never under
 `node_modules` — a change outside that scope could not select the test anyway. A read of a build output is also recorded at the source a
 sibling source map names, or at the path a projection rule produces, so a `tsc` test that reads
 `dist` is selected by a change to `src`.
 
-A read made while a spec file is importing is recorded in a spec scope. The build attributes it to
+Any `record*` call made while a spec file is importing (`recordRead`, `recordDirRead`,
+`recordDependency`, `recordEnv`, `recordOpaque`) is recorded in a spec scope, the same record as the
+read tracker's import-phase reads, and is never flagged as a bucket read, so a declared dependency
+survives even when the file has function evidence. The build attributes it to
 that spec's tests when the adapter named the file (Vitest, Jest); an adapter that cannot name it
 (japa, mocha, node:test) gets the whole shard, which is conservative but never drops the dependency.
 `recordOpaque` marks a test as selected by any in-scope change — the honest fallback for a test that

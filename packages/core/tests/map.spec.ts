@@ -378,6 +378,25 @@ test('import-phase reads are attributed to the spec the adapter named', () => {
   assert.deepEqual(map.dirReads, { '/repo/specs': [0, 1] })
 })
 
+test('a spec-scoped opaque declaration marks only that spec\'s tests', () => {
+  const spec = '/repo/tests/a.spec.ts'
+  const map = mergeShards(
+    [
+      shard(
+        's1',
+        [
+          { ...testRecord('a', []), file: spec },
+          { ...testRecord('b', []), file: '/repo/tests/other.spec.ts' },
+        ],
+        { loadReads: [{ file: spec, reads: ['/repo/dep.ts'], dirReads: [], opaque: ['import opaque'] }] },
+      ),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.opaque, { 'import opaque': [0] })
+  assert.deepEqual(map.reads, { '/repo/dep.ts': [0] })
+})
+
 test('an unscoped import-phase read belongs to every test in the shard', () => {
   const map = mergeShards(
     [

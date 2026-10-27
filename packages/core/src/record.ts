@@ -24,9 +24,11 @@ import { canonicalPath } from './paths.js'
  * **Outside a window, a call is shard-wide, not guessed.** A call between two tests,
  * or after the last one, has no test to charge, so the recorder files it against
  * every test in the shard: over-selection, never a dropped dependency. A call made
- * while a spec file is importing, or after the run is closed, is still ignored — the
- * change stays unknown to the map, which escalates to `all`, and `alwaysSelect`
- * remains the documented backstop.
+ * while a spec file is importing is filed against that spec's tests. A call made after
+ * the run is closed is still ignored: with no recorder open the API cannot tell a closed
+ * shard from a run that is not recording at all, so it cannot warn without noise on every
+ * unrecorded run. The change stays unknown to the map, which escalates to `all`, and
+ * `alwaysSelect` remains the documented backstop.
  */
 
 /** What the open recorder offers. Implemented by `Recorder`; no other implementation is expected. */
@@ -83,8 +85,8 @@ function absolute(path: string): string {
 /**
  * Declares that the running test read `path`.
  *
- * Call it inside the test (or a helper it calls), not while the spec file is
- * being imported.
+ * Call it inside the test (or a helper it calls). A call made while the spec file is
+ * importing is attributed to that spec's tests.
  */
 export function recordRead(path: string): void {
   active?.noteRead(absolute(path))

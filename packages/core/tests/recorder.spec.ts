@@ -317,6 +317,43 @@ test('record calls between tests and after the last test reach the whole shard',
   }
 })
 
+test('every record call made while a spec file is importing lands in that spec\'s loadReads', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    const spec = '/repo/tests/a.spec.ts'
+    recorder.runStart()
+    recorder.specStart(spec)
+    recordRead('import/read.txt')
+    recordDirRead('import/dir')
+    recordDependency(['import/dep.ts'])
+    recordEnv('IMPORT_FLAG')
+    recordOpaque('import opaque')
+    recorder.testStart('a', spec)
+    recorder.testEnd('a', 'passed')
+    recorder.runEnd()
+
+    const loads = parseShard(sink.text, 'import').filter((record) => record.type === 'loadReads')
+    assert.equal(loads.length, 1)
+    const [load] = loads
+    assert.equal(load?.file, spec)
+    assert.equal(load?.reads?.some((p) => p.endsWith('import/read.txt')), true)
+    assert.equal(load?.reads?.some((p) => p.endsWith('import/dep.ts')), true)
+    assert.equal(load?.dirReads?.some((p) => p.endsWith('import/dir')), true)
+    assert.deepEqual(Object.keys(load?.env ?? {}), ['IMPORT_FLAG'])
+    assert.deepEqual(load?.opaque, ['import opaque'])
+    // A declared dependency must survive the build's bucket filter.
+    assert.equal(load?.bucket, undefined)
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('each window lands in the bucket it belongs to', async () => {
   const tree = makeTree()
   try {

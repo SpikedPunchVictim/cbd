@@ -19,8 +19,9 @@ until a tag is pushed and the publish workflow runs.
   `afterEach` or other hook outside a test window reached no recorder and vanished without a word, so
   a change to the declared file or variable under-selected. Such a call, and one made after the last
   test, is now filed against every test in the shard (and `recordOpaque` marks every test opaque):
-  it can over-select but no longer loses the dependency. A call made during spec import (which has
-  no per-call scope yet) or after the run is closed is still ignored.
+  it can over-select but no longer loses the dependency. A call made during
+  spec import is filed against that spec's tests (or the whole shard when the adapter cannot name
+  the file), for all five functions. A call after the run is closed is still ignored.
 - **`emitCheck` stops erased TypeScript edits from selecting every test that loaded the file.** On a
   one-process suite the module-scope rule named every test for an edit to an import, interface or
   type alias, although the compiler erases them. The opt-in config key `emitCheck` maps globs to a

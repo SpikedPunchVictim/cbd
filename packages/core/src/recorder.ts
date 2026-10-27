@@ -659,6 +659,7 @@ export class Recorder {
     reads: Set<string>
     dirReads: Set<string>
     env: Set<string>
+    opaque: Set<string>
   } | null = null
   /**
    * Record-API declarations made after a test ended and before the next one
@@ -852,17 +853,27 @@ export class Recorder {
    */
   specStart(file: string | null = null): void {
     if (this.#spec !== null) return
-    const spec = { file, reads: new Set<string>(), dirReads: new Set<string>(), env: new Set<string>() }
+    const spec = {
+      file,
+      reads: new Set<string>(),
+      dirReads: new Set<string>(),
+      env: new Set<string>(),
+      opaque: new Set<string>(),
+    }
     this.#spec = spec
-    // `recordEnv` has no open test here, and the record API reaches no recorder
-    // outside a window, so the call would be dropped without a word. Point it at the
-    // spec scope; `testStart` or `runEnd` releases it when the import phase is over.
+    // The record API reaches no recorder outside a window, so every call made while
+    // the spec imports would be dropped without a word. Point it at the spec scope;
+    // `testStart` or `runEnd` releases it when the import phase is over. A declared
+    // dependency is filed like the tracker's import reads, with no `bucket` flag, so
+    // the build keeps it even for a file that has function evidence.
     this.#releaseSink?.()
     this.#releaseSink = activateRecordSink({
-      noteRead: () => {},
-      noteReadDir: () => {},
-      noteOpaque: () => {},
-      noteDependency: () => {},
+      noteRead: (path) => spec.reads.add(path),
+      noteReadDir: (dir) => spec.dirReads.add(dir),
+      noteOpaque: (reason) => spec.opaque.add(reason),
+      noteDependency: (paths) => {
+        for (const path of paths) spec.reads.add(path)
+      },
       noteEnv: (keys) => {
         for (const key of keys) spec.env.add(key)
       },
@@ -875,7 +886,14 @@ export class Recorder {
     if (spec === null) return
     this.#releaseSink?.()
     this.#releaseSink = null
-    if (spec.reads.size === 0 && spec.dirReads.size === 0 && spec.env.size === 0) return
+    if (
+      spec.reads.size === 0 &&
+      spec.dirReads.size === 0 &&
+      spec.env.size === 0 &&
+      spec.opaque.size === 0
+    ) {
+      return
+    }
     // Hashed here, at the end of the import phase: the value in force when the
     // first test is about to run, and never the value itself.
     const env: Record<string, string> = {}
@@ -886,6 +904,7 @@ export class Recorder {
       ...(spec.reads.size === 0 ? {} : { reads: [...spec.reads].sort() }),
       ...(spec.dirReads.size === 0 ? {} : { dirReads: [...spec.dirReads].sort() }),
       ...(spec.env.size === 0 ? {} : { env }),
+      ...(spec.opaque.size === 0 ? {} : { opaque: [...spec.opaque].sort() }),
     })
   }
 
