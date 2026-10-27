@@ -465,6 +465,8 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
   }
 
   const attributedTests: ResolvedTest[] = []
+  // The tests already listed on each function, so adding one is not a scan of them.
+  const listed = new Map<FunctionEntry, Set<number>>()
   const addTouches = (index: number, touches: ResolvedTest['touches']): void => {
     for (const ref of touches) {
       let byKey = files.get(ref[0])
@@ -474,12 +476,18 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
       }
       const existing = byKey.get(ref[1])
       if (existing === undefined) {
-        byKey.set(ref[1], { startLine: ref[2], endLine: ref[3], tests: [index] })
+        const entry = { startLine: ref[2], endLine: ref[3], tests: [index] }
+        byKey.set(ref[1], entry)
+        listed.set(entry, new Set([index]))
         continue
       }
       existing.startLine = Math.min(existing.startLine, ref[2])
       existing.endLine = Math.max(existing.endLine, ref[3])
-      if (!existing.tests.includes(index)) existing.tests.push(index)
+      const members = listed.get(existing)!
+      if (!members.has(index)) {
+        members.add(index)
+        existing.tests.push(index)
+      }
     }
   }
 

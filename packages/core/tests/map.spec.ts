@@ -103,6 +103,18 @@ test('a shard becomes a map keyed by file and function', () => {
   assert.equal(map.tests.length, 2)
 })
 
+// Every test reaching the same functions must not make each reach a scan of the
+// tests already recorded against that function.
+test('many tests sharing many functions merge in linear time', () => {
+  const touches = Array.from({ length: 50 }, (_, i) => ref(A, `fn${String(i)}@0`, i * 10 + 1, i * 10 + 5))
+  const tests = Array.from({ length: 16000 }, (_, i) => testRecord(`t${String(i)}`, touches))
+  const started = performance.now()
+  const map = mergeShards([shard('s1', tests)], { commit: 'c0ffee' })
+  const elapsed = performance.now() - started
+  assert.equal(map.files[A]!['fn0@0']!.tests.length, 16000)
+  assert.ok(elapsed < 750, `merging took ${String(Math.round(elapsed))} ms`)
+})
+
 // The query the tool exists to answer.
 test('a function maps back to the tests that reach it', () => {
   const map = mergeShards(
