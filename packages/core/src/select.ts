@@ -42,7 +42,8 @@ export type AllWhy =
 
 export type Reason =
   | { kind: 'function'; file: string; fn: string; tests: number[] }
-  | { kind: 'file'; file: string; tests: number[] }
+  /** `shards` is set when the tests are those of every shard that loaded the file. */
+  | { kind: 'file'; file: string; tests: number[]; shards?: number }
   | { kind: 'test-file'; file: string; tests: number[] }
   | { kind: 'read'; file: string; tests: number[] }
   | { kind: 'opaque'; reason: string; tests: number[] }
@@ -560,7 +561,7 @@ export function select(
     }
     const tests = uniqueSorted([...observers, ...extra])
     for (const index of tests) selected.add(index)
-    reasons.push({ kind: 'file', file: path, tests })
+    reasons.push({ kind: 'file', file: path, tests, shards: map.loadShards![path]!.length })
   }
 
   /**

@@ -898,7 +898,7 @@ test.group('cbd explain and stats', () => {
       const module = invoke(root, 'explain', 'src/a.ts:4')
       assert.equal(module.out[0], 'src/a.ts:4 — 1 test')
       assert.ok(module.out.includes('  select would run 3 tests:'), module.out.join('\n'))
-      assert.ok(module.out.includes('    src/a.ts (3 tests)'), module.out.join('\n'))
+      assert.ok(module.out.includes('    src/a.ts (loaded by 2 shards: 3 tests)'), module.out.join('\n'))
 
       const json = invoke(root, 'explain', 'src/a.ts:4', '--format', 'json')
       const parsed = JSON.parse(json.out.join('\n')) as { selection: { tests: number } }

@@ -63,7 +63,9 @@ function reasonLine(root: string, reason: Reason | ExplainReason): string {
     case 'function':
       return `${shown(root, reason.file)} > ${reason.fn} (${plural(reasonTests(reason), 'test')})`
     case 'file':
-      return `${shown(root, reason.file)} (${plural(reasonTests(reason), 'test')})`
+      return reason.shards === undefined
+        ? `${shown(root, reason.file)} (${plural(reasonTests(reason), 'test')})`
+        : `${shown(root, reason.file)} (loaded by ${plural(reason.shards, 'shard')}: ${plural(reasonTests(reason), 'test')})`
     case 'test-file':
       return `${shown(root, reason.file)} (test file, ${plural(reasonTests(reason), 'test')})`
     case 'read':

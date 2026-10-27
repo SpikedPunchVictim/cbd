@@ -13,6 +13,11 @@ until a tag is pushed and the publish workflow runs.
   dependencies, `alwaysSelect`, `emitCheck`); `--format json` and `Cbd.explain` carry it as
   `selection`. A function line that select answers with the listed tests prints as before.
 
+- **A load-observer reason names the shards that loaded the file.** `select` and `explain` printed
+  the tests of every shard that loaded a module as `driver.ts (2628 tests)`, the same shape as the
+  tests that touched the file, often beside `driver.ts (read by 8 tests)`. It now reads
+  `driver.ts (loaded by 11 shards: 2628 tests)`, and the JSON reason carries `shards`.
+
 ## 0.0.5 — 2026-10-26
 
 - **A read shared by a whole shard is stored once in the map.** An import-phase read that a

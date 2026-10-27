@@ -227,6 +227,18 @@ test('rule 5: a @load file selects the tests in the process that loaded it', () 
   assert.deepEqual(reasonKinds(result), ['file'])
 })
 
+test('rule 5: a load-observer reason says how many shards loaded the file', () => {
+  // Without the count, "the processes that loaded it" prints the same as "the tests
+  // that touched it", and the two can sit side by side for one file.
+  const map = makeMap({
+    load: [[SRC, '<module>@0', 0, 30]],
+    shardTests: [[1], [2]],
+    loadShards: { [SRC]: [0, 1] },
+  })
+  const result = select(map, [change(SRC, [{ start: 20, end: 20 }])])
+  assert.deepEqual(result.reasons, [{ kind: 'file', file: SRC, tests: [0, 1, 2], shards: 2 }])
+})
+
 test('rule 5: a changed function that also ran at load adds its file\'s load observers', () => {
   // `add@0` executed during import, so a test that never called it again can still
   // consume what it computed.
