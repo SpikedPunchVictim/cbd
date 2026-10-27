@@ -70,9 +70,6 @@ export function withoutReadTracking<T>(fn: () => T): T {
   }
 }
 
-// Saved before any patch: path normalization must not re-enter a wrapper.
-const realpath = fs.realpathSync.bind(fs)
-
 const FILE_FS = [
   'readFileSync',
   'readFile',
