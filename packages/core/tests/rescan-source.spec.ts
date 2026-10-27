@@ -670,3 +670,72 @@ test('a file the service reads is recorded against the test that drove it', asyn
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+const exitSnapshot = (pid: number): string =>
+  JSON.stringify({
+    protocol: INSTRUMENT_PROTOCOL,
+    pid,
+    startedAtUs: 1e15,
+    atUs: 1e15,
+    endedAtUs: 1e15,
+    scripts: [],
+    windows: [],
+    untaken: [{ scriptId: '1', url: 'file:///x.js', functions: [] }],
+  })
+
+// A write is atomic (temporary file, then rename), so a file that does not parse is
+// not half written: waiting on the same bytes will not change the verdict.
+test('an unparseable snapshot is not read again until its mtime changes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 20 })
+    const path = join(dir, 'pid-777782.coverage.json')
+    writeFileSync(path, '{not json')
+    await sleep(200)
+    const before = statSync(path)
+    writeFileSync(path, exitSnapshot(777782))
+    utimesSync(path, before.atimeMs / 1000, before.mtimeMs / 1000)
+    await sleep(200)
+
+    const payload = await source.take()
+    assert.ok(
+      !payload.some((script) => script.scriptId === '777782:1'),
+      'a file judged unparseable was read again at the same mtime',
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// `startedAtUs` is a monotonic clock whose origin resets at boot, so a file from
+// before a reboot can carry a larger value than a process born now. The file's own
+// mtime is on the wall clock and says it was written before this run began.
+test('a snapshot last written before the recording began is not credited to it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 20 })
+    const path = join(dir, 'pid-777783.coverage.json')
+    writeFileSync(path, exitSnapshot(777783))
+    const longAgo = new Date('2020-01-01T00:00:00Z')
+    utimesSync(path, longAgo, longAgo)
+    await sleep(200)
+
+    const payload = await source.take()
+    assert.ok(
+      !payload.some((script) => script.scriptId === '777783:1'),
+      'a snapshot from before the recording was credited to it',
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

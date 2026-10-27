@@ -11,7 +11,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -395,6 +395,43 @@ test.group('instrument module', () => {
     })
   })
 
+  // The instrument opens each script's file to see whether it declares its own map.
+  // That is the tool's read, not the service's: reporting it would make every
+  // compiled file a dependency of every test that ran against the service.
+  test('the instrument\'s own look for a declared map is not reported as a service read', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-declares-'))
+    const file = join(dir, 'compiled.js')
+    const source = 'globalThis.compiledByVm = 1\n//# sourceMappingURL=compiled.js.map\n'
+    writeFileSync(file, source)
+    try {
+      await withService({}, async (service) => {
+        await service.ready
+        await waitForSocket(service.socketPath)
+        const client = await connect(service.socketPath)
+        try {
+          await client.request('take')
+          service.run(`compile ${JSON.stringify({ file, source })}`)
+          await new Promise((resolve) => setTimeout(resolve, 300))
+          const response = await client.request('take')
+          const result = (response as { result: TakeResult }).result
+          assert.ok(
+            result.scripts.some((script) => script.url.endsWith('/compiled.js')),
+            'the compiled script never reached the table, so the look for its map did not run',
+          )
+          assert.deepEqual(
+            (result.reads ?? []).filter((path) => path.endsWith('/compiled.js')),
+            [],
+            'the instrument reading a script to look for its map was reported as a service read',
+          )
+        } finally {
+          client.close()
+        }
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   // The reason the protocol carries a script table at all: V8ScriptCoverage has
   // no sourceMapURL, so without this the coverage of a compiled service cannot be
   // resolved to the file a developer edits.
@@ -727,4 +764,24 @@ test('socketDirFromEnv resolves a relative value and writes it back', () => {
   assert.equal(env.CBD_SOCKET_DIR, resolve('rel/dir'))
   assert.equal(socketDirFromEnv({}), undefined)
   assert.equal(socketDirFromEnv({ CBD_SOCKET_DIR: '' }), '')
+})
+
+test('LineSplitter joins a line split across chunks and keeps the remainder', () => {
+  const splitter = new LineSplitter()
+  assert.deepEqual(splitter.push('ab'), [])
+  assert.deepEqual(splitter.push('c\nde'), ['abc'])
+  assert.deepEqual(splitter.push('f\n\ng'), ['def', ''])
+  assert.deepEqual(splitter.push('\n'), ['g'])
+})
+
+test('LineSplitter handles one huge line arriving in many chunks in linear time', () => {
+  const splitter = new LineSplitter()
+  const chunk = 'a'.repeat(64 * 1024)
+  const started = Date.now()
+  for (let index = 0; index < 1024; index += 1) splitter.push(chunk)
+  const lines = splitter.push('\n')
+  const elapsed = Date.now() - started
+  assert.equal(lines.length, 1)
+  assert.equal(lines[0]!.length, 1024 * 64 * 1024)
+  assert.ok(elapsed < 3000, `a 64 MB line took ${String(elapsed)} ms`)
 })

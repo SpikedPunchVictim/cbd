@@ -23,6 +23,7 @@
 import { readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { createInterface } from 'node:readline'
+import { Script } from 'node:vm'
 
 export function normalizeKey(input: string): string {
   return input.trim().toLowerCase()
@@ -83,6 +84,15 @@ commands.on('line', (line) => {
   if (command.startsWith('read ')) {
     const text = readFileSync(command.slice('read '.length), 'utf8')
     process.stdout.write(`read ${String(text.length)}\n`)
+    return
+  }
+
+  // Compiles source text under a file name without reading the file, so the script
+  // exists for the inspector and the service itself has read nothing.
+  if (command.startsWith('compile ')) {
+    const { file, source } = JSON.parse(command.slice('compile '.length)) as { file: string; source: string }
+    new Script(source, { filename: file }).runInThisContext()
+    process.stdout.write('compiled\n')
     return
   }
 

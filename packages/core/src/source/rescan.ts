@@ -252,6 +252,9 @@ export async function rescanningSocketSource(
 
   /** Processes born before this are another run's: their files can share the directory. */
   const recordingStartedUs = nowUs()
+  /** The same instant on the wall clock, which a file's mtime is on. */
+  const recordingStartedMs = Date.now()
+  const MTIME_SLACK_MS = 2_000
 
   let closed = false
   let lost = 0
@@ -305,16 +308,33 @@ export async function rescanningSocketSource(
 
     let modifiedMs: number | undefined
     let file: SnapshotFile
+    // The snapshot lives in the directory its socket would have been in.
+    const path = snapshotPath(dir, pid)
     try {
-      // The snapshot lives in the directory its socket would have been in.
-      const path = snapshotPath(dir, pid)
-      try {
-        modifiedMs = statSync(path).mtimeMs
-      } catch {
-        // Read below decides; a missing file is simply not harvestable.
-      }
-      file = JSON.parse(await readFile(path, 'utf8')) as SnapshotFile
+      modifiedMs = statSync(path).mtimeMs
     } catch {
+      // Read below decides; a missing file is simply not harvestable.
+    }
+    // `startedAtUs` is a monotonic clock whose origin resets at boot, so it cannot
+    // tell a file left before a reboot from one written by this run. The mtime is
+    // wall clock: a file last written before the recording began is not this run's.
+    // The slack covers filesystems whose mtime is coarser than a second.
+    if (modifiedMs !== undefined && modifiedMs < recordingStartedMs - MTIME_SLACK_MS) {
+      markAttempted(pid, modifiedMs)
+      return null
+    }
+    let text: string
+    try {
+      text = await readFile(path, 'utf8')
+    } catch {
+      return null
+    }
+    try {
+      file = JSON.parse(text) as SnapshotFile
+    } catch {
+      // A snapshot is written whole and renamed into place, so bytes that do not
+      // parse will not once waited on. A new write changes the mtime and is looked at.
+      markAttempted(pid, modifiedMs)
       return null
     }
     // Valid JSON of the wrong shape (`null`, a number) is not a snapshot. Nothing a

@@ -43,7 +43,7 @@ import inspector from 'node:inspector'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildLineIndex } from './line-index.js'
-import { installReadTracking } from './read-tracker.js'
+import { installReadTracking, withoutReadTracking } from './read-tracker.js'
 import { sourceMapUrlOf } from './source-maps.js'
 import type { GeneratedScript, V8Function, V8Range, V8ScriptCoverage } from './types.js'
 import {
@@ -585,7 +585,8 @@ async function start(dir: string): Promise<void> {
       return false
     }
     try {
-      return sourceMapUrlOf(fs.readFileSync(file, 'utf8')) === reported
+      // The tool's own read: reported, it would make every script a dependency.
+      return sourceMapUrlOf(withoutReadTracking(() => fs.readFileSync(file, 'utf8'))) === reported
     } catch {
       return false
     }

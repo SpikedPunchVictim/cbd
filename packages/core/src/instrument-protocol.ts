@@ -402,17 +402,23 @@ export function encodeMessage(message: InstrumentRequest | InstrumentResponse): 
  * every take.
  */
 export class LineSplitter {
-  #buffer = ''
+  /** The unfinished line, in the pieces it arrived in. Joined once its newline comes. */
+  #pending: string[] = []
 
   push(chunk: string): string[] {
-    this.#buffer += chunk
     const lines: string[] = []
-    let newline = this.#buffer.indexOf('\n')
+    let from = 0
+    // Only the new chunk is searched: re-scanning the buffered head on every chunk
+    // made one huge line quadratic in its size.
+    let newline = chunk.indexOf('\n', from)
     while (newline !== -1) {
-      lines.push(this.#buffer.slice(0, newline))
-      this.#buffer = this.#buffer.slice(newline + 1)
-      newline = this.#buffer.indexOf('\n')
+      this.#pending.push(chunk.slice(from, newline))
+      lines.push(this.#pending.join(''))
+      this.#pending = []
+      from = newline + 1
+      newline = chunk.indexOf('\n', from)
     }
+    if (from < chunk.length) this.#pending.push(from === 0 ? chunk : chunk.slice(from))
     return lines
   }
 }
