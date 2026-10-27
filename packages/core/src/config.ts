@@ -206,7 +206,7 @@ export function parseConfig(raw: unknown, root: string, path: string = configPat
     // the root (an absolute path) is the supported case.
     const resolved = resolveExisting(resolve(canonical, mapsDir))
     const rel = relative(resolved, canonical)
-    if (!rel.startsWith('..') && !isAbsolute(rel)) {
+    if (!(rel === '..' || rel.startsWith(`..${sep}`)) && !isAbsolute(rel)) {
       throw new Error(
         `cbd: ${path} "mapsDir" must be a directory of its own, not the repository root or a parent of it: "${mapsDir}"`,
       )
