@@ -5,6 +5,18 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A very large line from an instrumented process no longer stalls the collector.** The line
+  splitter searched the whole buffered text again for every chunk, so one huge reply took time
+  quadratic in its size (100 MB took 15 s, longer than the take timeout). Each chunk is now searched
+  once.
+- **A stale or unparseable exit snapshot is no longer re-read.** An unparseable snapshot was read
+  again every 25 ms, and a file left in the socket directory by an earlier run was parsed on every
+  run. A snapshot is now judged once per mtime, and one last written before the recording began is
+  not credited to it, which also covers a leftover from before a reboot whose monotonic start time
+  can look newer than this run.
+- **The instrument's own look for a declared source map is no longer reported as a read.** It
+  opened each script's file through the tracked `fs`, so every compiled file counted as a
+  dependency of the tests that ran against the service and over-selected.
 - **A socket path written off as stale is attached again when a new process binds it.** A
   `pid-N.sock` that failed twice was ignored for the rest of the run, so a later process that reused
   pid N was never read and its coverage was missing. The verdict now belongs to the file it judged:
