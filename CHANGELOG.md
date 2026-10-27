@@ -3,7 +3,7 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
-## Unreleased
+## 0.0.7 — 2026-10-27
 
 - **The japa `register` preload now records when it is set through `NODE_OPTIONS` behind a launcher.**
   It used to take the shard in the first Node process that loaded it — `pnpm`, `npm` or a project
