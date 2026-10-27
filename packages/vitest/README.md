@@ -59,6 +59,18 @@ Selection is applied by skipping an unselected test in `beforeEach`, before its 
 `-t` is a regex and arbitrary titles cannot be pasted into one safely. A statically skipped test opens
 no window.
 
+A selection that matches no test would skip every test, and Vitest exits 0 for an all-skipped run.
+To make that fail, add the reporter; it does nothing unless `CBD_SELECTION` is set:
+
+```ts
+export default defineConfig({
+  test: {
+    setupFiles: ['@spikedpunch/cbd-vitest/setup'],
+    reporters: ['default', '@spikedpunch/cbd-vitest/reporter'],
+  },
+})
+```
+
 ## Notes
 
 - Identity is the full suite path plus the test name (`outer > inner > adds`), with the file carried

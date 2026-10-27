@@ -10,6 +10,11 @@ until a tag is pushed and the publish workflow runs.
   test, so the run stopped and the file's shard was left incomplete. A subtest now opens no window:
   what it touches is attributed to its top-level test, which is the only map entry and selection
   unit. Selecting that test re-runs its subtests, so nothing is under-selected.
+- **A Vitest run whose selection matches no test can now fail.** The setup file selects by skipping
+  every other test, and Vitest exits 0 when everything is skipped, so a selection naming tests the
+  suite no longer has passed having run nothing. `@spikedpunch/cbd-vitest/reporter`, added to the
+  config's `reporters`, fails such a run (non-zero exit, with a message) when `CBD_SELECTION` is set
+  and no test passed or failed; without a selection it does nothing.
 - **A test that reads a file through a descriptor, a copy or a link now depends on it.** The read
   tracker saw `readFile`, `stat` and directory listings but not `fs.open` / `openSync` /
   `fs.promises.open` (then `read` or `FileHandle.readFile`), `copyFile`, `cp`, `openAsBlob` or

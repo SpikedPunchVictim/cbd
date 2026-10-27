@@ -175,3 +175,44 @@ test('a selection without a shard narrows the run', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+const guardConfig = join(packageRoot, 'fixture', 'vitest.guard.config.mjs')
+
+function runGuarded(titles?: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-vitest-guard-'))
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, CBD_COMMIT: 'vitest-e2e' }
+    delete env.CBD_SHARD
+    delete env.CBD_SELECTION
+    delete env.CBD_SOCKET_DIR
+    delete env.NODE_OPTIONS
+    if (titles !== undefined) {
+      const selection = join(dir, 'selection.json')
+      writeFileSync(selection, JSON.stringify({ titles }))
+      env.CBD_SELECTION = selection
+    }
+    return spawnSync(vitest, ['run', '--config', guardConfig], { cwd: packageRoot, env, encoding: 'utf8' })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// A selection of titles the suite no longer has skips every test; Vitest exits 0 on
+// an all-skipped run, which would read as "these tests passed".
+test('a selection that matches no test fails the run', () => {
+  const result = runGuarded(['no such test'])
+  assert.notEqual(result.status, 0, `vitest passed having run nothing:\n${result.stderr}`)
+  assert.match(result.stderr, /no test ran/)
+})
+
+test('a selection that matches a test passes the guard', () => {
+  const result = runGuarded(['math > adds'])
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.doesNotMatch(result.stderr, /no test ran/)
+})
+
+test('a run without a selection passes the guard', () => {
+  const result = runGuarded()
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.doesNotMatch(result.stderr, /no test ran/)
+})

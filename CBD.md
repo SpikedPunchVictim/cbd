@@ -629,7 +629,10 @@ in one file stay distinct in the map. Vitest 4+ reports it as `task.fullTestName
 not, and the suite chain is walked instead (a real Directus SDK run on 3.2.7 turned 82 tests into
 77 map entries before that fallback, exactly the collision the full name exists to prevent). Selection is applied by **skipping an unselected test in
 `beforeEach`, before a window opens**: Vitest's `-t` is a regex, and arbitrary titles cannot be
-pasted into one safely. A statically skipped test opens no window. Vitest's own
+pasted into one safely. A statically skipped test opens no window. A selection that matches no test
+skips everything and Vitest exits 0, so the config should also list the reporter
+`@spikedpunch/cbd-vitest/reporter`, which fails a run with a selection set in which no test passed or
+failed. Vitest's own
 `@vitest/coverage-v8` must be off during a collection: two Profiler sessions on one isolate
 interfere. A separately started service is **not collected yet** — several workers reading one
 service would split its isolate's take stream — so the adapter records the test process, warns
