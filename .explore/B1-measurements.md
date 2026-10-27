@@ -302,10 +302,13 @@ spawn level and invisible at the suite level, as predicted by its size.
 Failure set: recorded runs fail 9-10 tests against 1-2 baseline (was 8 vs 3; unchanged story, ambient-state tests).
 
 Side measurements from the same shard (r6, 16.6 MB, 64,463 lines): `cbd build` 10.8 s -> 225.3 MB map, 16,006
-tests, 1,686 files (third pass: 5.8 s / 71.1 MB, 1,683 files). **Not explained**: the map is 3x larger and
-the build 1.9x slower than the third pass for a same-size shard. The commit label `owv` is not a real git
-commit in the clone, which may change relocation; unverified. `cbd select --change` on this map: 1.33 s wall
-total (map parse included).
+tests, 1,686 files (third pass: 5.8 s / 71.1 MB, 1,683 files). **Explained afterwards**: this build ran
+without the third pass's `include: ["src/vs/platform/**"]`. The shard's one unscoped `loadReads` record
+(2,577 files read at import, a single process over 629 specs) is attributed to every test, so `reads`
+alone grew to 158 MB (4,480 files x ~16,000 test indices). With the include restored, r1 builds at main
+in 6.6 s to 70.2 MB; the same holds at 6f59da6, 3e5e218 and 794180a, so it is not a regression. The fake
+`owv` label plays no part. `cbd select --change` on the 225 MB map: 1.33 s wall total (map parse
+included).
 
 ### Experiment C: cheaper takes
 
