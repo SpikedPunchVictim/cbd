@@ -376,33 +376,19 @@ function functionsHit(
   // a test that dynamically imported the module can observe its exports.
   const functionRanges = allRanges.filter((range) => !range.key.startsWith('<module>'))
 
-  // New-side line numbers shift relative to the map's old-side function ranges.
-  // When a hunk changes the line count *and* contains a function's first line,
-  // the new text may be module scope even though the old line was in the
-  // function (e.g. a statement inserted above the declaration); there is no map
-  // at the new commit to place it, so widen (`cbd-73r.1`).
-  const oldLines = change.hunks.reduce((n, hunk) => n + (hunk.end - hunk.start + 1), 0)
-  const newLines = change.newHunks?.reduce((n, hunk) => n + (hunk.end - hunk.start + 1), 0)
-  const fileLineCountChanged = newLines !== undefined && newLines !== oldLines
-  const edits = new Map<string, { oldCount: number; newCount: number }>()
-  for (const edit of change.hunkEdits ?? []) {
-    edits.set(`${String(edit.oldStart)}:${String(edit.oldCount)}`, edit)
-  }
+  // A hunk that contains a function's first line may have changed what that line
+  // declares rather than what the function does: a statement inserted above the
+  // declaration, or `export` dropped from it with the line count unchanged. The map
+  // describes the old side and there is no map at the new commit to place the new
+  // text, so the selection widens whatever the hunk's line count did.
+  // Edits inside the body, and insertions after the first line, stay precise.
 
   for (const hunk of change.hunks) {
     for (const range of allRanges) {
       if (intersects(hunk, range)) hit.add(range.key)
     }
     if (!fullyCovered(hunk.start, hunk.end, functionRanges)) outsideEveryFunction = true
-    // The file-wide totals cancel when one hunk deletes and another inserts
-    // (`cbd-73r.1`); a hunk's own edit is what says it moved module scope.
-    const edit = edits.get(`${String(hunk.start)}:${String(hunk.end - hunk.start + 1)}`)
-    const lineCountChanged =
-      edit === undefined ? fileLineCountChanged : edit.newCount !== edit.oldCount
-    if (
-      lineCountChanged &&
-      functionRanges.some((range) => hunk.start <= range.start && range.start <= hunk.end)
-    ) {
+    if (functionRanges.some((range) => hunk.start <= range.start && range.start <= hunk.end)) {
       outsideEveryFunction = true
     }
   }

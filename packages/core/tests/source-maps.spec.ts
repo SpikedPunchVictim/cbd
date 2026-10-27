@@ -255,3 +255,30 @@ test('sourceMapUrlOf reads the last magic comment, in either form', () => {
   )
   assert.equal(sourceMapUrlOf('no comment here'), undefined)
 })
+
+/** A script with a data: map whose `sources` or payload is hostile, normalized end to end. */
+function normalizeWithMap(sourceMapURL: string): ReturnType<typeof normalize> {
+  const tree = makeTree('none')
+  try {
+    writeFileSync(tree.file, BODY)
+    const url = pathToFileURL(tree.file).href
+    const start = BODY.indexOf('function alpha')
+    return normalize(
+      payloadFor(url, start, BODY.indexOf('}', start) + 1, 1),
+      fakeSource(new Map([['1', { url, sourceMapURL }]])),
+      rule(tree),
+    )
+  } finally {
+    tree.cleanup()
+  }
+}
+
+test('a source path containing a stray percent sign does not abort normalization', () => {
+  const map = { version: 3, sources: ['./100%zz.ts'], names: [], mappings: 'AAAA' }
+  const url = `data:application/json;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}`
+  assert.doesNotThrow(() => normalizeWithMap(url))
+})
+
+test('a data: map with a malformed percent escape resolves to nothing instead of throwing', () => {
+  assert.deepEqual(normalizeWithMap('data:application/json,%E0%A4%A'), [])
+})

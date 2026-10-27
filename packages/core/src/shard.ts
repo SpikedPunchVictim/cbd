@@ -429,13 +429,22 @@ export function parseShard(
   options: ParseShardOptions = {},
 ): ShardRecord[] {
   const records: ShardRecord[] = []
-  for (const [index, raw] of text.split('\n').entries()) {
+  const lines = text.split('\n')
+  let lastContent = -1
+  lines.forEach((raw, index) => {
+    if (raw.trim() !== '') lastContent = index
+  })
+  for (const [index, raw] of lines.entries()) {
     const line = raw.trim()
     if (line === '') continue
     let parsed: unknown
     try {
       parsed = JSON.parse(line)
     } catch {
+      // A killed run is cut mid-record, so its final line may be torn. Under the
+      // explicit partial opt-in that line is dropped; any earlier bad line is
+      // corruption, not truncation.
+      if (options.allowIncomplete === true && index === lastContent) continue
       throw new IncompleteShardError(`${source}:${index + 1} is not valid JSON`)
     }
     records.push(parsed as ShardRecord)

@@ -20,7 +20,7 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, relative } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
 import { proveBindingRead, type BindingRead } from './binding-read.js'
@@ -218,6 +218,27 @@ export interface EmitCheckInput {
   worktree: boolean
 }
 
+/** `tsconfig.json`, `tsconfig.app.json`, `jsconfig.json`: a name that configures an emit wherever it sits. */
+const CONFIG_NAME = /^[jt]sconfig(?:\..+)?\.json$/i
+
+/**
+ * The tsconfig and the local files it extends, absolute. `extends` that names a
+ * package resolves into node_modules and cannot be part of a diff.
+ */
+function configChain(ts: Ts, tsconfig: string, seen = new Set<string>()): Set<string> {
+  if (seen.has(tsconfig)) return seen
+  seen.add(tsconfig)
+  const read = ts.readConfigFile(tsconfig, ts.sys.readFile)
+  const extended: unknown = read.config?.extends
+  const names = typeof extended === 'string' ? [extended] : Array.isArray(extended) ? extended : []
+  for (const name of names) {
+    if (typeof name !== 'string' || !(name.startsWith('.') || isAbsolute(name))) continue
+    const path = resolve(dirname(tsconfig), name)
+    configChain(ts, path.endsWith('.json') ? path : `${path}.json`, seen)
+  }
+  return seen
+}
+
 /** Do all of the refs name one commit (`HEAD` and the map's hash often do)? */
 function singleCommit(root: string, refs: readonly string[]): boolean {
   try {
@@ -271,11 +292,33 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
   const warnings: string[] = []
   const warned = new Set<string>()
   if (input.entries.length === 0 || input.refs.length === 0) return { files, warnings, bindingReads }
+  // Both versions of a file are compiled under the tsconfig as it is now, so a
+  // tsconfig edited in the range emits the base differently from how the map's run
+  // saw it, and identical module scope proves nothing. Any change to a file that
+  // configures this entry's emit withdraws the entry's verdicts.
+  const changedPaths = new Set(input.changes.map((change) => change.path))
+  const configChanged = (entry: EmitCheckEntry): boolean => {
+    const project = loadProject(entry.tsconfig)
+    const chain = typeof project === 'string' ? new Set([entry.tsconfig]) : configChain(project.ts, entry.tsconfig)
+    for (const path of changedPaths) {
+      if (chain.has(path) || CONFIG_NAME.test(basename(path))) return true
+    }
+    return false
+  }
+  const withdrawn = new Map<EmitCheckEntry, boolean>()
   for (const change of input.changes) {
     if (change.status !== 'M') continue
     if (!TS_SOURCE.test(change.path) || DECLARATION.test(change.path)) continue
     const entry = input.entries.find((candidate) => matchesAnyGlob(change.path, [candidate.glob]) !== null)
     if (entry === undefined) continue
+    if (!withdrawn.has(entry)) withdrawn.set(entry, configChanged(entry))
+    if (withdrawn.get(entry) === true) {
+      if (!warned.has(entry.glob)) {
+        warned.add(entry.glob)
+        warnings.push(`emitCheck skipped for ${entry.glob}: a tsconfig changed in this range`)
+      }
+      continue
+    }
 
     let head: string | undefined
     if (input.worktree) {

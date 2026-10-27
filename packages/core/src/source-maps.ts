@@ -82,7 +82,20 @@ function decodeDataUri(url: string): string | null {
   const meta = url.slice(5, comma)
   const payload = url.slice(comma + 1)
   if (meta.includes(';base64')) return Buffer.from(payload, 'base64').toString('utf8')
-  return decodeURIComponent(payload)
+  try {
+    return decodeURIComponent(payload)
+  } catch {
+    return null
+  }
+}
+
+/** `fileURLToPath` throws a URIError on a malformed escape; a source we cannot name is no source. */
+function safeFileUrlToPath(url: string): string | null {
+  try {
+    return fileURLToPath(url)
+  } catch {
+    return null
+  }
 }
 
 function loadMapRaw(sourceMapURL: string, scriptUrl: string): { raw: string; mapUrl: string } | null {
@@ -133,7 +146,7 @@ function createMapResolver(
     const path =
       typeof absolute === 'string'
         ? absolute.startsWith('file:')
-          ? fileURLToPath(absolute)
+          ? safeFileUrlToPath(absolute)
           : absolute
         : typeof raw === 'string' && raw.startsWith('/')
           ? raw
@@ -271,6 +284,15 @@ export function createScriptResolver(
     // Returning null drops the script: its file never enters the map, and a
     // change to it escalates through the unknown-file rule to `all`.
     return createMapResolver(info.sourceMapURL, scriptUrl, index)
+  }
+  // A transformed script's offsets are into text that is not the file. With no map,
+  // its generated lines are the file's only if the transform kept every line where
+  // it was (a loader that appends a trailer does); any other rewrite shifts lines and
+  // projecting them is the same guess as above. Unresolvable.
+  if (options.index !== undefined) {
+    const generatedStarts = options.index.starts
+    const fileStarts = options.cache.index(generatedPath)?.starts
+    if (fileStarts === undefined || !fileStarts.every((start, line) => generatedStarts[line] === start)) return null
   }
   return createProjectionResolver(generatedPath, index, options.projection)
 }

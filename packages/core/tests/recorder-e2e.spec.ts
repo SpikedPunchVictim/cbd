@@ -150,7 +150,7 @@ test('select works against a map built from a real recording', () => {
     const inside: Change = {
       path: mathFile,
       status: 'M',
-      hunks: [{ start: slug.startLine, end: slug.startLine }],
+      hunks: [{ start: slug.startLine + 1, end: slug.startLine + 1 }],
     }
     const selection = select(map, [inside], { alwaysAll: ['**/package.json'] })
 

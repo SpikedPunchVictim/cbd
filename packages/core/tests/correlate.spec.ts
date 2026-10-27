@@ -226,3 +226,68 @@ test('a named ESM import of http.request carries the id', async () => {
     await server.close()
   }
 })
+
+test('flat-array headers keep working and gain the id', async () => {
+  const server = await listening()
+  const correlator = new Correlator()
+  correlator.install()
+  try {
+    const id = correlator.begin('t', null)
+    await new Promise<void>((resolve, reject) => {
+      const call = http.request(server.url, { headers: ['host', new URL(server.url).host, 'x-custom', 'y'] }, (response) => {
+        response.resume()
+        response.on('end', () => resolve())
+      })
+      call.on('error', reject)
+      call.end()
+    })
+    assert.equal(server.received[0]!.headers['x-custom'], 'y')
+    assert.equal(server.received[0]!.headers[CORRELATION_HEADER], id)
+  } finally {
+    correlator.release()
+    await server.close()
+  }
+})
+
+test('pair-array headers keep working and gain the id', async () => {
+  const server = await listening()
+  const correlator = new Correlator()
+  correlator.install()
+  try {
+    const id = correlator.begin('t', null)
+    await new Promise<void>((resolve, reject) => {
+      const call = http.request(server.url, { headers: [['host', new URL(server.url).host], ['x-custom', 'y']] as never }, (response) => {
+        response.resume()
+        response.on('end', () => resolve())
+      })
+      call.on('error', reject)
+      call.end()
+    })
+    assert.equal(server.received[0]!.headers['x-custom'], 'y')
+    assert.equal(server.received[0]!.headers[CORRELATION_HEADER], id)
+  } finally {
+    correlator.release()
+    await server.close()
+  }
+})
+
+test('array headers that already name the id are left alone', async () => {
+  const server = await listening()
+  const correlator = new Correlator()
+  correlator.install()
+  try {
+    correlator.begin('t', null)
+    await new Promise<void>((resolve, reject) => {
+      const call = http.request(server.url, { headers: ['host', new URL(server.url).host, CORRELATION_HEADER, 'mine'] }, (response) => {
+        response.resume()
+        response.on('end', () => resolve())
+      })
+      call.on('error', reject)
+      call.end()
+    })
+    assert.equal(server.received[0]!.headers[CORRELATION_HEADER], 'mine')
+  } finally {
+    correlator.release()
+    await server.close()
+  }
+})

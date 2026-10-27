@@ -315,6 +315,40 @@ test.group('moduleScopeUnchangedFiles', () => {
     assert.deepEqual([...result.files.keys()], [join(repo.root, 'src/a.ts')])
   })
 
+  test('a changed tsconfig stops the compiler vouching for any file', ({ cleanup }) => {
+    // Both versions of the file are compiled under today's tsconfig, so a text-only
+    // comparison cannot see that the base was emitted under different options.
+    const repo = repoWith({ 'src/a.ts': `export interface A { x: number }\nexport const v = 1\n` })
+    cleanup(repo.cleanup)
+    repo.write('src/a.ts', `export interface A { x: number; y: number }\nexport const v = 1\n`)
+    repo.write('tsconfig.json', JSON.stringify({ compilerOptions: { target: 'es5', module: 'esnext' } }))
+    const result = moduleScopeUnchangedFiles({
+      root: repo.root,
+      changes: [modified(repo.root, 'src/a.ts'), modified(repo.root, 'tsconfig.json')],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }],
+      refs: [repo.head()],
+      worktree: true,
+    })
+    assert.equal(result.files.size, 0)
+    assert.equal(result.bindingReads.size, 0)
+  })
+
+  test('a changed base tsconfig that the entry extends does the same', ({ cleanup }) => {
+    const repo = repoWith({ 'src/a.ts': `export interface A { x: number }\nexport const v = 1\n` })
+    cleanup(repo.cleanup)
+    repo.write('tsconfig.base.json', JSON.stringify({ compilerOptions: { target: 'es2022' } }))
+    repo.write('tsconfig.app.json', JSON.stringify({ extends: './tsconfig.base.json' }))
+    repo.write('src/a.ts', `export interface A { x: number; y: number }\nexport const v = 1\n`)
+    const result = moduleScopeUnchangedFiles({
+      root: repo.root,
+      changes: [modified(repo.root, 'src/a.ts'), modified(repo.root, 'tsconfig.base.json')],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.app.json'), typescript: PIN }],
+      refs: [repo.head()],
+      worktree: true,
+    })
+    assert.equal(result.files.size, 0)
+  })
+
   test('a value change is not reported', ({ cleanup }) => {
     const repo = repoWith({ 'src/a.ts': `export const v = 1\n` })
     cleanup(repo.cleanup)

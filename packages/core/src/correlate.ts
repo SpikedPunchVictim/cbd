@@ -254,7 +254,7 @@ function hasHeader(args: unknown[], header: string): boolean {
     const headers = candidate.headers
     if (headers === undefined) continue
     if (Array.isArray(headers)) {
-      if (headers.some((line) => namesHeader(line, header))) return true
+      if (arrayNames(headers).some((name) => name.toLowerCase() === header)) return true
       continue
     }
     if (isOptions(headers)) {
@@ -264,10 +264,19 @@ function hasHeader(args: unknown[], header: string): boolean {
   return false
 }
 
-function namesHeader(line: unknown, header: string): boolean {
-  if (typeof line !== 'string') return false
-  const colon = line.indexOf(':')
-  return colon !== -1 && line.slice(0, colon).trim().toLowerCase() === header
+/**
+ * Node reads an array `headers` as either pairs (`[['name', 'value'], ...]`) or a
+ * flat list (`['name', 'value', ...]`), never as `'name: value'` lines.
+ */
+function arrayNames(headers: unknown[]): string[] {
+  if (Array.isArray(headers[0])) {
+    return headers.flatMap((pair) =>
+      Array.isArray(pair) && typeof pair[0] === 'string' ? [pair[0]] : [],
+    )
+  }
+  return headers.flatMap((entry, index) =>
+    index % 2 === 0 && typeof entry === 'string' ? [entry] : [],
+  )
 }
 
 function withHeader(
@@ -280,7 +289,7 @@ function withHeader(
   if (headers === undefined) {
     merged = { [header]: id }
   } else if (Array.isArray(headers)) {
-    merged = [...headers, `${header}: ${id}`]
+    merged = Array.isArray(headers[0]) ? [...headers, [header, id]] : [...headers, header, id]
   } else if (isOptions(headers)) {
     merged = { ...headers, [header]: id }
   } else {

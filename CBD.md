@@ -270,7 +270,8 @@ Input: one `RawSnapshot` per source. Output: `Touches` — a set of `(file, func
 3. **Map to original source.** Resolve the source map (inline `data:` URL, or a `.map` file next to
    a `dist/` file) and map the function's start offset to an original file, line and column, using
    `@jridgewell/trace-mapping` (small, fast, no native code). No map → the generated file is the
-   source.
+   source. A script a loader transformed (its generated text is not the file) with no map is
+   unresolvable, not projected, unless the transform kept every line where it was.
 
    A start offset with no mapping of its own falls forward to the next mapping that has one. The
    same-line lookup is not enough: `tsc` opens every file with unmapped boilerplate (`"use strict"`,
@@ -769,10 +770,11 @@ Classifying the whole hunk as "the function's" hid the module-scope change and s
 function's tests — the case where a test compares a re-exported binding and calls no function
 (`cbd-73r.1`). A hunk wholly inside a function still answers precisely.
 
-The coverage check is against the map's **old-side** function ranges. When a hunk changes its line
-count *and* contains a function's first line, the new text may be module scope even though the old
-line was inside the function (a statement inserted above the declaration, for example). There is no
-map at the new commit to place it, so the selection widens; an insertion inside the body does not.
+The coverage check is against the map's **old-side** function ranges. When a hunk
+contains a function's first line, the new text may be module scope even though the old
+line was inside the function (a statement inserted above the declaration, or `export` dropped from
+it with the line count unchanged). There is no map at the new commit to place it, so the selection
+widens whatever the line count did; an edit or insertion after the first line does not.
 The V8 entry for the module body is not a source function: its range is the whole file and would
 mark every hunk covered, so it is excluded from the coverage check while its tests still count as
 observers.
@@ -900,7 +902,8 @@ the one the tests run under: if the version resolved from the tsconfig's directo
 the pinned one, the entry is skipped and the selection warns (`emitCheck skipped for <glob>:
 resolved typescript 5.9.2, pinned 5.9.3`). A runner that does not use TypeScript's own emit (swc,
 esbuild) is not covered by any pin: do not enable the check for it. Anything else uncertain keeps
-today's rule: `typescript` not resolvable from
+today's rule: a tsconfig (the entry's, a local file it extends, or any `tsconfig*.json`) changed in the
+range, since both versions are compiled under the current options; `typescript` not resolvable from
 the tsconfig's directory, TypeScript 7 (it has no JavaScript transpile API), an unreadable tsconfig,
 a transpile error, no matching glob. The tsconfig matters: `emitDecoratorMetadata` makes a property
 type observable, `verbatimModuleSyntax` keeps imports, so use the one the tests run under. Its

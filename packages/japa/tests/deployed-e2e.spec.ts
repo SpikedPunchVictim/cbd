@@ -220,7 +220,7 @@ test.group('a service running from a copy of its build', (group) => {
    */
   test('a diff on the checked-in path under-selects, and looks complete doing it', async () => {
     const { map } = await lane(false)
-    const selection = select(map, [changeAt(HANDLER, lineOf(HANDLER, 'export function storeKey'))], {}, {})
+    const selection = select(map, [changeAt(HANDLER, lineOf(HANDLER, 'export function storeKey') + 1)], {}, {})
 
     assert.equal(selection.mode, 'subset', 'nothing about this change is unattributable')
     assert.deepEqual(
@@ -285,7 +285,7 @@ test.group('a service running from a copy of its build', (group) => {
   test('a diff on a function reached both ways selects both tests', async () => {
     const { map } = await lane(true)
     const titles = titlesFor(
-      select(map, [changeAt(HANDLER, lineOf(HANDLER, 'export function storeKey'))], {}, {}),
+      select(map, [changeAt(HANDLER, lineOf(HANDLER, 'export function storeKey') + 1)], {}, {}),
       map,
     )
 

@@ -32,6 +32,29 @@ test('a completed shard parses into its records', () => {
   assert.equal(records[5]?.type, 'end')
 })
 
+// A killed run is exactly where the final line is cut mid-record; `--partial` is the
+// opt-in for it, so refusing it there defeats the flag.
+test('a partial shard whose last line was truncated parses when incomplete is allowed', () => {
+  const records = parseShard([HEADER, TEST_A, '{"type":"test","title":"b","fi'].join('\n'), 'shard-1.jsonl', {
+    allowIncomplete: true,
+  })
+  assert.equal(records.length, 2)
+})
+
+test('a truncated line before the last is refused even when incomplete is allowed', () => {
+  assert.throws(
+    () => parseShard([HEADER, '{"type":"test","ti', TEST_A].join('\n'), 'shard-1.jsonl', { allowIncomplete: true }),
+    IncompleteShardError,
+  )
+})
+
+test('a truncated last line is refused when incomplete is not allowed', () => {
+  assert.throws(
+    () => parseShard([HEADER, TEST_A, '{"type":"test","ti'].join('\n'), 'shard-1.jsonl'),
+    IncompleteShardError,
+  )
+})
+
 // The requirement: a partial run's coverage is not merely incomplete, it is
 // wrong — a test that aborted early executed less than it should have.
 test('a shard with no end record is refused', () => {

@@ -21,6 +21,33 @@ until a tag is pushed and the publish workflow runs.
   because they have no run-level hook.
 - **`mocha --parallel` with a recording warns that the shard will be empty.** The tests run in worker
   processes the recorder does not reach, so the shard was valid and empty with no sign of why.
+- **A function's first line edited without changing the line count now widens.** Only an edit that
+  changed the line count widened, so dropping `export` from `export function f() {` selected `f`'s
+  tests alone and missed a test that reads the export. Any hunk containing a function's first line is
+  now also answered at module scope. An edit inside the body, and an insertion after the first line,
+  stay precise.
+- **A change to a tsconfig now withdraws `emitCheck` for the entries it configures.** Both versions of
+  a file are compiled under the tsconfig as it is now, so editing `target` or `verbatimModuleSyntax`
+  in the range let a type-only edit be proved unchanged while the base had been emitted differently.
+  A change to the entry's tsconfig, to a local file it extends, or to any `tsconfig*.json` or
+  `jsconfig*.json` now gives no verdict and warns, and selection escalates as without the opt-in.
+- **A script a loader transformed, with no source map, is no longer projected onto its file when the
+  transform moved lines.** The generated text's lines are not the file's, so projecting them could
+  place a function on the wrong lines and under-select. Such a script is now unresolvable: its file
+  does not enter the map and a change to it escalates through the unknown-file rule. A transform that
+  kept every line where it was (a loader that only appends a trailer) and an untransformed script
+  with no map still project.
+- **A `%` in a map's source path, or a malformed `data:` source map, no longer aborts the build.** A
+  source such as `./100%zz.ts`, or a `data:` URL with a bad percent escape, threw a `URIError` out of
+  `cbd build`. The source, or the script, is now unresolvable instead.
+- **`http.request` with array `headers` keeps working inside a correlation window.** The recorder
+  appended a `name: value` string to the array, which made a flat `[name, value, ...]` list invalid
+  and put a junk entry in a `[[name, value], ...]` list. It now appends in the form the array uses,
+  and recognises an id already present in either form.
+- **`cbd build --partial` now accepts a shard whose last line was cut off.** A killed run is torn
+  mid-record, and the torn final line was refused as invalid JSON, so the flag meant for that run
+  still failed. The unreadable last line is dropped under `--partial`; a bad line anywhere else, or
+  any bad line without the flag, is still refused.
 - **A child spawned at import, or by a hook between tests, now leaves its opaque mark.** The process
   tracker's opaque note and a declared environment variable were kept only inside a test window, so
   a spec that spawned a server at import or in a `beforeAll` lost them and was not widened. They now

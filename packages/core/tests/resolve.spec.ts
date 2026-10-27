@@ -336,6 +336,72 @@ test('a transformed script resolves through its generated line starts', () => {
   }
 })
 
+// A loader-transformed script that declares no map: V8's offsets are into text
+// that is not the file, so projecting its generated lines onto the file is a guess.
+test('a transformed script with no source map resolves to nothing rather than projecting', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cbd-resolve-nomap-'))
+  try {
+    const file = join(root, 'mod.js')
+    const generated = `${Array.from({ length: 10 }, (_, i) => `// generated ${String(i)}`).join('\n')}\nfunction alpha(){return 1}\n`
+    writeFileSync(file, 'function alpha() {\n  return 1\n}\n')
+    const start = generated.indexOf('function alpha')
+    const stat = statSync(file)
+    const index = buildLineIndex(generated)
+    const resolved = resolveShard(
+      shard([
+        header(),
+        {
+          type: 'script',
+          scriptId: '1',
+          url: pathToFileURL(file).href,
+          generated: { lineStarts: index.starts, length: index.length },
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        },
+        fn(start, generated.length, 'alpha'),
+        { type: 'test', title: 'a', file: null, status: 'passed', durationMs: 1, touches: { '1': [[start, generated.length]] } },
+        end(1),
+      ]),
+    )
+    assert.deepEqual(resolved.tests[0]?.touches, [])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('a transformed script with no source map that only appended a trailer still projects', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cbd-resolve-trailer-'))
+  try {
+    const file = join(root, 'mod.js')
+    const text = 'function alpha() {\n  return 1\n}\n'
+    writeFileSync(file, text)
+    const generated = `${text}// appended by a loader\n`
+    const start = generated.indexOf('function alpha')
+    const stat = statSync(file)
+    const index = buildLineIndex(generated)
+    const resolved = resolveShard(
+      shard([
+        header(),
+        {
+          type: 'script',
+          scriptId: '1',
+          url: pathToFileURL(file).href,
+          generated: { lineStarts: index.starts, length: index.length },
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+        },
+        fn(start, text.length, 'alpha'),
+        { type: 'test', title: 'a', file: null, status: 'passed', durationMs: 1, touches: { '1': [[start, text.length]] } },
+        end(1),
+      ]),
+    )
+    assert.equal(resolved.tests[0]?.touches.length, 1, 'a line-preserving transform was dropped')
+    assert.equal(resolved.tests[0]?.touches[0]?.[0], realpathSync(file))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('a test carries its file and directory reads through the build filter', () => {
   const tree = makeTree()
   try {

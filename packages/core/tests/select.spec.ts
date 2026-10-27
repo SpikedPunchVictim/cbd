@@ -554,6 +554,22 @@ test('rule 5: a replacement that adds a line at a function start widens', () => 
   assert.deepEqual(result.tests, [0, 1])
 })
 
+test('rule 5: a same-length edit to a function first line widens', () => {
+  // Dropping `export` from the declaration keeps the line count, but the line is
+  // module scope as much as it is the function's, and there is no new-side map.
+  const result = select(makeMap(), [
+    {
+      path: SRC,
+      status: 'M',
+      hunks: [{ start: 1, end: 1 }],
+      newHunks: [{ start: 1, end: 1 }],
+      hunkEdits: [{ oldStart: 1, oldCount: 1, newStart: 1, newCount: 1 }],
+    },
+  ])
+  assert.deepEqual(reasonKinds(result), ['function', 'file'])
+  assert.deepEqual(result.tests, [0, 1])
+})
+
 test('rule 5: adding a line inside a function body does not widen', () => {
   const result = select(makeMap(), [
     {
@@ -859,7 +875,7 @@ test('unknownPolicyFor uses the first matching entry', () => {
 })
 
 test('unknownPolicyFor does not apply to a file the map knows', () => {
-  const result = select(makeMap(), [change(HELPER, [{ start: 1, end: 1 }])], {
+  const result = select(makeMap(), [change(HELPER, [{ start: 2, end: 2 }])], {
     unknownPolicyFor: [{ paths: ['/repo/**'], policy: 'ignore' }],
   })
   assert.equal(result.mode, 'subset')
@@ -1201,7 +1217,7 @@ test('shared state does nothing when no selected test touched the file', () => {
     },
   })
   // This change selects `uses helper` only, which touched nothing shared.
-  const result = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { sharedState: [shared] })
+  const result = select(map, [change(HELPER, [{ start: 2, end: 2 }])], { sharedState: [shared] })
   assert.deepEqual(result.tests.map((index) => map.tests[index]?.title), ['uses helper'])
   assert.deepEqual(reasonKinds(result), ['function'])
 })
@@ -1218,12 +1234,12 @@ test('a declared variable whose value changed selects the test that declared it'
   })
 
   // Unchanged: the ordinary rule answers.
-  const same = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { env: { FLAG: 'on' } })
+  const same = select(map, [change(HELPER, [{ start: 2, end: 2 }])], { env: { FLAG: 'on' } })
   assert.deepEqual(same.tests.map((index) => map.tests[index]?.title), ['uses helper'])
   assert.deepEqual(reasonKinds(same), ['function'])
 
   // Changed, with no matching change at all: the declaring test is selected.
-  const moved = select(map, [change(HELPER, [{ start: 1, end: 1 }])], {
+  const moved = select(map, [change(HELPER, [{ start: 2, end: 2 }])], {
     env: { FLAG: 'off' },
   })
   // Map order, not selection order.
@@ -1242,7 +1258,7 @@ test('a map with no recorded hash leaves declared variables alone', () => {
       index === 0 ? { ...entry, env: { FLAG: [] } } : entry,
     ),
   })
-  const result = select(map, [change(HELPER, [{ start: 1, end: 1 }])], { env: { FLAG: 'off' } })
+  const result = select(map, [change(HELPER, [{ start: 2, end: 2 }])], { env: { FLAG: 'off' } })
   assert.deepEqual(result.tests.map((index) => map.tests[index]?.title), ['uses helper'])
   assert.deepEqual(reasonKinds(result), ['function'])
 })
