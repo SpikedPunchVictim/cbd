@@ -642,6 +642,62 @@ test.group('createCbd', () => {
     }
   })
 
+  test('emitCheck narrows a pure initializer only functions read to the tests of those functions', () => {
+    const repo = tempRepo()
+    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-binding-')))
+    try {
+      const root = realpathSync(repo.root)
+      const a = join(root, 'src/a.ts')
+      const spec = join(root, 'tests/a.spec.ts')
+      const source = (decl: string): string =>
+        `${decl}\nexport function reads(s: string) {\n  return U.test(s)\n}\nexport function other() {\n  return 1\n}\n`
+      repo.write('src/a.ts', source('const U = /a/'))
+      repo.write('tests/a.spec.ts', "import { reads } from '../src/a.js'\n")
+      const commit = repo.commit('base')
+      writeShard(
+        repo.root,
+        'run.ndjson',
+        shardText(commit, [
+          { title: 'reads', file: spec, touches: [ref(a, 'reads@0', 2, 4)] },
+          { title: 'other', file: spec, touches: [ref(a, 'other@0', 5, 7)] },
+        ]),
+      )
+      mkdirSync(join(toolchain, 'node_modules'))
+      symlinkSync(
+        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        join(toolchain, 'node_modules', 'typescript'),
+        'dir',
+      )
+      const tsconfig = join(toolchain, 'tsconfig.json')
+      writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+      const pin = (JSON.parse(readFileSync(join(toolchain, 'node_modules/typescript/package.json'), 'utf8')) as { version: string }).version
+      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig, typescript: pin }]
+      createCbd({ root: repo.root, select: { emitCheck } }).build()
+
+      repo.write('src/a.ts', source('const U = /b/'))
+      const plain = createCbd({ root: repo.root }).select().selection
+      assert.deepEqual(plain.tests, [0, 1], 'without the opt-in the module-scope rule takes the whole file')
+
+      const narrowed = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(narrowed.tests, [0])
+      assert.deepEqual(narrowed.reasons, [
+        { kind: 'binding-read', file: a, binding: 'U', typescript: pin, tests: [0] },
+      ])
+
+      repo.write('src/a.ts', source('const U = new RegExp("b")'))
+      const impure = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(impure.tests, [0, 1])
+      assert.ok(!impure.reasons.some((reason) => reason.kind === 'binding-read'))
+
+      repo.write('src/a.ts', `${source('const U = /b/')}export { U }\n`)
+      const exported = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(exported.tests, [0, 1])
+    } finally {
+      rmSync(toolchain, { recursive: true, force: true })
+      repo.cleanup()
+    }
+  })
+
   test('a root inside the repository resolves only its own changes', () => {
     const repo = tempRepo()
     try {

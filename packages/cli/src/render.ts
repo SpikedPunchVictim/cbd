@@ -80,6 +80,8 @@ function reasonLine(root: string, reason: Reason | ExplainReason): string {
       return `${reason.keys.join(', ')} changed (declared by ${plural(reasonTests(reason), 'test')})`
     case 'module-scope-unchanged':
       return `${shown(root, reason.file)} (module scope unchanged at runtime per typescript ${reason.typescript}; file-level selection skipped)`
+    case 'binding-read':
+      return `${shown(root, reason.file)} (binding-read: only functions read ${reason.binding}, proved side-effect free per typescript ${reason.typescript}; ${plural(reason.tests.length, 'test')})`
     case 'all':
       return reason.file === undefined
         ? reason.why

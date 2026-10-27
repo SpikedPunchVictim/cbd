@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import { compareModuleScope, moduleScopeUnchangedFiles } from '../src/emit-check.js'
-import type { Change } from '../src/changes.js'
+import { changesSince, type Change } from '../src/changes.js'
 import { tempRepo } from './support/git.js'
 
 const TYPESCRIPT = realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url)))
@@ -411,5 +411,154 @@ test.group('moduleScopeUnchangedFiles', () => {
     } finally {
       p.cleanup()
     }
+  })
+})
+
+test.group('bindingReads: a module-scope edit only functions can see', () => {
+  /** Commit `before`, write `after`, and ask what the real git hunks prove. */
+  function proof(before: string, after: string, pin = PIN) {
+    const repo = tempRepo()
+    mkdirSync(join(repo.root, 'node_modules'), { recursive: true })
+    symlinkSync(TYPESCRIPT, join(repo.root, 'node_modules', 'typescript'), 'dir')
+    repo.write('tsconfig.json', JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+    repo.write('.gitignore', 'node_modules/\n')
+    repo.write('src/a.ts', before)
+    const head = repo.commit('base')
+    repo.write('src/a.ts', after)
+    const file = join(repo.root, 'src/a.ts')
+    const changes = changesSince({ root: repo.root, since: head, worktree: true }).map((c) => ({
+      ...c,
+      path: join(repo.root, c.path),
+    }))
+    const result = moduleScopeUnchangedFiles({
+      root: repo.root,
+      changes,
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: pin }],
+      refs: [head],
+      worktree: true,
+    })
+    repo.cleanup()
+    return { read: result.bindingReads.get(file), warnings: result.warnings, files: result.files }
+  }
+
+  const withBody = (decl: string, body: string): string => `${decl}\nexport function f() {\n${body}\n}\n`
+
+  test('a regex const read only inside a function narrows to that reference', () => {
+    const { read } = proof(
+      withBody('const U = /a/', '  return U.test("x")'),
+      withBody('const U = /b/', '  return U.test("x")'),
+    )
+    assert.deepEqual(read?.names, ['U'])
+    assert.deepEqual(read?.lines, [3])
+    assert.equal(read?.typescript, PIN)
+  })
+
+  test('a number const read inside two functions names both reference sites', () => {
+    const text = (n: number): string =>
+      `const N = ${String(n)}\nexport function f() {\n  return N\n}\nexport const g = () => N + 1\n`
+    const { read } = proof(text(1), text(2))
+    assert.deepEqual(read?.lines, [3, 5])
+  })
+
+  test('a template of primitives, literals, operators and an earlier pure const narrow', () => {
+    const text = (k: string): string =>
+      `const A = 2\nconst T = [{ k: \`x${'${A}'}${k}\`, [A + 1]: -A * 3 }, !A, "s" + 1]\nexport function f() { return T }\n`
+    assert.deepEqual(proof(text('a'), text('b')).read?.names, ['T'])
+  })
+
+  const escalates = (name: string, before: string, after: string): void => {
+    test(`escalates: ${name}`, () => {
+      const { read } = proof(before, after)
+      assert.equal(read, undefined)
+    })
+  }
+  const fnReads = (decl: string, extra = ''): string => `${decl}\nexport function f() { return U }\n${extra}`
+
+  escalates('an exported binding', fnReads('export const U = 1'), fnReads('export const U = 2'))
+  escalates('export { U }', fnReads('const U = 1', 'export { U }\n'), fnReads('const U = 2', 'export { U }\n'))
+  escalates('export default U', fnReads('const U = 1', 'export default U\n'), fnReads('const U = 2', 'export default U\n'))
+  escalates(
+    'a re-export under another name',
+    fnReads('const U = 1', 'export { U as V }\n'),
+    fnReads('const U = 2', 'export { U as V }\n'),
+  )
+  escalates('a read at module scope', fnReads('const U = 1', 'console.log(U)\n'), fnReads('const U = 2', 'console.log(U)\n'))
+  escalates(
+    'a read in a class field initializer',
+    fnReads('const U = 1', 'export class C { x = U }\n'),
+    fnReads('const U = 2', 'export class C { x = U }\n'),
+  )
+  escalates(
+    'a read in a static block',
+    fnReads('const U = 1', 'export class C { static { console.log(U) } }\n'),
+    fnReads('const U = 2', 'export class C { static { console.log(U) } }\n'),
+  )
+  escalates(
+    'a read in a default parameter value',
+    fnReads('const U = 1', 'export function g(a = U) { return a }\n'),
+    fnReads('const U = 2', 'export function g(a = U) { return a }\n'),
+  )
+  escalates(
+    'a read in a computed key of a module-level class',
+    fnReads('const U = "k"', 'export class C { [U]() {} }\n'),
+    fnReads('const U = "j"', 'export class C { [U]() {} }\n'),
+  )
+  escalates('a call initializer', fnReads('const U = compute()', 'declare function compute(): number\n'), fnReads('const U = compute(1)', 'declare function compute(): number\n'))
+  escalates('a new Map() initializer', fnReads('const U = new Map()'), fnReads('const U = new Map([])'))
+  escalates('a member access initializer', fnReads('const O = { b: 1 }\nconst U = O.b'), fnReads('const O = { b: 1 }\nconst U = O.b + 1'))
+  escalates('a tagged template initializer', fnReads('const U = String.raw`a`'), fnReads('const U = String.raw`b`'))
+  escalates('a function expression initializer', fnReads('const U = () => 1'), fnReads('const U = () => 2'))
+  escalates('a template that substitutes an object', fnReads('const U = `${{}}`'), fnReads('const U = `${[]}`'))
+  escalates('a spread', fnReads('const U = [...[1]]'), fnReads('const U = [...[2]]'))
+  escalates('an old initializer that is pure and a new one that is not', fnReads('const U = 1'), fnReads('const U = Date.now()'))
+  escalates('an old initializer that is not pure and a new one that is', fnReads('const U = Date.now()'), fnReads('const U = 1'))
+  escalates(
+    'a hunk that also edits other module-scope code',
+    fnReads('const U = 1', 'setup()\ndeclare function setup(): void\n'),
+    fnReads('const U = 2', 'setup(1)\ndeclare function setup(): void\n'),
+  )
+  escalates(
+    'a hunk that also edits another binding that is exported',
+    fnReads('const U = 1', 'export const W = 1\n'),
+    fnReads('const U = 2', 'export const W = 2\n'),
+  )
+  escalates('another statement on the same line', 'const U = 1; const V = 1\nexport function f() { return U }\n', 'const U = 2; const V = 1\nexport function f() { return U }\n')
+  escalates('a comment edit above the binding', fnReads('// a\nconst U = 1'), fnReads('// b\nconst U = 1'))
+  escalates(
+    'eval anywhere in the file',
+    fnReads('const U = 1', 'export const e = (s: string) => eval(s)\n'),
+    fnReads('const U = 2', 'export const e = (s: string) => eval(s)\n'),
+  )
+  escalates('a script with no import or export', 'const U = 1\nfunction f() { return U }\n', 'const U = 2\nfunction f() { return U }\n')
+  escalates(
+    'a let reassigned from a const that reads another let',
+    fnReads('let V = 1\nconst U = V'),
+    fnReads('let V = 1\nconst U = V + 1'),
+  )
+  escalates('a use before the declaration', 'const U = W\nconst W = 1\nexport function f() { return U }\n', 'const U = W + 1\nconst W = 1\nexport function f() { return U }\n')
+
+  test('a shadowing parameter does not hide a real module-scope read', () => {
+    const text = (n: number): string =>
+      `const U = ${String(n)}\nexport function f(U: number) { return U }\nconsole.log(U)\n`
+    assert.equal(proof(text(1), text(2)).read, undefined)
+  })
+
+  test('a shadowing local is not a reference: only the real reader is named', () => {
+    const text = (n: number): string =>
+      `const U = ${String(n)}\nexport function f(U: number) { return U }\nexport function g() {\n  { const U = 9; void U }\n  return U\n}\n`
+    const { read } = proof(text(1), text(2))
+    // Line 5 is g's read of the outer U; the parameter and the block-scoped U resolve elsewhere.
+    assert.deepEqual(read?.lines, [5])
+  })
+
+  test('a pin the project does not match falls back with the warning', () => {
+    const { read, warnings } = proof(
+      withBody('const U = /a/', '  return U'),
+      withBody('const U = /b/', '  return U'),
+      '0.0.1',
+    )
+    assert.equal(read, undefined)
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0]!, /emitCheck skipped for .*: resolved typescript .*, pinned 0\.0\.1/)
   })
 })

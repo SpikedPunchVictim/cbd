@@ -912,6 +912,48 @@ transpile-only runner exactly; with a type-checked emit (ts-node without `transp
 const enum's members are inlined into importing files, so any changed `const enum` or
 `declare const enum` is "changed" by escalation.
 
+**`emitCheck` also narrows one module-scope edit that changed the emit: a pure initializer that only
+functions read.** On a one-process suite the module-scope rule selects every load observer, which is
+far more than can see a changed `const UNSTORABLE = /…/` that one function reads. When the same
+`emitCheck` entry applies, the file has a single base commit (the map's), and the change carries both
+sides' line ranges, CBD asks the project's own `typescript` (the same pinned, resolved compiler and
+tsconfig) to bind names in that one file (`createProgram`, `noResolve`, `noLib`; references are
+resolved by symbol, never by spelling, so a shadowing parameter or block binding is a different
+symbol) and, if every rule below holds for the old **and** the new text, selects only the tests that
+ran a function containing a reference to the binding, with the reason `binding-read` naming it. The
+function entries whose ranges contain the reference sites are the readers; a reader that ran at load
+selects its load observers, one that ran between tests keeps `betweenPolicy`. Anything not proven
+escalates exactly as before, and the `module-scope-unchanged` verdict wins when both apply.
+
+The rules (all must hold; a failure names its reason internally and keeps today's rule):
+
+- The file is an ES module (it has an `import` or `export`) and uses no `eval`, `with` or `arguments`.
+- Every hunk lies on the lines of one top-level variable statement, and no other top-level statement
+  shares those lines. A hunk that reaches a comment, a blank line or other code is not covered.
+- The statement declares exactly one plain identifier with an initializer, with no `export` or
+  `declare`, no `using`, and the symbol has a single declaration.
+- Neither the old nor the new initializer can run code or throw: literals, regular expressions,
+  template literals whose substitutions are primitives, array and object literals of those (no
+  spread, methods or accessors; a computed key must be a primitive), `!`, `typeof`, `void`, unary
+  `-`, `~`, `+` on numbers, and binary operators only on the operand types they cannot throw on
+  (arithmetic and bitwise on numbers, `+` with a string, `<`/`>` on two numbers or two strings,
+  `===`, `&&`, `||`, `??`), `as`/`satisfies`/`!`/parentheses around any of these, and identifiers of
+  earlier top-level `const`s whose own initializers satisfy the same rule. Never allowed: any call,
+  `new`, member access, a tagged template, `await`, `yield`, an assignment, a function or class
+  expression, `in`, `instanceof`, or a `bigint` operator.
+- No reference to the binding lies outside a function body. `export const`, `export { X }`,
+  `export default X`, a re-export, a read in another module-scope statement or initializer, a class
+  field initializer, a static block, a decorator, a default parameter value, and a computed key of a
+  module-level class or object are all module scope. An identifier the checker cannot resolve counts as
+  a reference.
+
+A function body that a module-scope call runs at load (an IIFE, a callback) is still a function: the
+map's load bucket records it, and the reader rule applies the load bucket's rule to it. The pin and
+fallbacks are `emitCheck`'s: a compiler that is missing, TypeScript 7, or not the pinned version
+skips the entry with the usual warning. A `--change`/`--patch` what-if edits no file, so `emitCheck`'s
+unchanged verdict applies to it before this rule is reached; use a real edit with `--since` to see
+`binding-read`.
+
 `alwaysAll` is checked **before** `include`, because it is a statement that a change there is beyond
 the map's ability to answer, not a filter. The example config above lists `**/migrations/**` there
 although `include` covers only `src/**`; checking `include` first silently dropped those changes,

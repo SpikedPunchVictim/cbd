@@ -1533,3 +1533,71 @@ test('a change to a file in a shared read group selects the group\'s tests, and 
   const read = listed.reasons.find((reason) => reason.kind === 'read')
   assert.deepEqual(read?.kind === 'read' ? read.tests : [], [0, 2])
 })
+
+// --- bindingReads: a module-scope edit of a binding only functions read --------
+// The compiler's proof is computed where file contents are read; `select` names
+// the tests that ran a function containing a reference.
+const binding = (lines: number[]): { bindingReads: ReadonlyMap<string, { names: string[]; lines: number[]; typescript: string }> } => ({
+  bindingReads: new Map([[SRC, { names: ['UNSTORABLE'], lines, typescript: '5.9.3' }]]),
+})
+
+test('binding-read: a module-scope hunk selects only the tests that ran the reading function', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], binding([6]))
+  assert.deepEqual(result.tests, [1])
+  assert.deepEqual(result.reasons, [
+    { kind: 'binding-read', file: SRC, binding: 'UNSTORABLE', typescript: '5.9.3', tests: [1] },
+  ])
+})
+
+test('binding-read: a binding read in two functions selects the tests of both', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], binding([2, 6]))
+  assert.deepEqual(result.tests, [0, 1])
+})
+
+test('binding-read: without the proof the same hunk still takes the whole file', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])])
+  assert.deepEqual(result.tests, [0, 1])
+  assert.deepEqual(reasonKinds(result), ['file'])
+})
+
+test('binding-read: a reader nobody ran selects nothing and still says why', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], binding([9]))
+  assert.deepEqual(result.tests, [])
+  assert.deepEqual(reasonKinds(result), ['binding-read'])
+})
+
+test('binding-read: a hunk that also reaches a function still selects that function', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 3, end: 5 }])], binding([6]))
+  assert.deepEqual(result.tests, [0, 1])
+  assert.ok(reasonKinds(result).includes('function'))
+})
+
+test('binding-read: a reading function that ran at load keeps the load rule', () => {
+  const map = makeMap({
+    tests: [
+      { title: 't0', file: SPEC },
+      { title: 't1', file: SPEC },
+      { title: 't2', file: SPEC },
+    ],
+    files: { [SRC]: { 'add@0': { startLine: 1, endLine: 3, tests: [0] }, 'multiply@0': { startLine: 5, endLine: 7, tests: [1] } } },
+    load: [[SRC, 'add@0', 1, 3]],
+    loadShards: { [SRC]: [0] },
+    shardTests: [[0, 1, 2]],
+  })
+  const result = select(map, [change(SRC, [{ start: 4, end: 4 }])], binding([2]))
+  assert.deepEqual(result.tests, [0, 1, 2])
+})
+
+test('binding-read: a reading function that ran between tests escalates under the between policy', () => {
+  const map = makeMap({ between: [[SRC, 'add@0', 1, 3]] })
+  const result = select(map, [change(SRC, [{ start: 4, end: 4 }])], binding([2]))
+  assert.equal(result.mode, 'all')
+})
+
+test('binding-read: the unchanged-module verdict, when there is one, wins', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], {
+    ...binding([2]),
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
+  })
+  assert.deepEqual(reasonKinds(result), ['module-scope-unchanged'])
+})

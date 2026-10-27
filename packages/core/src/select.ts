@@ -51,6 +51,7 @@ export type Reason =
   | { kind: 'shared-state'; file: string; tests: number[] }
   | { kind: 'env-changed'; keys: string[]; tests: number[] }
   | { kind: 'module-scope-unchanged'; file: string; typescript: string }
+  | { kind: 'binding-read'; file: string; binding: string; typescript: string; tests: number[] }
   | { kind: 'all'; why: AllWhy; file?: string }
 
 /**
@@ -206,6 +207,24 @@ export interface SelectConfig {
    * unknown-file ladder are untouched.
    */
   moduleScopeUnchanged?: ReadonlyMap<string, string>
+  /**
+   * Files whose module-scope hunks only edit the side-effect-free initializer of a
+   * binding that no code outside a function reads (proved in `binding-read.ts`).
+   * `lines` are the reference sites in the map's coordinates. For such a file the
+   * module-scope rule is replaced by the tests that ran a function containing a
+   * reference; the verdict `moduleScopeUnchanged` still wins when both exist.
+   */
+  bindingReads?: ReadonlyMap<string, BindingReadVerdict>
+}
+
+/** What the compiler proved about a module-scope edit that only a binding's readers can see. */
+export interface BindingReadVerdict {
+  /** The edited binding names, sorted. */
+  names: readonly string[]
+  /** 1-based lines of every reference, in the map's coordinates. */
+  lines: readonly number[]
+  /** The compiler version that proved it. */
+  typescript: string
 }
 
 /**
@@ -261,6 +280,7 @@ const IMPACT: Record<Reason['kind'], number> = {
   'shared-state': 6,
   'env-changed': 6,
   'module-scope-unchanged': 7,
+  'binding-read': 1,
   all: 7,
 }
 
@@ -800,11 +820,44 @@ export function select(
         // the module instance and are the honest answer. A map built before that
         // attribution existed has no answer, and falls back to rule 2's `all`.
         const compiler = config.moduleScopeUnchanged?.get(path)
+        const bindingRead = config.bindingReads?.get(path)
         if (compiler !== undefined && !touchesBucketFunction(change)) {
           // The compiler proved the file's module scope identical at runtime, so
           // these hunks cannot change what any test observed at load. A hunk in a
           // function the map never recorded is here too: no recorded test ran it.
           reasons.push({ kind: 'module-scope-unchanged', file: path, typescript: compiler })
+        } else if (bindingRead !== undefined && !touchesBucketFunction(change)) {
+          // Only a function that reads the binding can see its new value, so only the
+          // tests that ran such a function can. A reference inside a function that ran
+          // at load or between tests keeps that bucket's rule.
+          const readers: number[] = []
+          for (const [key, entry] of Object.entries(functions)) {
+            if (key.startsWith('<module>')) continue
+            if (!bindingRead.lines.some((line) => line >= entry.startLine && line <= entry.endLine)) continue
+            readers.push(...entry.tests)
+            if (loadFunctions.has(`${path}\u0000${key}`)) selectLoadObservers(path, entry.tests)
+          }
+          const inBucket = (refs: ReadonlyArray<TouchRef>): boolean =>
+            refs.some(
+              (ref) =>
+                ref[0] === path &&
+                !ref[1].startsWith('<module>') &&
+                bindingRead.lines.some((line) => line >= ref[2] && line <= ref[3]),
+            )
+          if (inBucket(map.load)) selectLoadObservers(path, [])
+          if (inBucket(map.between)) {
+            unmapped.push(path)
+            if (betweenPolicy === 'all') forceAll('between', path)
+          }
+          const tests = uniqueSorted(readers)
+          for (const index of tests) selected.add(index)
+          reasons.push({
+            kind: 'binding-read',
+            file: path,
+            binding: bindingRead.names.join(', '),
+            typescript: bindingRead.typescript,
+            tests,
+          })
         } else if (loadFiles.has(path) || teardownFiles.has(path)) {
           selectLoadObservers(path, testsTouchingFile(path))
         } else if (betweenFiles.has(path) && betweenPolicy === 'all') {

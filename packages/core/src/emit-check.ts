@@ -23,6 +23,7 @@ import { createRequire } from 'node:module'
 import { dirname, relative } from 'node:path'
 import type { Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
+import { proveBindingRead, type BindingRead } from './binding-read.js'
 import type { EmitCheckEntry } from './select.js'
 
 /** The slice of the TypeScript compiler API used; `any` because `typescript` is the consumer's. */
@@ -217,6 +218,24 @@ export interface EmitCheckInput {
   worktree: boolean
 }
 
+/** Do all of the refs name one commit (`HEAD` and the map's hash often do)? */
+function singleCommit(root: string, refs: readonly string[]): boolean {
+  try {
+    const commits = new Set(
+      refs.map((ref) =>
+        execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim(),
+      ),
+    )
+    return commits.size === 1
+  } catch {
+    return false
+  }
+}
+
 function gitShow(root: string, ref: string, path: string): string | undefined {
   const rel = relative(root, path).split('\\').join('/')
   try {
@@ -241,11 +260,17 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
   files: Map<string, string>
   /** One per entry that could not run at all (wrong or missing compiler). */
   warnings: string[]
+  /**
+   * Modified files whose module-scope hunks only edit a side-effect-free initializer of a
+   * binding that functions alone read (see `binding-read.ts`), with the compiler that proved it.
+   */
+  bindingReads: Map<string, BindingRead & { typescript: string }>
 } {
   const files = new Map<string, string>()
+  const bindingReads = new Map<string, BindingRead & { typescript: string }>()
   const warnings: string[] = []
   const warned = new Set<string>()
-  if (input.entries.length === 0 || input.refs.length === 0) return { files, warnings }
+  if (input.entries.length === 0 || input.refs.length === 0) return { files, warnings, bindingReads }
   for (const change of input.changes) {
     if (change.status !== 'M') continue
     if (!TS_SOURCE.test(change.path) || DECLARATION.test(change.path)) continue
@@ -274,10 +299,26 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
       entry.typescript,
     )
     if (verdict.unchanged) files.set(change.path, verdict.typescript!)
-    else if (verdict.skipped === true && !warned.has(entry.glob)) {
+    else if (verdict.why === 'module scope differs') {
+      // The hunks are in one version's lines and the map is in another's, so only a
+      // single commit (the map's) and a change carrying both sides can be placed.
+      const project = loadProject(entry.tsconfig)
+      const base = bases[0]
+      if (
+        typeof project !== 'string' &&
+        singleCommit(input.root, input.refs) &&
+        base !== undefined &&
+        change.newHunks !== undefined &&
+        (change.insertions ?? []).length === 0 &&
+        (change.newInsertions ?? []).length === 0
+      ) {
+        const proof = proveBindingRead(project.ts, project.options, change.path, base, head, change.hunks, change.newHunks)
+        if (proof.ok) bindingReads.set(change.path, { ...proof.read, typescript: project.version })
+      }
+    } else if (verdict.skipped === true && !warned.has(entry.glob)) {
       warned.add(entry.glob)
       warnings.push(`emitCheck skipped for ${entry.glob}: ${verdict.why ?? 'unusable compiler'}`)
     }
   }
-  return { files, warnings }
+  return { files, warnings, bindingReads }
 }

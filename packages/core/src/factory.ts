@@ -865,6 +865,7 @@ export function createCbd(config: CbdConfig): Cbd {
         ...config.select,
         definesTests,
         ...(moduleScopeUnchanged.size === 0 ? {} : { moduleScopeUnchanged }),
+        ...(emitChecked.bindingReads.size === 0 ? {} : { bindingReads: emitChecked.bindingReads }),
         ...(config.configFile === undefined ? {} : { configFile: config.configFile }),
         ...(configChanged ? { configChanged: true } : {}),
         ...(options.strict === undefined ? {} : { strict: options.strict }),

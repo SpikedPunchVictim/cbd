@@ -18,6 +18,18 @@ until a tag is pushed and the publish workflow runs.
   tests that touched the file, often beside `driver.ts (read by 8 tests)`. It now reads
   `driver.ts (loaded by 11 shards: 2628 tests)`, and the JSON reason carries `shards`.
 
+- **`emitCheck` narrows an edit to a pure initializer that only functions read.** A module-scope hunk
+  selected every load observer, so changing `const UNSTORABLE = /…/` (not exported, read inside one
+  function) selected 2,630 tests of a 3,734-test suite. When the project's own `typescript`, resolved
+  and pinned as `emitCheck` already does, proves that the hunks lie in the initializer of one
+  unexported top-level variable, that the old and new initializers are side-effect free and cannot
+  throw (literals, regular expressions, primitive templates, array and object literals, a few operators,
+  earlier pure `const`s), and that no reference sits outside a function body (names are bound by
+  symbol, so a shadowing parameter does not count), selection takes only the tests that ran a function
+  containing a reference. The reason is `binding-read`, naming the binding; a reader that ran at load
+  keeps the load rule. Anything unproven escalates as before. On the originating project's map the same edit
+  selects 236 tests (8 read, 41 binding-read, 190 opaque) instead of 2,630, with the killer kept.
+
 ## 0.0.5 — 2026-10-26
 
 - **A read shared by a whole shard is stored once in the map.** An import-phase read that a
