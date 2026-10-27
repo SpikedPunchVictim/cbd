@@ -28,7 +28,7 @@
  * the map, not something this function can repair.
  */
 import { realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { testsListing, testsReading, type CoverageMap, type FunctionEntry, type TestEntry } from './map.js'
 
 export interface MutantTarget {
@@ -225,7 +225,7 @@ function mergeTests(base: TestEntry[], extra: TestEntry[]): TestEntry[] {
 /** Whether `path` is `dir` or under it, both canonical. */
 function isUnder(path: string, dir: string): boolean {
   const rel = relative(dir, path)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (!(rel === '..' || rel.startsWith(`..${sep}`)) && !isAbsolute(rel))
 }
 
 /** Map keys are realpaths; a relative target is resolved against the map root. */

@@ -453,6 +453,11 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
     assert.equal(read?.typescript, PIN)
   })
 
+  test('CRLF line endings still narrow', () => {
+    const text = (n: number): string => `const N = ${String(n)}\r\nexport function f() {\r\n  return N\r\n}\r\n`
+    assert.deepEqual(proof(text(1), text(2)).read?.lines, [3])
+  })
+
   test('a number const read inside two functions names both reference sites', () => {
     const text = (n: number): string =>
       `const N = ${String(n)}\nexport function f() {\n  return N\n}\nexport const g = () => N + 1\n`
@@ -475,6 +480,16 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
   const fnReads = (decl: string, extra = ''): string => `${decl}\nexport function f() { return U }\n${extra}`
 
   escalates('an exported binding', fnReads('export const U = 1'), fnReads('export const U = 2'))
+  escalates(
+    'a U+2028 in a string literal before the edit',
+    fnReads('const S = "a b"\nconst U = 1', 'setup()\ndeclare function setup(): void\n'),
+    fnReads('const S = "a b"\nconst U = 2', 'setup()\ndeclare function setup(): void\n'),
+  )
+  escalates(
+    'a lone carriage return before the edit',
+    fnReads('const S = "a" // x\rconst U = 1'),
+    fnReads('const S = "a" // x\rconst U = 2'),
+  )
   escalates('export { U }', fnReads('const U = 1', 'export { U }\n'), fnReads('const U = 2', 'export { U }\n'))
   escalates('export default U', fnReads('const U = 1', 'export default U\n'), fnReads('const U = 2', 'export default U\n'))
   escalates(

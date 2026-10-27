@@ -21,7 +21,7 @@
  * run into one window.
  */
 import { readFileSync, realpathSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CbdConfig } from './factory.js'
 import { matchesAnyGlob } from './glob.js'
 import type { AlwaysSelectEntry, SelectConfig } from './select.js'
@@ -180,7 +180,7 @@ export function parseConfig(raw: unknown, root: string, path: string = configPat
       stateDir === '' ||
       isAbsolute(stateDir) ||
       rel === '' ||
-      rel.startsWith('..') ||
+      (rel === '..' || rel.startsWith(`..${sep}`)) ||
       isAbsolute(rel)
     ) {
       throw new Error(

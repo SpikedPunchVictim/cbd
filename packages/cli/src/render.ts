@@ -10,7 +10,7 @@
  * is. A path outside the root (a map that names another checkout, a relocated lane)
  * is shown as it is rather than as `../../…`, which would hide where it really is.
  */
-import { relative } from 'node:path'
+import { relative, sep } from 'node:path'
 import type {
   BuildResult,
   ExplainReason,
@@ -26,7 +26,7 @@ import type { GcResult } from './gc.js'
 
 export const shown = (root: string, path: string): string => {
   const rel = relative(root, path)
-  return rel === '' || rel.startsWith('..') ? path : rel
+  return rel === '' || (rel === '..' || rel.startsWith(`..${sep}`)) ? path : rel
 }
 
 export const plural = (count: number, one: string, many = `${one}s`): string =>

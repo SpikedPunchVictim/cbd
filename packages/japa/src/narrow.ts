@@ -31,7 +31,7 @@
  * only load a file that was already going to match.
  */
 import { realpathSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { SelectionTest } from '@spikedpunch/cbd'
 
@@ -79,7 +79,7 @@ function underCwd(cwd: string | undefined, file: string, real: string): string[]
   for (const from of [file, real]) {
     for (const root of roots) {
       const inside = relative(root, from)
-      if (inside === '' || inside.startsWith('..') || isAbsolute(inside)) continue
+      if (inside === '' || (inside === '..' || inside.startsWith(`..${sep}`)) || isAbsolute(inside)) continue
       for (const to of roots) spelled.push(resolve(to, inside))
     }
   }

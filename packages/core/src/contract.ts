@@ -78,13 +78,14 @@ export function testRef(file: string | null, title: string, detail: TestRefDetai
  *
  * `maxOccurrences` bounds the blow-up: each ` > ` doubles the readings, so a
  * pathological title is answered with the plain split instead of 2^n alternatives.
- * That is today's behavior for that title and no worse.
+ * The literal one-part reading stays beside the plain split: a runner that
+ * reports a title containing ` > ` as one part must still match.
  */
 export function titlePartReadings(stored: string, maxOccurrences = 8): string[][] {
   const parts = stored.split(' > ')
   if (parts.length === 1) return [[stored]]
   const separators = parts.length - 1
-  if (separators > maxOccurrences) return [parts]
+  if (separators > maxOccurrences) return [[stored], parts]
 
   const readings: string[][] = []
   for (let mask = 0; mask < 1 << separators; mask += 1) {

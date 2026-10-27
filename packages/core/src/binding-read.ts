@@ -69,6 +69,9 @@ function analyze(
   hunks: readonly LineRange[],
 ): Analysis | string {
   if (hunks.length === 0) return 'no hunks'
+  // TypeScript breaks lines on a lone CR, U+2028 and U+2029; git and the map break on
+  // LF only, so line numbers from the AST would not be the hunks' numbers.
+  if (/\r(?!\n)|[\u2028\u2029]/.test(text)) return 'the file has line terminators git does not break on'
   const kind = /x$/i.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   const parsed = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind)
   const host = ts.createCompilerHost(options, true)

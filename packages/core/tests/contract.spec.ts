@@ -58,9 +58,11 @@ test.group('adapter contract', () => {
       ['outer > a', 'b'],
       ['outer', 'a', 'b'],
     ])
-    // 2^9 readings is 512; past the cap the plain split is today's behavior.
-    const many = titlePartReadings(Array.from({ length: 11 }, (_, i) => `p${i}`).join(' > '))
-    assert.equal(many.length, 1)
-    assert.equal(many[0]?.length, 11)
+    // 2^9 readings is 512; past the cap the one-part and the plain split remain.
+    const stored = Array.from({ length: 11 }, (_, i) => `p${i}`).join(' > ')
+    const many = titlePartReadings(stored)
+    assert.equal(many.length, 2)
+    assert.deepEqual(many[0], [stored])
+    assert.equal(many[1]?.length, 11)
   })
 })

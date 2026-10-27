@@ -5,6 +5,20 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A file with a lone `\r`, U+2028 or U+2029 no longer gets a wrong binding-read narrowing.**
+  TypeScript breaks lines on those characters while git and the map break on `\n` only, so a hunk
+  after one landed on the wrong statement and a side-effecting module-scope edit could be proved a
+  pure const edit with no readers. `emitCheck` now gives no binding-read verdict for such a file and
+  escalates as before. CRLF files are unaffected.
+- **A file named `..something` under a listed or partial directory is no longer treated as outside
+  it.** The containment checks read any relative path starting with `..` as an escape, so
+  `dir/..hidden.ts` was dropped from the directory's coverage in `select`, and the same idiom
+  misjudged paths in config, the CLI, `mutate`, the map and the japa narrowing. They now treat only
+  `..` itself or `../` as leaving the directory.
+- **A jest or node:test title with nine or more ` > ` separators can match again.** Past the reading
+  cap the title was offered only as its split parts, never as the single stored title a runner may
+  report; both readings are now offered.
+
 - **`select --change` and `explain` no longer let `emitCheck` drop tests for a what-if.** A `--change`
   or `--patch` edits no file, so `emitCheck` compared a file with itself, found its module scope
   unchanged, and the `module-scope-unchanged` verdict suppressed the load-observer escalation: on the

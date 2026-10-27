@@ -19,7 +19,7 @@
  *   code and always forces `all`. A file reached only by `@between` is a separate
  *   policy knob, because out-of-window activity is common and often harmless.
  */
-import { isAbsolute, relative } from 'node:path'
+import { isAbsolute, relative, sep } from 'node:path'
 import { intersects, type Change, type LineRange } from './changes.js'
 import { testId } from './contract.js'
 import { hashEnvValue } from './env.js'
@@ -309,7 +309,7 @@ function orderTests(selected: Set<number>, reasons: Reason[], order?: 'impact'):
 /** Whether `path` is strictly below `dir`. */
 function isUnder(path: string, dir: string): boolean {
   const rel = relative(dir, path)
-  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+  return rel !== '' && !(rel === '..' || rel.startsWith(`..${sep}`)) && !isAbsolute(rel)
 }
 
 /** Case-folded path equality on the platforms whose filesystems ignore case. */

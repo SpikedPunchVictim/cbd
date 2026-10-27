@@ -17,7 +17,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { changesSince, commitsSince, headCommit, mergeChanges, type Change } from './changes.js'
 import { moduleScopeUnchangedFiles } from './emit-check.js'
 import { matchesAnyGlob } from './glob.js'
@@ -440,7 +440,7 @@ function dirtyTree(root: string, stateDir: string): boolean {
 /** Whether `path` is `dir` or under it, both absolute. */
 function inside(path: string, dir: string): boolean {
   const rel = relative(dir, path)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (!(rel === '..' || rel.startsWith(`..${sep}`)) && !isAbsolute(rel))
 }
 
 /**
@@ -488,7 +488,7 @@ function configChangedOutside(root: string, configFile: string, base: string): b
   try {
     const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
     const rel = relative(top, configFile)
-    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false
+    if (rel === '' || (rel === '..' || rel.startsWith(`..${sep}`)) || isAbsolute(rel)) return false
     const changed = git(top, ['diff', '--name-only', base, '--', rel]).replace(/\r?\n$/, '')
     if (changed !== '') return true
     const untracked = git(top, [

@@ -1146,7 +1146,7 @@ export function mapPath(
 const storePath = (root: string, path: string): string => {
   if (!isAbsolute(path)) return path
   const rel = relative(root, path)
-  return rel === '' || rel.startsWith('..') || isAbsolute(rel) ? path : rel
+  return rel === '' || (rel === '..' || rel.startsWith(`..${sep}`)) || isAbsolute(rel) ? path : rel
 }
 
 /** The inverse of `storePath`: absolute paths are left alone (pre-relative maps). */

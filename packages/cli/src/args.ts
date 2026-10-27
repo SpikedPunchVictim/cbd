@@ -12,7 +12,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, realpathSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export type Command =
   | 'build'
@@ -234,7 +234,7 @@ function takeFlag(
 /** Whether `dir` is `ceiling` or below it. */
 function atOrBelow(dir: string, ceiling: string): boolean {
   const rel = relative(ceiling, dir)
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+  return rel === '' || (!(rel === '..' || rel.startsWith(`..${sep}`)) && !isAbsolute(rel))
 }
 
 /**

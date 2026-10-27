@@ -187,6 +187,13 @@ test('a partial directory covers every file under it', () => {
   assert.deepEqual(reasonKinds(result), ['all:partial'])
 })
 
+test('a partial directory covers a file whose name starts with two dots', () => {
+  const map = makeMap({ partial: [LISTED] })
+  const result = select(map, [change(`${LISTED}/..hidden.ts`, [{ start: 1, end: 1 }])])
+  assert.equal(result.mode, 'all')
+  assert.deepEqual(reasonKinds(result), ['all:partial'])
+})
+
 // --- rule 2 -----------------------------------------------------------------
 test('rule 2: a file reached only by @load forces mode: all', () => {
   const result = select(makeMap(), [change(LOADED_ONLY, [{ start: 1, end: 1 }])])
@@ -708,6 +715,11 @@ test('a change under a listed directory selects the test that listed it', () => 
   const result = select(makeMap(), [change(`${LISTED}/new.json`, [{ start: 1, end: 1 }])])
   assert.deepEqual(result.tests, [2])
   assert.deepEqual(reasonKinds(result), ['read'])
+})
+
+test('a change to a dot-dot-named file under a listed directory selects the test that listed it', () => {
+  const result = select(makeMap(), [change(`${LISTED}/..hidden.json`, [{ start: 1, end: 1 }])])
+  assert.deepEqual(result.tests, [2])
 })
 
 test('an unknown code file under a listed directory escalates despite the listing', () => {
