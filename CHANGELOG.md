@@ -30,6 +30,17 @@ until a tag is pushed and the publish workflow runs.
 - **`strict: true` in `cbd.config.json` now takes effect for `cbd select`.** The CLI always passed
   `strict: false` when `--strict` was absent, overriding the config. The flag now overrides the config
   only when given; `--no-strict` turns a configured `strict` off.
+
+- **`changesSince` ignores the user's diff configuration and `+++`/`---` body lines.** `diff.mnemonicPrefix`,
+  `diff.srcPrefix`/`diff.dstPrefix` and `diff.<driver>.textconv` made the parsed paths keep a `c/`/`w/`
+  prefix or the hunks come from converted text, so the change matched no include glob and its tests were
+  not selected; the diff now pins `a/`/`b/` and `--no-textconv`. An added line `++ x` (printed `+++ x`) or
+  a removed line `-- x` (printed `--- x`) was read as a file header and renamed the file; headers are only
+  read before a file's first hunk. A quoted path containing a character outside the BMP (an emoji) is
+  decoded whole instead of being replaced by U+FFFD.
+- **A file renamed out of `include` still selects the old path's tests.** `git mv src/a.ts archive/a.ts`
+  dropped the change at the scope filter because the new path is outside `include`, before `select`
+  could treat the old path as a deletion; the change is now kept when either path is in scope.
 - **`select --change` and `explain` no longer let `emitCheck` drop tests for a what-if.** A `--change`
   or `--patch` edits no file, so `emitCheck` compared a file with itself, found its module scope
   unchanged, and the `module-scope-unchanged` verdict suppressed the load-observer escalation: on the

@@ -819,13 +819,18 @@ export function createCbd(config: CbdConfig): Cbd {
         configFile !== undefined &&
         allChanges.some((change) => isConfigPath(change.path) || isConfigPath(change.from))
 
+      // A rename is judged by both of its paths: `select` also processes the old
+      // path as a deletion, so a file moved out of `include` must still reach it.
+      const inScope = (path: string): boolean =>
+        include(path) ||
+        matchesAnyGlob(path, alwaysAll) !== null ||
+        matchesAnyGlob(path, claimedByWhen) !== null
       const changes = allChanges.filter(
         (change) =>
           isConfigPath(change.path) ||
           isConfigPath(change.from) ||
-          include(change.path) ||
-          matchesAnyGlob(change.path, alwaysAll) !== null ||
-          matchesAnyGlob(change.path, claimedByWhen) !== null,
+          inScope(change.path) ||
+          (change.status === 'R' && change.from !== undefined && inScope(change.from)),
       )
       const considered = new Set(changes)
       const ignored = allChanges

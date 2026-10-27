@@ -864,6 +864,30 @@ test.group('createCbd', () => {
     }
   })
 
+  test('select keeps the old path of a file renamed out of include', () => {
+    const { repo, cleanup } = prepared()
+    try {
+      const cbd = createCbd({ root: repo.root })
+      cbd.build()
+      repo.git(['mv', 'src/a.ts', 'archive-a.ts'])
+      repo.commit('move a out of src')
+      const root = realpathSync(repo.root)
+
+      const scoped = createCbd({
+        root: repo.root,
+        select: { include: (path) => path.startsWith(join(root, 'src')) },
+      })
+      const { selection, selected } = scoped.select()
+      // The old path's tests touched code that moved away; the new path is out of
+      // scope and must not be what decides it.
+      assert.equal(selection.mode, 'subset')
+      assert.deepEqual(selected.map((entry) => entry.title).sort(), ['adds', 'reads'])
+      assert.deepEqual(selection.ignored, [join(root, 'archive-a.ts')])
+    } finally {
+      cleanup()
+    }
+  })
+
   /**
    * A base older than the map's commit. Everything between them is already in
    * the map, but its hunks are in the base's line numbers: f moves from 5..7 to
