@@ -397,6 +397,56 @@ test.group('cbd select', () => {
     }
   })
 
+  test('a select that fails removes the stale --emit-selection file', () => {
+    const { root, cleanup } = prepared()
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-emit-fail-'))
+    try {
+      // No map was built, so select cannot answer.
+      const file = join(dir, 'selection.json')
+      writeFileSync(file, JSON.stringify({ version: 2, tests: [{ id: 'stale', file: null, title: 'x' }] }))
+
+      const result = invoke(root, 'select', '--emit-selection', file)
+
+      assert.notEqual(result.code, EXIT.ok)
+      assert.equal(existsSync(file), false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
+  test('a select that fails removes the managed --emit-selection-dir files and nothing else', () => {
+    const { root, cleanup } = prepared()
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-suites-fail-'))
+    try {
+      for (const name of ['one.json', '_other.json', 'notes.txt', 'config.yaml']) {
+        writeFileSync(join(dir, name), '{}')
+      }
+      writeFileSync(join(dir, '.cbd-suites.json'), JSON.stringify({ files: ['old.json', '../x.json'] }))
+      writeFileSync(join(dir, 'old.json'), '{}')
+
+      const result = invoke(
+        root,
+        'select',
+        '--emit-selection-dir',
+        dir,
+        '--suite',
+        'one=tests/a.spec.ts',
+      )
+
+      assert.notEqual(result.code, EXIT.ok)
+      for (const name of ['one.json', '_other.json', 'old.json']) {
+        assert.equal(existsSync(join(dir, name)), false, name)
+      }
+      for (const name of ['notes.txt', 'config.yaml']) {
+        assert.equal(existsSync(join(dir, name)), true, name)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      cleanup()
+    }
+  })
+
   test('--emit-selection-dir writes one file per suite and removes stale ones', () => {
     const { repo, root, cleanup } = prepared()
     const dir = mkdtempSync(join(tmpdir(), 'cbd-suites-'))

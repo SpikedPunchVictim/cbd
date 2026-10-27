@@ -16,7 +16,7 @@
  * one line per reason when everything runs. Warnings go to stderr so they cannot be
  * mistaken for selected tests by a pipe.
  */
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, relative, resolve, sep } from 'node:path'
 import {
   createCbd,
@@ -156,13 +156,21 @@ function runBuild(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
 
 function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
   const changes = changesFrom(parsed)
-  const result: SelectResult = cbd.select({
-    ...(parsed.since === undefined ? {} : { since: parsed.since }),
-    ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
-    ...(changes === undefined ? { worktree: parsed.worktree } : { changes }),
-    ...(parsed.order === undefined ? {} : { order: parsed.order }),
-    ...(parsed.strict === undefined ? {} : { strict: parsed.strict }),
-  })
+  let result: SelectResult
+  try {
+    result = cbd.select({
+      ...(parsed.since === undefined ? {} : { since: parsed.since }),
+      ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
+      ...(changes === undefined ? { worktree: parsed.worktree } : { changes }),
+      ...(parsed.order === undefined ? {} : { order: parsed.order }),
+      ...(parsed.strict === undefined ? {} : { strict: parsed.strict }),
+    })
+  } catch (error) {
+    // No answer is not "keep the last answer": a runner that ignores our exit
+    // code would run the previous selection's subset. Same rule as `mode: all`.
+    removeEmittedSelections(parsed)
+    throw error
+  }
   for (const warning of result.selection.warnings) io.err(`cbd: warning: ${warning}`)
   // A patch made at the repository top level has top-level paths; under a nested
   // `--root` they resolve one level too deep and match no include glob. The answer
@@ -233,6 +241,38 @@ function isManagedSuiteFile(name: unknown): name is string {
   return typeof name === 'string' && /^(?:[A-Za-z0-9][A-Za-z0-9._-]*|_other)\.json$/.test(name)
 }
 
+/** The file names an earlier `--emit-selection-dir` run recorded in its manifest. */
+function readSuiteManifest(dir: string): Set<string> {
+  const names = new Set<string>()
+  try {
+    const manifest = JSON.parse(readFileSync(resolve(dir, '.cbd-suites.json'), 'utf8')) as {
+      files?: unknown
+    }
+    if (Array.isArray(manifest.files)) {
+      for (const name of manifest.files) if (isManagedSuiteFile(name)) names.add(name)
+    }
+  } catch {
+    // No manifest, or an unreadable one: the caller only knows the names it was given.
+  }
+  return names
+}
+
+/** Removes the selection files the flags own, after a select that gave no answer. */
+function removeEmittedSelections(parsed: ParsedArgs): void {
+  if (parsed.emitSelection !== undefined) rmSync(parsed.emitSelection, { force: true })
+  if (parsed.emitSelectionDir === undefined) return
+  const dir = parsed.emitSelectionDir
+  const names = [
+    ...readSuiteManifest(dir),
+    ...(parsed.suites ?? []).map((suite) => `${suite.name}.json`),
+    '_other.json',
+  ]
+  for (const name of names) {
+    if (isManagedSuiteFile(name)) rmSync(resolve(dir, name), { force: true })
+  }
+  if (existsSync(dir)) writeFileSync(resolve(dir, '.cbd-suites.json'), JSON.stringify({ files: [] }))
+}
+
 function emitSuiteSelections(parsed: ParsedArgs, result: SelectResult, io: Io): void {
   const dir = parsed.emitSelectionDir!
   const suites = parsed.suites!
@@ -245,15 +285,7 @@ function emitSuiteSelections(parsed: ParsedArgs, result: SelectResult, io: Io): 
   // overwrite. A manifest lets the next run sweep it without guessing which
   // files in the directory belong to CBD.
   const manifest = resolve(dir, '.cbd-suites.json')
-  const previous = new Set<string>()
-  try {
-    const parsed = JSON.parse(readFileSync(manifest, 'utf8')) as { files?: unknown }
-    if (Array.isArray(parsed.files)) {
-      for (const name of parsed.files) if (isManagedSuiteFile(name)) previous.add(name)
-    }
-  } catch {
-    // No manifest, or an unreadable one: this run only knows the names it was given.
-  }
+  const previous = readSuiteManifest(dir)
   const writtenNames = new Set<string>()
   const remove = (name: string): number => {
     const path = resolve(dir, name)
