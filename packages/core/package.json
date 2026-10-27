@@ -12,7 +12,8 @@
     ".": "./dist/src/index.js",
     "./adapter": "./dist/src/adapter.js",
     "./instrument": "./dist/src/instrument.js",
-    "./cbd.config.schema.json": "./cbd.config.schema.json"
+    "./cbd.config.schema.json": "./cbd.config.schema.json",
+    "./package.json": "./package.json"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

@@ -19,6 +19,9 @@ until a tag is pushed and the publish workflow runs.
   prefixes, and the adapters' spec paths could each disagree about the same directory. Every
   canonicalisation now goes through one helper that uses the native `realpathSync` on Windows,
   which asks the OS for the final long-name path; macOS and Linux keep the JS implementation.
+- **Every package exports `./package.json`.** A tool checking which version is installed could not
+  `require('@spikedpunch/cbd-japa/package.json')`: the `exports` map listed only the entry points, so
+  Node refused the path.
 
 ## 0.0.6 — 2026-10-27
 

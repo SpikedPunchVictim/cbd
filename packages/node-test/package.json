@@ -8,7 +8,8 @@
   "exports": {
     ".": "./dist/src/index.js",
     "./register": "./dist/src/register.js",
-    "./reporter": "./dist/src/reporter.js"
+    "./reporter": "./dist/src/reporter.js",
+    "./package.json": "./package.json"
   },
   "engines": {
     "node": ">=22"

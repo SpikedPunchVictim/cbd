@@ -57,6 +57,16 @@ installs, and only then removes the variable, so a child a test spawns does not 
 process that never runs japa writes nothing. The preload is inert when `CBD_SHARD` is unset, so it
 can stay in the script permanently.
 
+Node resolves an `--import` specifier from each process's working directory, so through
+`NODE_OPTIONS` the bare `@spikedpunch/cbd-japa/register` must resolve from every process in the
+chain, or the first one that cannot find it fails at start. When a launcher runs somewhere the
+package is not installed, pass the resolved URL instead, computed where it is:
+
+```sh
+REGISTER=$(cd path/to/your/tests && node --input-type=module -e "console.log(import.meta.resolve('@spikedpunch/cbd-japa/register'))")
+NODE_OPTIONS="--import $REGISTER" my-cli test
+```
+
 Keep `plugins: [cbd()]` in `configure`, unconditionally: the plugin joins the session the preload
 started rather than starting a second one, and what ran before the first test is recorded as
 load-time execution. Do not gate it on `CBD_SHARD` — the plugin removes it when it joins the
