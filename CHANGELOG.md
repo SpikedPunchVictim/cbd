@@ -24,9 +24,9 @@ until a tag is pushed and the publish workflow runs.
   unknown-file ladder and added, deleted or renamed files are unchanged, and an unresolvable
   `typescript` (including 7.x, which has no JavaScript transpile API), a transpile error or no
   matching glob keeps today's behaviour. The pin cannot vouch for a test runner that transpiles with
-  swc or esbuild instead. Enums, namespaces, class static blocks and const enums always escalate:
-  TypeScript wraps the first three in functions it synthesizes, which run at load but are not source
-  functions, so any edit to one counts as a module-scope change; a const enum's members are inlined
+  swc or esbuild instead. Enums, namespaces, class static blocks, class field initializers and const enums always
+  escalate: TypeScript wraps the first three in functions it synthesizes, and moves field initializers
+  into the constructor, so these are not source functions and any edit to one counts as a module-scope change; a const enum's members are inlined
   into importing files by a type-checked emit, so editing one is never "unchanged". No new runtime
   dependency.
 - **A config validation error names the file that was loaded.** With `--config /x/bad.json` the

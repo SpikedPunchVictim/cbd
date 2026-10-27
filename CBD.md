@@ -888,7 +888,8 @@ type observable, `verbatimModuleSyntax` keeps imports, so use the one the tests 
 consumer's.
 Only emitted functions that correspond to a source function are hollowed in the comparison. TypeScript
 synthesizes functions for enums, namespaces and class static blocks (lowered to an IIFE below ES2022),
-and they run at load, so the printed source of every enum, non-ambient namespace and static block is
+and moves class field initializers into the constructor. These run at load or on construction but are not
+source functions, so the printed source of every enum, non-ambient namespace, static block and field initializer is
 appended to the compared text: an edit in one is always "changed". A real source IIFE is a source
 function, so its body edit is the function rule's to catch (a changed function that ran at load
 selects its load observers). `emitCheck` compares `transpileModule` output, which matches a

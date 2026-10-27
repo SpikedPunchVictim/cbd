@@ -145,6 +145,42 @@ test.group('compareModuleScope', () => {
     assert.equal(verdict(p, base, head).unchanged, true)
   })
 
+  test('a class field initializer edit is a change at every target and define mode', ({ cleanup }) => {
+    const cases: Array<[string, string, string]> = [
+      ['instance field', `export class C { x = 1 }\n`, `export class C { x = 2 }\n`],
+      [
+        'instance field with explicit constructor',
+        `export class C { x = 1; constructor() { go() } }\ndeclare function go(): void\n`,
+        `export class C { x = 2; constructor() { go() } }\ndeclare function go(): void\n`,
+      ],
+      ['static field', `export class C { static x = 1 }\n`, `export class C { static x = 2 }\n`],
+      ['accessor field', `export class C { accessor x = 1 }\n`, `export class C { accessor x = 2 }\n`],
+      ['arrow-valued field', `export class C { f = () => 1 }\n`, `export class C { f = () => 2 }\n`],
+    ]
+    for (const target of ['es2020', 'es2022']) {
+      for (const useDefineForClassFields of [false, true]) {
+        const p = project({ compilerOptions: { target, useDefineForClassFields } })
+        cleanup(p.cleanup)
+        for (const [name, base, head] of cases) {
+          if (name === 'accessor field' && target === 'es2020') continue
+          assert.equal(verdict(p, base, head).unchanged, false, `${name} ${target} define=${useDefineForClassFields}`)
+        }
+      }
+    }
+  })
+
+  test('parameter properties, default parameters and a field without initializer behave', ({ cleanup }) => {
+    const p = project({ compilerOptions: { target: 'es2020' } })
+    cleanup(p.cleanup)
+    assert.equal(
+      verdict(p, `export class C { constructor(public a = 1) {} }\n`, `export class C { constructor(public a = 2) {} }\n`)
+        .unchanged,
+      false,
+      'a parameter default stays in the hollowed signature, so it already differs',
+    )
+    assert.equal(verdict(p, `export class C { x: number }\n`, `export class C { x: string }\n`).unchanged, true)
+  })
+
   test('a class field initializer is module-scope work and is a change', ({ cleanup }) => {
     const p = project({ compilerOptions: { useDefineForClassFields: true } })
     cleanup(p.cleanup)

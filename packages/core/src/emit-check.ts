@@ -130,7 +130,8 @@ function skeleton(project: Project, text: string, fileName: string): string {
 /**
  * The source text of every construct whose emit TypeScript wraps in a function it
  * synthesizes, and which runs when the module loads: enums (`(function (E) {...})(E || (E = {}))`),
- * namespaces and class static blocks (an IIFE below ES2022). The hollowing above empties
+ * namespaces, class static blocks (an IIFE below ES2022) and class field initializers
+ * (moved into the constructor). The hollowing above empties
  * those wrappers too, because the emitted JavaScript does not say which functions the
  * source wrote. A hunk in such a construct lies outside every mapped source function, so
  * nothing else would catch it. Appending the construct's own source text, printed to drop
@@ -153,7 +154,11 @@ function synthesizedConstructs(project: Project, text: string, fileName: string)
     const wanted =
       (ts.isEnumDeclaration(node) && (!ambient || isConst)) ||
       (ts.isModuleDeclaration(node) && !ambient) ||
-      ts.isClassStaticBlockDeclaration(node)
+      ts.isClassStaticBlockDeclaration(node) ||
+      // A field initializer is not inside any function in the source, but below ES2022 (or
+      // without useDefineForClassFields) TypeScript moves an instance one into the emitted
+      // constructor, which is hollowed. Static and `accessor` fields included.
+      (ts.isPropertyDeclaration(node) && node.initializer !== undefined)
     if (wanted) {
       // Outermost only: the printed text of a construct includes everything inside it.
       found.push(printer.printNode(ts.EmitHint.Unspecified, node, source))
