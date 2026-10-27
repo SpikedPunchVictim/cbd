@@ -27,7 +27,7 @@
  * failing test that could kill a mutant is not in the map. That is a property of
  * the map, not something this function can repair.
  */
-import { realpathSync } from 'node:fs'
+import { realpath } from './paths.js'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { testsListing, testsReading, type CoverageMap, type FunctionEntry, type TestEntry } from './map.js'
 
@@ -231,7 +231,7 @@ function isUnder(path: string, dir: string): boolean {
 /** Map keys are realpaths; a relative target is resolved against the map root. */
 function canonical(root: string, file: string): string {  const absolute = isAbsolute(file) ? file : resolve(root, file)
   try {
-    return realpathSync(absolute)
+    return realpath(absolute)
   } catch {
     return absolute
   }

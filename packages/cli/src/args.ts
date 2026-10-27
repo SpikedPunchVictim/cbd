@@ -11,8 +11,9 @@
  * nothing.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { realpath } from '@spikedpunch/cbd/adapter'
 
 export type Command =
   | 'build'
@@ -263,7 +264,7 @@ function configRoot(cwd: string, ceiling?: string): string | undefined {
 
 function canonical(path: string): string {
   try {
-    return realpathSync(resolve(path))
+    return realpath(resolve(path))
   } catch {
     return resolve(path)
   }

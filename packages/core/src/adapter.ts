@@ -110,6 +110,8 @@ export { installProcessTracking, type ProcessSink } from './process-tracker.js'
 
 export { SOCKET_DIR_ENV, socketDirFromEnv } from './instrument-protocol.js'
 
+export { realpath } from './paths.js'
+
 export { canonicalProjectionRules, projectPath, type ProjectionRule } from './projection.js'
 
 export { relocatePath, type RelocationRule } from './relocate.js'

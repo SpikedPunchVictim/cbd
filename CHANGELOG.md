@@ -3,6 +3,15 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
+## Unreleased
+
+- **Windows: a path with an 8.3 short name (`C:\Users\RUNNER~1\…`) no longer breaks selection.**
+  Git and the map keys spell such a path with its long names, but Node's JS `realpathSync` keeps
+  the short ones, so `--root`, the repository-root and dirty-tree checks, projection and relocation
+  prefixes, and the adapters' spec paths could each disagree about the same directory. Every
+  canonicalisation now goes through one helper that uses the native `realpathSync` on Windows,
+  which asks the OS for the final long-name path; macOS and Linux keep the JS implementation.
+
 ## 0.0.6 — 2026-10-27
 
 - **Windows: three path spellings no longer break the default root, the binding-read proof and Vitest module-scope reads.**

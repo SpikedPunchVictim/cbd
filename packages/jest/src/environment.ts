@@ -176,14 +176,20 @@ class CbdEnvironment extends TestEnvironment {
   }
 }
 
-/** The map keys are realpaths; Jest reports the path it was given. */
+const realpath = process.platform === 'win32' ? realpathSync.native : realpathSync
+
+/**
+ * The map keys are realpaths; Jest reports the path it was given. The native
+ * realpath on Windows, because only it expands an 8.3 short name to the long one
+ * the keys use; core is loaded too late to share its helper here.
+ */
 function absolute(file: string): string
 function absolute(file: null): null
 function absolute(file: string | null): string | null
 function absolute(file: string | null): string | null {
   if (file === null) return null
   try {
-    return realpathSync(file)
+    return realpath(file)
   } catch {
     return file
   }

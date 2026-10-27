@@ -16,7 +16,6 @@ functions injected.
  *   - `installVitest(hooks)` for a wrapper setup inside a consumer that resolves
  *     them itself.
  */
-import { realpathSync } from 'node:fs'
 import { threadId } from 'node:worker_threads'
 import {
   FileSink,
@@ -28,6 +27,7 @@ import {
   granularityFromEnv,
   scanFromEnv,
   socketDirFromEnv,
+  realpath,
 } from '@spikedpunch/cbd/adapter'
 import { fileOf, shardPathFor, statusOf, titleOf, type VitestTaskLike } from './identity.js'
 import { withSelfRoot } from './self.js'
@@ -182,7 +182,7 @@ function absolute(file: string | null): string | null
 function absolute(file: string | null): string | null {
   if (file === null) return null
   try {
-    return realpathSync(file)
+    return realpath(file)
   } catch {
     return file
   }

@@ -35,7 +35,7 @@
  *   the way through means the inverse map ("what does no test reach?") costs
  *   nothing extra to build later.
  */
-import { realpathSync } from 'node:fs'
+import { realpath } from './paths.js'
 import { sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { FileCache } from './line-index.js'
@@ -134,7 +134,7 @@ function defaultPrefilter(url: string): boolean {
  */
 function rootVariants(root: string): string[] {
   try {
-    const real = realpathSync(root)
+    const real = realpath(root)
     return real === root ? [root] : [root, real]
   } catch {
     return [root]

@@ -22,9 +22,10 @@
  * nested directory — is not this command's to delete, and a missing state directory
  * is an empty pool rather than an error.
  */
-import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { mapDir, nearestMapCommit } from '@spikedpunch/cbd'
+import { realpath } from '@spikedpunch/cbd/adapter'
 
 /** Runs kept of each kind unless `--keep` names another count. */
 export const DEFAULT_KEEP = 10
@@ -201,7 +202,7 @@ export function gc(options: GcOptions): GcResult {
   }
   // Canonical, because `nearestMapCommit` canonicalizes too; two spellings of the
   // same directory would make the essential-map set miss the map it just found.
-  const root = realpathSync(options.root)
+  const root = realpath(options.root)
   const stateDir = options.stateDir ?? '.cbd'
   const shards = prune(shardCandidates(join(root, stateDir, 'shards')), options.keep, undefined)
 

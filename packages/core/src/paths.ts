@@ -12,8 +12,26 @@
  * tracker's own patched `fs` surface, and `existsSync` is one of the calls it
  * records: probing with it re-entered the tracker without end.
  */
-import { realpathSync } from 'node:fs'
+import * as nodeFs from 'node:fs'
 import nodePath, { basename, dirname, join, resolve } from 'node:path'
+
+/**
+ * The realpath function for a platform: the one spelling git and the map keys use.
+ *
+ * On Windows the JS `realpathSync` keeps an 8.3 short name (`RUNNER~1`) as given,
+ * while git, and so every map key, spells the long name. The native implementation
+ * asks the OS for the final path and expands it. Elsewhere the JS one is kept: the
+ * native one resolves the same symlinks (macOS `/var` -> `/private/var` included).
+ */
+export function realpathFor(
+  platform: NodeJS.Platform = process.platform,
+  fsModule: Pick<typeof nodeFs, 'realpathSync'> = nodeFs,
+): (path: string) => string {
+  return platform === 'win32' ? fsModule.realpathSync.native : fsModule.realpathSync
+}
+
+/** Resolve symlinks (and, on Windows, short names); throws for a path that does not exist. */
+export const realpath: (path: string) => string = realpathFor()
 
 export function canonicalPath(path: string): string {
   const absolute = resolve(path)
@@ -21,7 +39,7 @@ export function canonicalPath(path: string): string {
   const tail: string[] = []
   for (;;) {
     try {
-      return join(realpathSync(current), ...tail)
+      return join(realpath(current), ...tail)
     } catch {
       const parent = dirname(current)
       if (parent === current) return absolute

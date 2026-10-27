@@ -19,7 +19,8 @@
  * adapter that imported it adds it to the scan. Core's own root is always
  * excluded; see the floor in `normalize.ts`.
  */
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { realpath } from './paths.js'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,7 +39,7 @@ export function packageRoot(moduleUrl: string, packageName: string): string {
       const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
         name?: unknown
       }
-      if (manifest.name === packageName) return realpathSync(dir)
+      if (manifest.name === packageName) return realpath(dir)
     } catch {
       // No manifest here, or an unreadable one: keep walking.
     }

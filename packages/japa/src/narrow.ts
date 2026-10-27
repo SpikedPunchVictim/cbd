@@ -30,10 +30,10 @@
  * does not turn a known file into an unmatched one. Naming an extra spelling can
  * only load a file that was already going to match.
  */
-import { realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { SelectionTest } from '@spikedpunch/cbd'
+import { realpath } from '@spikedpunch/cbd/adapter'
 
 /** The corner of japa's normalized config this module reads and writes. */
 export interface NarrowableConfig {
@@ -88,7 +88,7 @@ function underCwd(cwd: string | undefined, file: string, real: string): string[]
 
 function realpathOrUndefined(path: string): string | undefined {
   try {
-    return realpathSync(path)
+    return realpath(path)
   } catch {
     return undefined
   }

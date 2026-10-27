@@ -37,7 +37,6 @@
  * filter matches the bare one (A0 F10). Recording anything else would have made
  * every emitted filter match zero tests, which is a miss.
  */
-import { realpathSync } from 'node:fs'
 import type { CoverageMap, Selection } from '@spikedpunch/cbd'
 import {
   Recorder,
@@ -48,6 +47,7 @@ import {
   type ShardSink,
   type Source,
   type TestStatus,
+  realpath,
 } from '@spikedpunch/cbd/adapter'
 import { withSelfRoot } from './self.js'
 
@@ -382,7 +382,7 @@ export function applyTests(config: JapaConfigLike, titles: string[]): void {
 function absolute(file: string | null): string | null {
   if (file === null) return null
   try {
-    return realpathSync(file)
+    return realpath(file)
   } catch {
     return file
   }

@@ -7,7 +7,8 @@
  * of that is severe: the share of changes that can be answered at all falls from
  * ~66% at a one-commit window to ~2.4% at ten.
  */
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { realpath } from './paths.js'
 import nodePath, { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { testId } from './contract.js'
 import type { HunkEdit } from './changes.js'
@@ -1226,7 +1227,7 @@ export const loadPath = (root: string, path: string, pathModule: typeof nodePath
  */
 const canonicalRoot = (root: string): string => {
   try {
-    return realpathSync(resolve(root))
+    return realpath(resolve(root))
   } catch {
     return resolve(root)
   }

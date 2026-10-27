@@ -11,7 +11,7 @@
  * For a 1:1 build (no bundling, no code moved between files) this is a pure
  * string transform and needs no map at all.
  */
-import { realpathSync } from 'node:fs'
+import { realpath } from './paths.js'
 
 export interface ProjectionRule {
   /** Absolute prefix of the build output, e.g. `<root>/out-nomaps`. */
@@ -105,7 +105,7 @@ export function projectPath(
  */
 export function canonicalPath(path: string): string {
   try {
-    return realpathSync(path)
+    return realpath(path)
   } catch {
     // A missing prefix is not an error. `from` normally exists when a run happens,
     // but `to` may name a tree that has not been built yet.

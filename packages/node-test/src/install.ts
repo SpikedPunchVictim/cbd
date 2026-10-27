@@ -26,7 +26,6 @@
  * window, which can only over-select. Selection is handled by the register entry
  * (`--test-name-pattern`), not here.
  */
-import { realpathSync } from 'node:fs'
 import {
   FileSink,
   Recorder,
@@ -35,6 +34,7 @@ import {
   installReadTracking,
   granularityFromEnv,
   scanFromEnv,
+  realpath,
 } from '@spikedpunch/cbd/adapter'
 import {
   fileOf,
@@ -212,7 +212,7 @@ function absolute(file: string | null): string | null
 function absolute(file: string | null): string | null {
   if (file === null) return null
   try {
-    return realpathSync(file)
+    return realpath(file)
   } catch {
     return file
   }

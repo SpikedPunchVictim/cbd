@@ -30,8 +30,8 @@ import {
   type ShardSink,
   type Source,
   type TestStatus,
+  realpath,
 } from '@spikedpunch/cbd/adapter'
-import { realpathSync } from 'node:fs'
 import type Mocha from 'mocha'
 import { withSelfRoot } from './self.js'
 
@@ -194,7 +194,7 @@ export function attachGroupEnd(
 function absolute(file: string | null): string | null {
   if (file === null) return null
   try {
-    return realpathSync(file)
+    return realpath(file)
   } catch {
     return file
   }

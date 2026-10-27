@@ -16,7 +16,8 @@
  * in `<stateDir>/maps/<commit>/map.json`.
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { realpath } from './paths.js'
 import { gitRelative } from './paths.js'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { changesSince, commitsSince, headCommit, mergeChanges, type Change } from './changes.js'
@@ -388,7 +389,7 @@ export function nearestMapCommit(
   mapsDir?: string,
   exclude?: string,
 ): string | undefined {
-  const canonical = realpathSync(resolve(root))
+  const canonical = realpath(resolve(root))
   const head = headCommit(canonical)
   let candidates: string[]
   try {
@@ -603,7 +604,7 @@ const titles = (entries: TestEntry[]): string[] => entries.map((entry) => entry.
 export function createCbd(config: CbdConfig): Cbd {
   // Map keys are the paths a recorded process reported, and Node resolves module
   // URLs through symlinks; canonicalize the root the same way (`/tmp` -> `/private/tmp`).
-  const root = realpathSync(resolve(config.root))
+  const root = realpath(resolve(config.root))
   const stateDir = config.stateDir ?? '.cbd'
   const mapsDir = config.mapsDir
   const shardsDir = join(root, stateDir, 'shards')
@@ -851,7 +852,7 @@ export function createCbd(config: CbdConfig): Cbd {
         if (path === undefined || configFile === undefined) return false
         if (samePath(path, configFile)) return true
         try {
-          return samePath(realpathSync(path), configFile)
+          return samePath(realpath(path), configFile)
         } catch {
           return false
         }

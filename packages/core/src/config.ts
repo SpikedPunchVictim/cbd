@@ -20,7 +20,8 @@
  * `groupEnd` must not claim group support: the recorder would then flush the whole
  * run into one window.
  */
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { realpath } from './paths.js'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CbdConfig } from './factory.js'
 import { matchesAnyGlob } from './glob.js'
@@ -132,7 +133,7 @@ export function loadConfigFile(path: string, root: string): LoadedConfig | undef
   } catch (error) {
     throw new Error(`cbd: ${path} is not valid JSON: ${String(error)}`)
   }
-  return { config: { ...parseConfig(parsed, root, path), configFile: realpathSync(path) }, path }
+  return { config: { ...parseConfig(parsed, root, path), configFile: realpath(path) }, path }
 }
 
 function strings(raw: unknown, key: string, path: string): string[] | undefined {
@@ -154,7 +155,7 @@ const policy = (raw: unknown, key: string, path: string): 'all' | 'ignore' | und
 /** The real path of the deepest part that exists, so a symlinked spelling cannot hide an ancestor. */
 function resolveExisting(path: string): string {
   try {
-    return realpathSync(path)
+    return realpath(path)
   } catch {
     const parent = dirname(path)
     return parent === path ? path : join(resolveExisting(parent), basename(path))
@@ -176,7 +177,7 @@ export function parseConfig(raw: unknown, root: string, path: string = configPat
   // One canonical root for the globs and the returned config. Building the globs
   // against a symlinked spelling while the factory resolves changed paths against
   // the realpath made `include` reject every change — a silent zero-test answer.
-  const canonical = realpathSync(resolve(root))
+  const canonical = realpath(resolve(root))
   const file = asObject(raw, path)
   checkKnownKeys(file, path)
   checkScalars(file, path)
