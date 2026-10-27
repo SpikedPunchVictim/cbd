@@ -30,7 +30,16 @@
  * the report buffered behind it.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -618,7 +627,7 @@ test('a file a harvested child read is delivered with its lifetime', async () =>
     await pending.settle()
     const capture = await pending.settleTagged?.()
     assert.ok(
-      capture?.reads?.includes(realpathSync(route)),
+      capture?.reads?.includes(realpath(route)),
       `the harvested child's read was lost: ${JSON.stringify(capture?.reads)}`,
     )
   } finally {
@@ -665,7 +674,7 @@ test('a file the service reads is recorded against the test that drove it', asyn
       (value) => value.type === 'test' && value.title === 'reads a route',
     )
     assert.ok(record?.type === 'test')
-    assert.deepEqual(record.reads, [realpathSync(route)])
+    assert.deepEqual(record.reads, [realpath(route)])
   } finally {
     source?.close()
     service?.stop()

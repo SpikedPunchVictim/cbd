@@ -7,7 +7,8 @@
  * `CBD_COMMIT`, `CBD_SELECTION`) and writes the shard records `buildMap` consumes,
  * which is the contract `collect` has with a suite it did not write.
  */
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { TouchRef } from '@spikedpunch/cbd'
@@ -217,7 +218,7 @@ export interface PreparedOptions {
 /** A repository with one commit, one spec, a shard for that commit, and the runner. */
 export function prepared(options: PreparedOptions = {}): PreparedRepo {
   const repo = tempRepo()
-  const root = realpathSync(repo.root)
+  const root = realpath(repo.root)
   const a = join(root, 'src/a.ts')
   const spec = join(root, 'tests/a.spec.ts')
   // CBD.md §9.3: `.cbd/` is a build artifact and gitignored. Without this the

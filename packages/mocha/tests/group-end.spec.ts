@@ -5,7 +5,8 @@
  */
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -73,7 +74,7 @@ test('a window opens on the realpath of a spec reached through a symlink', () =>
     current.parent = new Mocha.Suite('a group')
     current.file = link
     mochaWindowHooks(recorder).beforeEach.call({ currentTest: current } as Mocha.Context)
-    assert.deepEqual(starts, [realpathSync(real)])
+    assert.deepEqual(starts, [realpath(real)])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

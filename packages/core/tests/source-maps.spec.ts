@@ -19,7 +19,8 @@
  * change to it escalates through the unknown-file rule to `all`.
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -126,7 +127,7 @@ test('a script with no map and no projection rule is its own original file', () 
     assert.equal(touched.length, 1, 'an unmapped script with nothing to project went missing')
     // The realpath, because `canonicalPath` resolves symlinks — on macOS the temp
     // directory is reached through one.
-    assert.equal(touched[0]?.file, realpathSync(tree.file), 'it should be recorded as itself')
+    assert.equal(touched[0]?.file, realpath(tree.file), 'it should be recorded as itself')
     assert.equal(touched[0]?.via, 'projection')
   } finally {
     tree.cleanup()

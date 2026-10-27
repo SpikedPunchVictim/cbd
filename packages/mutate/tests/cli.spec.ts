@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -33,7 +34,7 @@ function fixture(): { root: string; file: string; cleanup(): void } {
   mkdirSync(join(root, 'src'))
   const path = join(root, 'src', 'a.ts')
   writeFileSync(path, '\n'.repeat(30))
-  const file = realpathSync(path)
+  const file = realpath(path)
   saveMap(root, mapFor(file))
   return { root, file, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }

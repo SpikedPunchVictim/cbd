@@ -17,12 +17,12 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -152,13 +152,13 @@ test.group('cbd select', () => {
       // Roots are canonical: macOS's tmpdir sits behind a symlink.
       assert.equal(
         defaultRoot(join(repo.root, 'sub/deeper')),
-        realpathSync(join(repo.root, 'sub')),
+        realpath(join(repo.root, 'sub')),
       )
-      assert.equal(defaultRoot(join(repo.root, 'src')), realpathSync(repo.root))
+      assert.equal(defaultRoot(join(repo.root, 'src')), realpath(repo.root))
       // Outside any git repository and without a config, cwd is the answer.
       const loose = mkdtempSync(join(tmpdir(), 'cbd-loose-'))
       try {
-        assert.equal(defaultRoot(loose), realpathSync(loose))
+        assert.equal(defaultRoot(loose), realpath(loose))
       } finally {
         rmSync(loose, { recursive: true, force: true })
       }
@@ -182,7 +182,7 @@ test.group('cbd select', () => {
       // to another project and must not become the root.
       assert.equal(
         defaultRoot(join(outer.root, 'inner/deeper')),
-        realpathSync(join(outer.root, 'inner')),
+        realpath(join(outer.root, 'inner')),
       )
     } finally {
       outer.cleanup()
@@ -1231,7 +1231,7 @@ test.group('cbd gc', () => {
     try {
       repo.write('src/a.ts', 'export const a = 1\n')
       repo.commit('base')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const shards = join(root, '.cbd', 'shards')
       mkdirSync(shards, { recursive: true })
       for (const [index, name] of ['one', 'two', 'three', 'four'].entries()) {
@@ -1268,7 +1268,7 @@ test.group('cbd gc', () => {
     try {
       repo.write('src/a.ts', 'export const a = 1\n')
       repo.commit('base')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const shared = join(root, 'shared-maps')
       for (const name of [H('1'), H('2'), H('3')]) {
         const dir = join(shared, name)
@@ -1296,7 +1296,7 @@ test.group('cbd gc', () => {
     try {
       repo.write('src/a.ts', 'export const a = 1\n')
       const head = repo.commit('base')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const maps = join(root, '.cbd', 'maps')
       const current = join(maps, head)
       mkdirSync(current, { recursive: true })
@@ -1329,7 +1329,7 @@ test.group('cbd gc', () => {
       repo.write('src/a.ts', 'export const a = 1\n')
       repo.write('docs/readme.md', 'docs\n')
       repo.commit('base')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       // A commit-shaped name without a map.json is not a map either.
       mkdirSync(join(root, H('9')), { recursive: true })
       writeFileSync(join(root, H('9'), 'keep.txt'), 'x')
@@ -1354,7 +1354,7 @@ test.group('cbd gc', () => {
     try {
       repo.write('src/a.ts', 'export const a = 1\n')
       repo.commit('base')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const shards = join(root, '.cbd', 'shards')
       mkdirSync(shards, { recursive: true })
       const runs = ['run-a', 'run-b', 'run-c']
@@ -1509,7 +1509,7 @@ test.group('cbd flaky', () => {
 
   test('reports a flip only when nothing the test reached changed', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     try {
       repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
       repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
@@ -1554,7 +1554,7 @@ test('an explicit --root is canonicalized', () => {
   try {
     symlinkSync(dir, link)
     const parsed = parseArgs(['--root', link, 'select'], dir)
-    assert.equal(parsed.root, realpathSync(dir))
+    assert.equal(parsed.root, realpath(dir))
   } finally {
     rmSync(link, { force: true })
     rmSync(dir, { recursive: true, force: true })
@@ -1623,7 +1623,7 @@ test.group('cbd flaky on maps a real build writes', () => {
 
   test('a pass that turns into a failure with nothing relevant changed is reported', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     try {
       repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
       repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
@@ -1649,7 +1649,7 @@ test.group('cbd flaky on maps a real build writes', () => {
 
   test('a failure after a change to what the test reached is not called flaky', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     try {
       repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
       repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
@@ -1691,7 +1691,7 @@ test.group('cbd flaky reads', () => {
 
   test('a changed file the test read explains the flip', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     try {
       repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
       repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")

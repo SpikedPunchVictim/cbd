@@ -5,7 +5,15 @@
  * is 7.x, which has no JS transpile API, and that case is a fallback test too).
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +22,7 @@ import { compareModuleScope, moduleScopeUnchangedFiles } from '../src/emit-check
 import { changesSince, type Change } from '../src/changes.js'
 import { tempRepo } from './support/git.js'
 
-const TYPESCRIPT = realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url)))
+const TYPESCRIPT = realpath(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url)))
 const PIN = (JSON.parse(readFileSync(join(TYPESCRIPT, 'package.json'), 'utf8')) as { version: string }).version
 
 interface Project {
@@ -24,7 +32,7 @@ interface Project {
 }
 
 function project(options: { compilerOptions?: object; withTypescript?: boolean } = {}): Project {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-')))
+  const dir = realpath(mkdtempSync(join(tmpdir(), 'cbd-emit-')))
   if (options.withTypescript !== false) {
     mkdirSync(join(dir, 'node_modules'))
     symlinkSync(TYPESCRIPT, join(dir, 'node_modules', 'typescript'), 'dir')

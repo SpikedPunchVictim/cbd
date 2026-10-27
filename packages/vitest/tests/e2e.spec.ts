@@ -8,7 +8,14 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,7 +29,7 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const vitest = join(packageRoot, 'node_modules', 'vitest', 'vitest.mjs')
 const config = join(packageRoot, 'fixture', 'vitest.e2e.config.mjs')
 const concurrentConfig = join(packageRoot, 'fixture', 'vitest.concurrent.config.mjs')
-const mathFile = realpathSync(join(packageRoot, 'fixture', 'src', 'math.mjs'))
+const mathFile = realpath(join(packageRoot, 'fixture', 'src', 'math.mjs'))
 
 function run(dir: string, shard: string, titles?: string[]): void {
   const env: NodeJS.ProcessEnv = { ...process.env, CBD_SHARD: shard, CBD_COMMIT: 'vitest-e2e' }

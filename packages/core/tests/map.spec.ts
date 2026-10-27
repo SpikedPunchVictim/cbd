@@ -11,10 +11,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -569,8 +569,8 @@ test('saving and loading round-trips, reporting bytes and parse time', () => {
 })
 
 test('mapsDir puts the map where a shared checkout can find it', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-root-')))
-  const shared = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-shared-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-map-root-')))
+  const shared = realpath(mkdtempSync(join(tmpdir(), 'cbd-map-shared-')))
   try {
     const built = mergeShards([shard('s1', [testRecord('adds', [ref(A, 'add@0', 1, 3)])])], {
       commit: 'c0ffee',
@@ -707,8 +707,8 @@ test('a dropped opaque test keeps its marker instead of vanishing', () => {
 test('a map saved in one checkout resolves in a second checkout of the same commit', () => {
   // Canonical roots, as `createCbd` uses: a recorded module URL resolves through
   // symlinks, so `/var` vs `/private/var` must not decide whether a path is inside.
-  const first = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-first-')))
-  const second = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-second-')))
+  const first = realpath(mkdtempSync(join(tmpdir(), 'cbd-map-first-')))
+  const second = realpath(mkdtempSync(join(tmpdir(), 'cbd-map-second-')))
   try {
     const source = join(first, 'src/a.ts')
     const spec = join(first, 'tests/a.spec.ts')
@@ -1438,7 +1438,7 @@ test('carryMap: a group member re-recorded by the new build is not poison', () =
 })
 
 test('group paths are stored relative and resolved on load; the version is 2', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-groups-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-map-groups-')))
   try {
     const data = join(root, 'data.json')
     const built = mergeShards(
@@ -1464,7 +1464,7 @@ test('group paths are stored relative and resolved on load; the version is 2', (
 })
 
 test('loadMap still reads a version 1 map and refuses a newer one', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-version-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-map-version-')))
   try {
     const built = mergeShards([shard('s1', [testRecord('a', [])])], { commit: 'c0ffee' })
     for (const [version, ok] of [[1, true], [3, false]] as const) {

@@ -21,7 +21,8 @@
  * plumbing rather than the rule.
  */
 import assert from 'node:assert/strict'
-import { cpSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,7 +46,7 @@ import {
  * canonicalizes, so a directory reached through a symlink would be keyed by a
  * different string and every assertion below would be about the link, not the rule.
  */
-const DEPLOYED = realpathSync(fileURLToPath(new URL('../../fixture/deployed', import.meta.url)))
+const DEPLOYED = realpath(fileURLToPath(new URL('../../fixture/deployed', import.meta.url)))
 const HANDLER = join(DEPLOYED, 'src/handler.ts')
 const SERVER = join(DEPLOYED, 'src/server.ts')
 
@@ -100,7 +101,7 @@ async function recordLane(relocate: boolean): Promise<Lane> {
   // Realpath'd before anything is copied, so the only alias in play is the staging
   // root this function makes. On macOS `tmpdir()` sits behind a symlink, and a rule
   // spelled the symlinked way would match nothing at all.
-  const base = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-japa-deployed-')))
+  const base = realpath(mkdtempSync(join(tmpdir(), 'cbd-japa-deployed-')))
   const stage = join(base, 'stage')
   let service: RunningService | null = null
 

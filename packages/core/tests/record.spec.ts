@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -33,7 +34,7 @@ test('declared reads and dependencies are canonicalized', () => {
     } finally {
       release()
     }
-    const canonical = realpathSync(file)
+    const canonical = realpath(file)
     assert.deepEqual(reads, [canonical])
     assert.deepEqual(dependencies, [canonical])
     // Declarations pass through as names; the value is hashed by the recorder.

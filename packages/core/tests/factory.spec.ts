@@ -9,12 +9,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -159,7 +159,7 @@ function prepared(): {
   const repo = tempRepo()
   // The factory canonicalizes its root, and Node reports a `/var` fixture as
   // `/private/var`; the map keys have to be the canonical ones to match.
-  const root = realpathSync(repo.root)
+  const root = realpath(repo.root)
   const a = join(root, 'src/a.ts')
   const spec = join(root, 'tests/a.spec.ts')
   repo.write('src/a.ts', 'export function add(a, b) {\n  return a + b;\n}\n')
@@ -186,7 +186,7 @@ test.group('createCbd', () => {
       assert.equal(result.commit, commit)
       assert.equal(result.tests, 2)
       assert.equal(result.files, 1)
-      assert.equal(result.path, join(realpathSync(repo.root), '.cbd/maps', commit, 'map.json'))
+      assert.equal(result.path, join(realpath(repo.root), '.cbd/maps', commit, 'map.json'))
       assert.deepEqual(result.shards, [join('.cbd', 'shards', 'run.ndjson')])
 
       const loaded = loadMap(repo.root, commit)
@@ -268,7 +268,7 @@ test.group('createCbd', () => {
 
   test('an incremental build relocates an unchanged function across an insertion above it', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const a = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -356,7 +356,7 @@ test.group('createCbd', () => {
   test('stateDir moves both the shards and the map', () => {
     const repo = tempRepo()
     try {
-      const a = join(realpathSync(repo.root), 'src/a.ts')
+      const a = join(realpath(repo.root), 'src/a.ts')
       repo.write('src/a.ts', 'export function add() { return 1 }\n')
       const commit = repo.commit('base')
       const dir = join(repo.root, 'build/cbd/shards')
@@ -368,7 +368,7 @@ test.group('createCbd', () => {
 
       const cbd = createCbd({ root: repo.root, stateDir: 'build/cbd' })
       const result = cbd.build()
-      assert.equal(result.path, join(realpathSync(repo.root), 'build/cbd/maps', commit, 'map.json'))
+      assert.equal(result.path, join(realpath(repo.root), 'build/cbd/maps', commit, 'map.json'))
     } finally {
       repo.cleanup()
     }
@@ -383,7 +383,7 @@ test.group('createCbd', () => {
       assert.equal(file.reaches, true)
       assert.equal(file.seen, true)
       assert.deepEqual(file.functions.map((fn) => fn.key), ['add@0'])
-      assert.deepEqual(file.files, [join(realpathSync(repo.root), 'src/a.ts')])
+      assert.deepEqual(file.files, [join(realpath(repo.root), 'src/a.ts')])
 
       // Inside the function, including its boundaries.
       assert.equal(cbd.reaches('adds', 'src/a.ts:1').reaches, true)
@@ -405,7 +405,7 @@ test.group('createCbd', () => {
   test('reaches refuses a bare title that names tests in more than one file', () => {
     const { repo, spec, commit, cleanup } = prepared()
     try {
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const other = join(root, 'tests/b.spec.ts')
       writeShard(
         repo.root,
@@ -438,7 +438,7 @@ test.group('createCbd', () => {
       assert.deepEqual(
         stats
           .topFiles
-          .map((file) => [relative(realpathSync(repo.root), file.file).replaceAll('\\', '/'), file.tests, file.functions]),
+          .map((file) => [relative(realpath(repo.root), file.file).replaceAll('\\', '/'), file.tests, file.functions]),
         [['src/a.ts', 2, 1]],
       )
       assert.deepEqual(stats.suites, [{ dir: 'tests', tests: 2 }])
@@ -491,12 +491,12 @@ test.group('createCbd', () => {
 
   test('emitCheck narrows an erased module-scope edit and leaves a real one alone', () => {
     const { repo, a, cleanup } = prepared()
-    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-factory-')))
+    const toolchain = realpath(mkdtempSync(join(tmpdir(), 'cbd-emit-factory-')))
     try {
       // The project's TypeScript lives next to its tsconfig, outside the repository.
       mkdirSync(join(toolchain, 'node_modules'))
       symlinkSync(
-        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        realpath(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
         join(toolchain, 'node_modules', 'typescript'),
         'dir',
       )
@@ -549,18 +549,18 @@ test.group('createCbd', () => {
 
   test('emitCheck gives no verdict on a what-if change, which has no new text to compare', () => {
     const repo = tempRepo()
-    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-whatif-')))
+    const toolchain = realpath(mkdtempSync(join(tmpdir(), 'cbd-emit-whatif-')))
     try {
       mkdirSync(join(toolchain, 'node_modules'))
       symlinkSync(
-        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        realpath(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
         join(toolchain, 'node_modules', 'typescript'),
         'dir',
       )
       const tsconfig = join(toolchain, 'tsconfig.json')
       writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
       const pin = (JSON.parse(readFileSync(join(toolchain, 'node_modules/typescript/package.json'), 'utf8')) as { version: string }).version
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const a = join(root, 'src/a.ts')
       const spec = join(root, 'tests/a.spec.ts')
       repo.write('src/a.ts', 'const limit = 3\nexport function add(a, b) {\n  return a + b + limit\n}\n')
@@ -597,9 +597,9 @@ test.group('createCbd', () => {
 
   test('emitCheck escalates an enum edit end to end', () => {
     const repo = tempRepo()
-    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-enum-')))
+    const toolchain = realpath(mkdtempSync(join(tmpdir(), 'cbd-emit-enum-')))
     try {
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const a = join(root, 'src/a.ts')
       const spec = join(root, 'tests/a.spec.ts')
       repo.write('src/a.ts', "export enum Mode {\n  On = 'on',\n}\nexport function add(a, b) {\n  return a + b;\n}\n")
@@ -615,7 +615,7 @@ test.group('createCbd', () => {
       )
       mkdirSync(join(toolchain, 'node_modules'))
       symlinkSync(
-        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        realpath(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
         join(toolchain, 'node_modules', 'typescript'),
         'dir',
       )
@@ -638,9 +638,9 @@ test.group('createCbd', () => {
 
   test('emitCheck vouches for a load-only file except inside a function that ran at load', () => {
     const repo = tempRepo()
-    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-load-')))
+    const toolchain = realpath(mkdtempSync(join(tmpdir(), 'cbd-emit-load-')))
     try {
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const a = join(root, 'src/a.ts')
       const b = join(root, 'src/b.ts')
       const spec = join(root, 'tests/a.spec.ts')
@@ -664,7 +664,7 @@ test.group('createCbd', () => {
       )
       mkdirSync(join(toolchain, 'node_modules'))
       symlinkSync(
-        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        realpath(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
         join(toolchain, 'node_modules', 'typescript'),
         'dir',
       )
@@ -692,9 +692,9 @@ test.group('createCbd', () => {
 
   test('emitCheck narrows a pure initializer only functions read to the tests of those functions', () => {
     const repo = tempRepo()
-    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-binding-')))
+    const toolchain = realpath(mkdtempSync(join(tmpdir(), 'cbd-emit-binding-')))
     try {
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const a = join(root, 'src/a.ts')
       const spec = join(root, 'tests/a.spec.ts')
       const source = (decl: string): string =>
@@ -712,7 +712,7 @@ test.group('createCbd', () => {
       )
       mkdirSync(join(toolchain, 'node_modules'))
       symlinkSync(
-        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        realpath(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
         join(toolchain, 'node_modules', 'typescript'),
         'dir',
       )
@@ -749,7 +749,7 @@ test.group('createCbd', () => {
   test('a root inside the repository resolves only its own changes', () => {
     const repo = tempRepo()
     try {
-      const pkg = join(realpathSync(repo.root), 'pkg')
+      const pkg = join(realpath(repo.root), 'pkg')
       const a = join(pkg, 'src/a.ts')
       const spec = join(pkg, 'tests/a.spec.ts')
       repo.write('pkg/src/a.ts', 'export function add(a, b) {\n  return a + b;\n}\n')
@@ -783,7 +783,7 @@ test.group('createCbd', () => {
 
   test('build keeps reads only under the root, inside include, and outside node_modules', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const a = join(root, 'src/a.ts')
     const docs = join(root, 'docs/note.md')
     const dep = join(root, 'node_modules/pkg/index.js')
@@ -833,7 +833,7 @@ test.group('createCbd', () => {
       repo.write('docs/note.md', 'docs\n')
       repo.write('pnpm-lock.yaml', 'lockfileVersion: 9\n')
       repo.commit('changed all three')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
 
       const scoped = createCbd({
         root: repo.root,
@@ -871,7 +871,7 @@ test.group('createCbd', () => {
       cbd.build()
       repo.git(['mv', 'src/a.ts', 'archive-a.ts'])
       repo.commit('move a out of src')
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
 
       const scoped = createCbd({
         root: repo.root,
@@ -896,7 +896,7 @@ test.group('createCbd', () => {
    */
   test('select --since reads a base older than the map in the map’s coordinates', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const a = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -954,7 +954,7 @@ test.group('createCbd', () => {
    */
   test('select does not force all for a config change that predates the map', () => {
     const repo = tempRepo()
-    const top = realpathSync(repo.root)
+    const top = realpath(repo.root)
     const app = join(top, 'packages/app')
     const config = join(top, 'cbd.config.json')
     const a = join(app, 'src/a.ts')
@@ -1023,7 +1023,7 @@ test.group('createCbd', () => {
   test('explain on a module-scope line states the load observers select would add', () => {
     const repo = tempRepo()
     try {
-      const root = realpathSync(repo.root)
+      const root = realpath(repo.root)
       const lib = join(root, 'src/lib.ts')
       const other = join(root, 'src/other.ts')
       repo.write(
@@ -1095,7 +1095,7 @@ test.group('createCbd', () => {
   test('explain answers a file, a line, and a bucket', () => {
     const { repo, a, commit, cleanup } = prepared()
     try {
-      const loadedOnly = join(realpathSync(repo.root), 'src/startup.ts')
+      const loadedOnly = join(realpath(repo.root), 'src/startup.ts')
       writeShard(
         repo.root,
         'run.ndjson',
@@ -1135,7 +1135,7 @@ test.group('createCbd', () => {
   test('stats counts what the map knows, including what no test reaches', () => {
     const { repo, a, spec, commit, cleanup } = prepared()
     try {
-      const loadedOnly = join(realpathSync(repo.root), 'src/seen-only.ts')
+      const loadedOnly = join(realpath(repo.root), 'src/seen-only.ts')
       writeShard(
         repo.root,
         'run.ndjson',
@@ -1203,7 +1203,7 @@ test.group('createCbd', () => {
 
 test('stats survives a map with more functions than the argument limit', () => {
   const repo = tempRepo()
-  const root = realpathSync(repo.root)
+  const root = realpath(repo.root)
   try {
     repo.write('src/a.ts', 'export function f() {}\n')
     const commit = repo.commit('base')

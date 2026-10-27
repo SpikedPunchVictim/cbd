@@ -20,11 +20,11 @@ import {
   openSync,
   readFileSync as esmReadFileSync,
   readlinkSync,
-  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { copyFile, cp, open as openHandle, readdir, readFile, readlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,7 +37,7 @@ function makeTree(): {
   missing: string
   cleanup: () => void
 } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-reads-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-reads-')))
   const file = join(root, 'data.txt')
   writeFileSync(file, 'one\n')
   mkdirSync(join(root, 'sub'))

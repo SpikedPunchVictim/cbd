@@ -6,14 +6,15 @@
  * policy value outside the two the selector implements is refused too.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
 import { configPath, loadConfig, loadConfigFile, parseConfig } from '../src/config.js'
 
 function tempRoot(): { root: string; cleanup: () => void } {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-config-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-config-')))
   return { root, cleanup: () => rmSync(root, { recursive: true, force: true }) }
 }
 
@@ -89,7 +90,7 @@ test.group('cbd.config.json', () => {
     const raw = mkdtempSync(join(tmpdir(), 'cbd-config-link-'))
     try {
       const config = parseConfig({ include: ['src/**'] }, raw)
-      const canonical = realpathSync(raw)
+      const canonical = realpath(raw)
       assert.equal(config.root, canonical)
       assert.equal(config.select!.include!(join(canonical, 'src/a.ts')), true)
       assert.equal(config.select!.include!(join(canonical, 'docs/a.md')), false)
@@ -283,7 +284,7 @@ test.group('cbd.config.json', () => {
       writeFileSync(configPath(root), JSON.stringify({ include: ['src/**'] }))
       const loaded = loadConfig(root)!
       assert.equal(loaded.path, configPath(root))
-      assert.equal(loaded.config.configFile, realpathSync(configPath(root)))
+      assert.equal(loaded.config.configFile, realpath(configPath(root)))
       assert.equal(loaded.config.select!.include!(join(root, 'src/a.ts')), true)
     } finally {
       cleanup()
@@ -310,7 +311,7 @@ test.group('cbd.config.json', () => {
 })
 
 test('stateDir must name a directory under the root', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-state-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-state-')))
   try {
     for (const stateDir of ['', '.', '..', '/tmp/elsewhere']) {
       assert.throws(
@@ -325,7 +326,7 @@ test('stateDir must name a directory under the root', () => {
 })
 
 test('mapsDir must not be the repository root or a parent of it', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-maps-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-maps-')))
   try {
     for (const mapsDir of ['.', '..', './', root, join(root, '..')]) {
       assert.throws(() => parseConfig({ mapsDir }, root), /"mapsDir" must be a directory of its own/, mapsDir)
@@ -339,7 +340,7 @@ test('mapsDir must not be the repository root or a parent of it', () => {
 })
 
 test('an empty include or exclude is refused instead of matching nothing', () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-include-')))
+  const root = realpath(mkdtempSync(join(tmpdir(), 'cbd-include-')))
   try {
     assert.throws(() => parseConfig({ include: [] }, root), /"include" must not be empty/)
     assert.throws(() => parseConfig({ exclude: [] }, root), /"exclude" must not be empty/)

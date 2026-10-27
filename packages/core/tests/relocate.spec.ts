@@ -25,10 +25,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
   symlinkSync,
 } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -88,7 +88,7 @@ test('tries rules in order, so a narrow rule can precede a broad one', () => {
 // `/tmp` is `/private/tmp` — so a rule spelled the symlinked way would match nothing,
 // leaving every staged path unknown-file and every change in `mode: all`.
 test('a from-prefix reached through a symlink still matches', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-relocate-')))
+  const dir = realpath(mkdtempSync(join(tmpdir(), 'cbd-relocate-')))
   try {
     mkdirSync(join(dir, 'real/stage/src'), { recursive: true })
     symlinkSync(join(dir, 'real'), join(dir, 'link'), 'dir')
@@ -145,7 +145,7 @@ function stageBuild(): { staging: string; cleanup: () => void } {
     `fixture is not built: ${generated}.map missing — run \`pnpm --filter @spikedpunch/cbd-fixture build\``,
   )
   // Realpath'd first, so the only alias in play is one a test creates on purpose.
-  const staging = join(realpathSync(mkdtempSync(join(tmpdir(), 'cbd-relocate-scan-'))), 'lane')
+  const staging = join(realpath(mkdtempSync(join(tmpdir(), 'cbd-relocate-scan-'))), 'lane')
   cpSync(join(fixtureRoot, 'out-maps'), join(staging, 'out-maps'), { recursive: true })
   cpSync(join(fixtureRoot, 'src'), join(staging, 'src'), { recursive: true })
   return { staging, cleanup: () => rmSync(dirname(staging), { recursive: true, force: true }) }

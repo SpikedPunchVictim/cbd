@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -95,7 +96,7 @@ function payloadFor(url: string): V8ScriptCoverage[] {
 function makeSymlinkedTree(): { dir: string; cleanup: () => void } {
   // `realpathSync` first, so the tree's own root is already canonical and the only
   // alias left in play is the one this test creates.
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-projection-')))
+  const dir = realpath(mkdtempSync(join(tmpdir(), 'cbd-projection-')))
   mkdirSync(join(dir, 'real/out/src'), { recursive: true })
   writeFileSync(join(dir, 'real/out/src/mod.js'), MODULE)
   symlinkSync(join(dir, 'real'), join(dir, 'link'), 'dir')

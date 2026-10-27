@@ -28,7 +28,15 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -550,7 +558,7 @@ test('lists the sources', () => {
 // ---------------------------------------------------------------------------
 
 test('emitCheck: an erased module-scope edit selects nothing; a real one and a function edit still do', () => {
-  const TYPESCRIPT = realpathSync(
+  const TYPESCRIPT = realpath(
     fileURLToPath(new URL('../../../core/node_modules/typescript5', import.meta.url)),
   )
   const TS_VERSION = (JSON.parse(readFileSync(join(TYPESCRIPT, 'package.json'), 'utf8')) as { version: string }).version
@@ -628,7 +636,7 @@ test.group('mod', () => {
 })
 
 test('emitCheck gives no verdict on a --change or explain what-if: nothing was edited to compare', () => {
-  const TYPESCRIPT = realpathSync(
+  const TYPESCRIPT = realpath(
     fileURLToPath(new URL('../../../core/node_modules/typescript5', import.meta.url)),
   )
   const TS_VERSION = (JSON.parse(readFileSync(join(TYPESCRIPT, 'package.json'), 'utf8')) as { version: string }).version

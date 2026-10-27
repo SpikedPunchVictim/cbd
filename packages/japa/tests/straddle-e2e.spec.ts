@@ -27,7 +27,8 @@
  * measurement of the machine rather than of the design.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,10 +59,10 @@ import {
  * through `realpathSync` because the resolver canonicalizes, and a checkout reached
  * through a symlink would otherwise key the map by a different string.
  */
-const SERVICE = realpathSync(
+const SERVICE = realpath(
   fileURLToPath(new URL('../../fixture/straddle/server.js', import.meta.url)),
 )
-const SWEEPER = realpathSync(
+const SWEEPER = realpath(
   fileURLToPath(new URL('../../fixture/straddle/sweeper.js', import.meta.url)),
 )
 

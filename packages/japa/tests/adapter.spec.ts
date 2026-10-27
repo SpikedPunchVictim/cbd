@@ -16,7 +16,14 @@
  *     match nothing, and a filter matching nothing is a miss.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -168,7 +175,7 @@ test.group('japaWindowHooks', () => {
         title: { original: 'x', expanded: 'x' },
         meta: { fileName: link },
       })
-      assert.deepEqual(calls, [['testStart', 'x', realpathSync(real)]])
+      assert.deepEqual(calls, [['testStart', 'x', realpath(real)]])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

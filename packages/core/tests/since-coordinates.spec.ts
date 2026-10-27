@@ -9,7 +9,8 @@
  * changed only between the base and the map.
  */
 import assert from 'node:assert/strict'
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
 import { createCbd } from '../src/factory.js'
@@ -121,7 +122,7 @@ test.group('select --since coordinates', (group) => {
 
   test('a deletion between the base and the map selects the function it was deleted from', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -147,7 +148,7 @@ test.group('select --since coordinates', (group) => {
 
   test('a deletion sharing a file with an ordinary hunk does not vanish from the selection', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -173,7 +174,7 @@ test.group('select --since coordinates', (group) => {
 
   test('a function moved between the base and the map is found after it moves again in the worktree', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -199,7 +200,7 @@ test.group('select --since coordinates', (group) => {
 
   test('a base newer than the map still selects the worktree change through the map leg', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -230,7 +231,7 @@ test.group('select --since coordinates', (group) => {
 
   test('a base on a divergent branch does not hide the worktree change', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -265,7 +266,7 @@ test.group('select --since coordinates', (group) => {
 
   test('an alwaysSelect trigger that changed only between the base and the map still fires', () => {
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {
@@ -414,7 +415,7 @@ test.group('select --since histories', (group) => {
 
 
     const repo = tempRepo()
-    const root = realpathSync(repo.root)
+    const root = realpath(repo.root)
     const source = join(root, 'src/a.ts')
     const spec = join(root, 'tests/a.spec.ts')
     try {

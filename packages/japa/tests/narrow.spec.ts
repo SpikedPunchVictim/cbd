@@ -7,7 +7,8 @@
  * "load everything" — extra files cost time, a missing file costs a missed test.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -16,7 +17,7 @@ import type { SelectionTest } from '@spikedpunch/cbd'
 import { guardNarrowed, narrowFiles, type NarrowableConfig } from '../src/narrow.js'
 
 function scratch(): { dir: string; spec: (name: string) => string; done: () => void } {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-japa-narrow-')))
+  const dir = realpath(mkdtempSync(join(tmpdir(), 'cbd-japa-narrow-')))
   return {
     dir,
     spec: (name) => {

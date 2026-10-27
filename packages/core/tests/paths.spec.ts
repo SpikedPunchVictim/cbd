@@ -6,8 +6,8 @@
  * test is silently not selected.
  */
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync, execSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from '@japa/runner'
@@ -23,7 +23,7 @@ test.group('canonicalPath', () => {
       symlinkSync(real, link)
       const file = join(real, 'a.txt')
       writeFileSync(file, 'x')
-      assert.equal(canonicalPath(join(link, 'a.txt')), realpathSync(file))
+      assert.equal(canonicalPath(join(link, 'a.txt')), realpath(file))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -39,7 +39,7 @@ test.group('canonicalPath', () => {
       const link = join(dir, 'link')
       symlinkSync(real, link)
       assert.equal(canonicalPath(join(link, 'later', 'created.txt')),
-        join(realpathSync(real), 'later', 'created.txt'))
+        join(realpath(real), 'later', 'created.txt'))
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -73,7 +73,7 @@ test.group('realpathFor', () => {
 // A real 8.3 name: only Windows has them, and only when the volume generates them.
 test.group('short names', () => {
   const shortNameOf = (dir: string): string =>
-    execFileSync('cmd', ['/c', `for %I in ("${dir}") do @echo %~sI`], { encoding: 'utf8' }).trim()
+    execSync(`for %I in ("${dir}") do @echo %~sI`, { encoding: 'utf8' }).trim()
 
   test('a short-name spelling canonicalizes to the long one git reports', () => {
     const dir = realpath(mkdtempSync(join(tmpdir(), 'cbd-shortname-check-')))

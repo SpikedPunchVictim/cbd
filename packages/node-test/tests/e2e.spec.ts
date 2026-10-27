@@ -10,7 +10,14 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -24,7 +31,7 @@ const fixture = join(packageRoot, 'fixture')
 const aFile = join(fixture, 'tests', 'a.test.mjs')
 const bFile = join(fixture, 'tests', 'b.test.mjs')
 const subFile = join(fixture, 'subtests', 'sub.test.mjs')
-const mathFile = realpathSync(join(fixture, 'src', 'math.js'))
+const mathFile = realpath(join(fixture, 'src', 'math.js'))
 
 function run(dir: string, shard: string, titles?: string[], files: string[] = [aFile, bFile]): void {
   const env: NodeJS.ProcessEnv = { ...process.env, CBD_SHARD: shard, CBD_COMMIT: 'node-test-e2e' }

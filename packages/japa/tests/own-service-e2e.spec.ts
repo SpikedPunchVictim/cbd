@@ -34,7 +34,8 @@
  *     empty window still means "nothing was recorded" rather than "not looked at yet".
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { realpath } from '@spikedpunch/cbd/adapter'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -62,8 +63,8 @@ import {
  * `realpathSync` because the resolver canonicalizes, and a checkout reached through a
  * symlink would otherwise key the map by a different string.
  */
-const LANE = realpathSync(fileURLToPath(new URL('../../fixture/service/server.js', import.meta.url)))
-const OWN = realpathSync(
+const LANE = realpath(fileURLToPath(new URL('../../fixture/service/server.js', import.meta.url)))
+const OWN = realpath(
   fileURLToPath(new URL('../../fixture/own-service/server.js', import.meta.url)),
 )
 

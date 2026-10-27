@@ -6,7 +6,8 @@
  * window, which is what fixes the A4 ordinal collision.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { realpath } from '../src/paths.js'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -126,7 +127,7 @@ test('a missing generated script is partial only when its file has a map', () =>
     const health: ShardRecord = { type: 'health', generatedMissing: ['1'] }
 
     const withMap = resolveShard(shard([header(), script(mapped), health, end(0)]))
-    assert.deepEqual(withMap.partialFiles, [realpathSync(mapped.file)])
+    assert.deepEqual(withMap.partialFiles, [realpath(mapped.file)])
 
     const withoutMap = resolveShard(shard([header(), script(plain), health, end(0)]))
     assert.deepEqual(withoutMap.partialFiles, [])
@@ -168,7 +169,7 @@ test('byte ranges resolve to the map identity and line range', () => {
       ]),
     )
     // The resolver canonicalizes, and macOS's `tmpdir()` sits behind a symlink.
-    assert.deepEqual(resolved.tests[0]?.touches, [[realpathSync(tree.file), 'alpha@0', 2, 4]])
+    assert.deepEqual(resolved.tests[0]?.touches, [[realpath(tree.file), 'alpha@0', 2, 4]])
   } finally {
     tree.cleanup()
   }
@@ -296,7 +297,7 @@ test('a transformed script resolves through its generated line starts', () => {
     const map = {
       version: 3,
       // A file: URL, since a bare absolute Windows path is not a source a map can name.
-      sources: [pathToFileURL(realpathSync(file)).href],
+      sources: [pathToFileURL(realpath(file)).href],
       names: [],
       mappings: ';;;;AAGA;;;;;;AAFA',
     }
@@ -331,7 +332,7 @@ test('a transformed script resolves through its generated line starts', () => {
     )
     // The source map says line 2. A file-index conversion would clamp to line 4
     // (the source has four lines) and forward to the line-5 mapping instead.
-    assert.deepEqual(resolved.tests[0]?.touches, [[realpathSync(file), 'alpha@0', 2, 2]])
+    assert.deepEqual(resolved.tests[0]?.touches, [[realpath(file), 'alpha@0', 2, 2]])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -397,7 +398,7 @@ test('a transformed script with no source map that only appended a trailer still
       ]),
     )
     assert.equal(resolved.tests[0]?.touches.length, 1, 'a line-preserving transform was dropped')
-    assert.equal(resolved.tests[0]?.touches[0]?.[0], realpathSync(file))
+    assert.equal(resolved.tests[0]?.touches[0]?.[0], realpath(file))
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
