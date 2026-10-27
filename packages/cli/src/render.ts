@@ -13,6 +13,7 @@
 import { relative } from 'node:path'
 import type {
   BuildResult,
+  ExplainReason,
   ExplainResult,
   ReachRowResult,
   Reason,
@@ -53,24 +54,28 @@ const built = (iso: string): string => {
 const entryLine = (root: string, entry: TestEntry): string =>
   entry.file === null ? entry.title : `${shown(root, entry.file)} > ${entry.title}`
 
-function reasonLine(root: string, reason: Reason): string {
+/** The tests a reason names: select's carry indices, explain's carry only a count. */
+const reasonTests = (reason: Reason | ExplainReason): number =>
+  'count' in reason ? (reason.count ?? 0) : 'tests' in reason ? reason.tests.length : 0
+
+function reasonLine(root: string, reason: Reason | ExplainReason): string {
   switch (reason.kind) {
     case 'function':
-      return `${shown(root, reason.file)} > ${reason.fn} (${plural(reason.tests.length, 'test')})`
+      return `${shown(root, reason.file)} > ${reason.fn} (${plural(reasonTests(reason), 'test')})`
     case 'file':
-      return `${shown(root, reason.file)} (${plural(reason.tests.length, 'test')})`
+      return `${shown(root, reason.file)} (${plural(reasonTests(reason), 'test')})`
     case 'test-file':
-      return `${shown(root, reason.file)} (test file, ${plural(reason.tests.length, 'test')})`
+      return `${shown(root, reason.file)} (test file, ${plural(reasonTests(reason), 'test')})`
     case 'read':
-      return `${shown(root, reason.file)} (read by ${plural(reason.tests.length, 'test')})`
+      return `${shown(root, reason.file)} (read by ${plural(reasonTests(reason), 'test')})`
     case 'opaque':
-      return `${reason.reason} (opaque dependency, ${plural(reason.tests.length, 'test')})`
+      return `${reason.reason} (opaque dependency, ${plural(reasonTests(reason), 'test')})`
     case 'always':
-      return `alwaysSelect (${plural(reason.tests.length, 'test')})`
+      return `alwaysSelect (${plural(reasonTests(reason), 'test')})`
     case 'shared-state':
-      return `${shown(root, reason.file)} (shared state, ${plural(reason.tests.length, 'test')})`
+      return `${shown(root, reason.file)} (shared state, ${plural(reasonTests(reason), 'test')})`
     case 'env-changed':
-      return `${reason.keys.join(', ')} changed (declared by ${plural(reason.tests.length, 'test')})`
+      return `${reason.keys.join(', ')} changed (declared by ${plural(reasonTests(reason), 'test')})`
     case 'module-scope-unchanged':
       return `${shown(root, reason.file)} (module scope unchanged at runtime per typescript ${reason.typescript}; file-level selection skipped)`
     case 'all':
@@ -147,12 +152,14 @@ export function buildLines(result: BuildResult, root: string): string[] {
  * would read as "all of these reach this line", which is the opposite of what the
  * line query is for.
  */
-function lineDetail(result: ExplainResult): string[] {
+function lineDetail(result: ExplainResult, root: string): string[] {
   if (result.functions.length === 0) {
     // No function evidence at all: the line is exactly as unexecuted as the file.
     // "Outside every function" would claim the file's tests reach it, which is
     // true only when the map has some. An unknown file's header says the rest.
-    return result.seen ? ['  nothing in the file was executed'] : []
+    return result.seen
+      ? ['  nothing in the file was executed', ...selectionDetail(result, root)]
+      : []
   }
   const line = result.line!
   const containing = result.functions.filter(
@@ -162,7 +169,28 @@ function lineDetail(result: ExplainResult): string[] {
     containing.length > 0
       ? `  functions: ${containing.map((fn) => fn.key).join(', ')}`
       : '  outside every function: the whole file’s tests',
+    ...selectionDetail(result, root),
     ...result.tests.map((title) => `  ${title}`),
+  ]
+}
+
+/**
+ * What `select --change` would add beyond the tests listed. Nothing is said when
+ * select picks exactly the touchers through function and file reasons, so a plain
+ * function line reads as it always did.
+ */
+function selectionDetail(result: ExplainResult, root: string): string[] {
+  const selection = result.selection
+  if (selection === undefined) return []
+  const touchersOnly =
+    selection.mode === 'subset' &&
+    selection.tests === result.tests.length &&
+    selection.reasons.every((reason) => reason.kind === 'function' || reason.kind === 'file')
+  if (touchersOnly) return []
+  const total = `${selection.tests.toLocaleString('en-US')} ${selection.tests === 1 ? 'test' : 'tests'}`
+  return [
+    selection.mode === 'all' ? `  select would run all ${total}:` : `  select would run ${total}:`,
+    ...selection.reasons.map((reason) => `    ${reasonLine(root, reason)}`),
   ]
 }
 
@@ -190,7 +218,7 @@ export function explainLines(result: ExplainResult, root: string): string[] {
       lines.push(`  ${fn.key} (${fn.startLine}-${fn.endLine}): ${tests}`)
     }
   } else {
-    lines.push(...lineDetail(result))
+    lines.push(...lineDetail(result, root))
   }
   return lines
 }

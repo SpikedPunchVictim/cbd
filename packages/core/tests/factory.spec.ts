@@ -892,6 +892,78 @@ test.group('createCbd', () => {
     }
   })
 
+  test('explain on a module-scope line states the load observers select would add', () => {
+    const repo = tempRepo()
+    try {
+      const root = realpathSync(repo.root)
+      const lib = join(root, 'src/lib.ts')
+      const other = join(root, 'src/other.ts')
+      repo.write(
+        'src/lib.ts',
+        'export function add(a, b) {\n  return a + b;\n}\nexport const LIMIT = 3\nexport function setup() {}\n',
+      )
+      repo.write('src/other.ts', 'export function noop() {\n  return 0;\n}\n')
+      const commit = repo.commit('base')
+      // Two shards both loaded lib.ts; only the first has a test that ran add().
+      writeShard(
+        repo.root,
+        'one.ndjson',
+        shardText(
+          commit,
+          [
+            { title: 'adds', file: null, touches: [ref(lib, 'add@0', 1, 3)] },
+            { title: 'also one', file: null, touches: [ref(other, 'noop@0', 1, 3)] },
+          ],
+          { buckets: { load: [ref(lib, 'setup@0', 5, 5)] } },
+        ),
+      )
+      writeShard(
+        repo.root,
+        'two.ndjson',
+        shardText(
+          commit,
+          [{ title: 'only two', file: null, touches: [ref(other, 'noop@0', 1, 3)] }],
+          { buckets: { load: [ref(lib, 'setup@0', 5, 5)] } },
+        ),
+      )
+      const cbd = createCbd({ root: repo.root })
+      cbd.build()
+
+      const changes = [
+        {
+          path: lib,
+          status: 'M' as const,
+          hunks: [{ start: 4, end: 4 }],
+          newHunks: [{ start: 4, end: 4 }],
+          insertions: [],
+        },
+      ]
+      const selected = cbd.select({ changes }).selected.length
+      const module = cbd.explain('src/lib.ts:4')
+      assert.equal(module.selection?.mode, 'subset')
+      assert.equal(module.selection?.tests, selected)
+      assert.equal(selected, 3)
+      assert.deepEqual(module.tests, ['adds'])
+      assert.deepEqual(
+        module.selection?.reasons.map((reason) => [reason.kind, reason.count]),
+        [['file', 3]],
+      )
+
+      // A function line is answered by the function, and select agrees.
+      const fn = cbd.explain('src/lib.ts:2')
+      assert.deepEqual(fn.tests, ['adds'])
+      assert.equal(fn.selection?.tests, 1)
+      assert.deepEqual(
+        fn.selection?.reasons.map((reason) => [reason.kind, reason.count]),
+        [['function', 1]],
+      )
+      // Without a line there is no what-if to run.
+      assert.equal(cbd.explain('src/lib.ts').selection, undefined)
+    } finally {
+      repo.cleanup()
+    }
+  })
+
   test('explain answers a file, a line, and a bucket', () => {
     const { repo, a, commit, cleanup } = prepared()
     try {

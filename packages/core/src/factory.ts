@@ -40,6 +40,7 @@ import {
   select as selectCore,
   verify as verifyCore,
   type GroundTruth,
+  type Reason,
   type SelectConfig,
   type Selection,
   type Verification,
@@ -207,6 +208,27 @@ export interface ExplainResult {
   functions: Array<{ key: string; startLine: number; endLine: number; tests: string[] }>
   /** Tests that reach the line, or the file when no line is given. */
   tests: string[]
+  /**
+   * What `select --change <file>:<line>` would do for this line, from running that
+   * very selection. Present only when a line is given. `tests` here can exceed the
+   * top-level `tests`: select adds load observers, reads and the like on top of the
+   * tests that touched the line.
+   */
+  selection?: ExplainSelection
+}
+
+/** A selection reason with its test count in place of the test indices (none for a reason that names no tests). */
+export type ExplainReason = Reason extends infer R
+  ? R extends Reason
+    ? Omit<R, 'tests'> & { count?: number }
+    : never
+  : never
+
+export interface ExplainSelection {
+  mode: 'subset' | 'all'
+  /** Tests select would run; for mode 'all', every test the map holds. */
+  tests: number
+  reasons: ExplainReason[]
 }
 
 export interface ReachesResult {
@@ -625,7 +647,7 @@ export function createCbd(config: CbdConfig): Cbd {
     tests: loaded.map.tests.length,
   })
 
-  return {
+  const cbd: Cbd = {
     build(options: BuildOptions = {}): BuildResult {
       const commit = options.commit ?? headCommit(root)
       const paths = options.shards ?? shardFiles(shardsDir)
@@ -904,6 +926,24 @@ export function createCbd(config: CbdConfig): Cbd {
       if (map.load.some((ref) => ref[0] === parsed.file)) buckets.push('load')
       if (map.between.some((ref) => ref[0] === parsed.file)) buckets.push('between')
       if (map.teardown.some((ref) => ref[0] === parsed.file)) buckets.push('teardown')
+      // The reasons come from running select itself on the same one-line change
+      // `select --change` builds, so explain cannot drift from what select does.
+      let selection: ExplainSelection | undefined
+      if (parsed.line !== undefined) {
+        const line = { start: parsed.line, end: parsed.line }
+        const result = cbd.select({
+          commit: loaded.map.commit,
+          changes: [
+            { path: parsed.file, status: 'M', hunks: [line], newHunks: [line], insertions: [] },
+          ],
+        })
+        selection = {
+          mode: result.selection.mode,
+          tests:
+            result.selection.mode === 'all' ? loaded.map.tests.length : result.selected.length,
+          reasons: result.selection.reasons.map(explainReason),
+        }
+      }
       return {
         file: parsed.file,
         seen: map.seen.includes(parsed.file),
@@ -911,6 +951,7 @@ export function createCbd(config: CbdConfig): Cbd {
         buckets,
         functions,
         tests,
+        ...(selection === undefined ? {} : { selection }),
       }
     },
 
@@ -1115,6 +1156,15 @@ export function createCbd(config: CbdConfig): Cbd {
       return verifyCore(selection, readMap(selection.map.commit).map, changes, outcomes)
     },
   }
+  return cbd
+}
+
+function explainReason(reason: Reason): ExplainReason {
+  if ('tests' in reason) {
+    const { tests, ...rest } = reason
+    return { ...rest, count: tests.length } as ExplainReason
+  }
+  return reason as ExplainReason
 }
 
 function parseExplainTarget(target: ExplainTarget | string, root: string): ExplainTarget {

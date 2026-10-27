@@ -3,6 +3,16 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
+## Unreleased
+
+- **`cbd explain <file>:<line>` reports what `select --change` would run for that line.** On a
+  module-scope line explain listed only the tests that touched the file ("123 tests, outside every
+  function: the whole file's tests") while select added every test of every shard that loaded the
+  file, 2,628 on the originating project. Explain now runs the same selection for the line and prints
+  `select would run N tests:` with each reason and its count (load observers, reads, opaque
+  dependencies, `alwaysSelect`, `emitCheck`); `--format json` and `Cbd.explain` carry it as
+  `selection`. A function line that select answers with the listed tests prints as before.
+
 ## 0.0.5 — 2026-10-26
 
 - **A read shared by a whole shard is stored once in the map.** An import-phase read that a

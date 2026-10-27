@@ -88,6 +88,12 @@ pnpm exec cbd reaches 'handles a refund' src/payments.ts --file tests/refund.spe
 pnpm exec cbd reaches 'handles a refund' src/payments.ts --format json
 ```
 
+With a line, `explain` also runs the selection `cbd select --change <file>:<line>` would run and,
+when that selection is more than the tests listed, prints `select would run N tests:` with each
+reason and its count: load observers for a line at module scope, reads, opaque dependencies,
+`alwaysSelect`, `emitCheck`. `--format json` carries the same answer as `selection`. A function line
+that select answers with exactly the listed tests prints as before.
+
 A bare title that names more than one test is refused; `--file` picks one.
 
 ### `cbd stats`

@@ -862,6 +862,57 @@ test.group('cbd explain and stats', () => {
     }
   })
 
+  test('explain on a module-scope line states what select --change adds', () => {
+    const { repo, root, a, spec, cleanup } = prepared()
+    try {
+      repo.write(
+        'src/a.ts',
+        'export function add(a, b) {\n  return a + b;\n}\nexport const LIMIT = 3\nexport function setup() {}\n',
+      )
+      const next = repo.commit('module scope')
+      const shards = join(root, '.cbd', 'shards')
+      // Two shards loaded a.ts; only the first has a test that ran add().
+      writeFileSync(
+        join(shards, 'run.ndjson'),
+        shardText(
+          next,
+          [
+            { title: 'adds', file: spec, touches: [[a, 'add@0', 1, 3]] },
+            { title: 'one more', file: spec, touches: [] },
+          ],
+          { load: [[a, 'setup@0', 5, 5]] },
+        ),
+      )
+      writeFileSync(
+        join(shards, 'two.ndjson'),
+        shardText(next, [{ title: 'only two', file: spec, touches: [] }], {
+          load: [[a, 'setup@0', 5, 5]],
+        }),
+      )
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+
+      const selected = invoke(root, 'select', '--change', 'src/a.ts:4', '--format', 'json')
+      const count = (JSON.parse(selected.out.join('\n')) as { selected: unknown[] }).selected.length
+      assert.equal(count, 3)
+
+      const module = invoke(root, 'explain', 'src/a.ts:4')
+      assert.equal(module.out[0], 'src/a.ts:4 — 1 test')
+      assert.ok(module.out.includes('  select would run 3 tests:'), module.out.join('\n'))
+      assert.ok(module.out.includes('    src/a.ts (3 tests)'), module.out.join('\n'))
+
+      const json = invoke(root, 'explain', 'src/a.ts:4', '--format', 'json')
+      const parsed = JSON.parse(json.out.join('\n')) as { selection: { tests: number } }
+      assert.equal(parsed.selection.tests, count)
+
+      // A function line keeps its old shape: nothing extra to say.
+      const fn = invoke(root, 'explain', 'src/a.ts:2')
+      assert.equal(fn.out[0], 'src/a.ts:2 — 1 test')
+      assert.equal(fn.out.some((line) => line.includes('select would run')), false)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('explain a file outside the map says select would run all', () => {
     const { root, cleanup } = prepared()
     try {

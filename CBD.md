@@ -1030,7 +1030,10 @@ same map, while shards and the selection file stay local.
   5 at line scale). This is the blast-radius query Gate B (`cbd-2ev`) is measured with.
 - `explain(map, file[:line])`: which tests reach it and how often, for humans and agents. A zero
   answer says which zero it is: seen but reached by no test, or not in the map at all — the first
-  runs nothing, the second runs everything.
+  runs nothing, the second runs everything. With a line it also carries the selection
+  `select --change file:line` would make (`selection`: mode, test count, each reason with its
+  count), computed by running that selection, so a module-scope line reports the load observers
+  select adds rather than only the file's touchers.
 - `stats()` — `cbd stats` — tests; mapped functions; files reached, seen, and untested; the
   **names** of the seen files no test reaches (the inverse map's other half, rather than only its
   count); tests per test file; functions per reached file and tests per mapped function (median,
