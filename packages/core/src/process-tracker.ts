@@ -18,6 +18,7 @@
  */
 import childProcess from 'node:child_process'
 import { syncBuiltinESMExports } from 'node:module'
+import { promisify } from 'node:util'
 
 /** What the recorder exposes to the process tracker. */
 export interface ProcessSink {
@@ -60,10 +61,32 @@ function patch(): Array<{ name: string; original: AnyFn }> {
     const original = target[name]
     if (typeof original !== 'function') continue
     originals.push({ name, original: original as AnyFn })
-    target[name] = function (this: unknown, ...args: unknown[]) {
+    const wrapper = function (this: unknown, ...args: unknown[]) {
       note()
       return (original as AnyFn).apply(this, args)
     }
+    // `exec` and `execFile` carry `util.promisify.custom`, which makes
+    // `promisify(execFile)` resolve `{ stdout, stderr }`. A bare wrapper loses it
+    // and the promisified call resolves just the stdout string, so a test that
+    // destructures the result breaks only while recording.
+    const descriptors = Object.getOwnPropertyDescriptors(original)
+    delete (descriptors as Record<symbol, unknown>)[promisify.custom]
+    // `name` and `length` are configurable, so they carry over too.
+    Object.defineProperties(wrapper, descriptors)
+    // The hook closes over the real function, so a promisified spawn would skip
+    // the wrapper and go unrecorded; wrap it too.
+    const custom = (original as unknown as Record<symbol, unknown>)[promisify.custom]
+    if (typeof custom === 'function') {
+      Object.defineProperty(wrapper, promisify.custom, {
+        value: function (this: unknown, ...args: unknown[]) {
+          note()
+          return (custom as AnyFn).apply(this, args)
+        },
+        configurable: true,
+        writable: true,
+      })
+    }
+    target[name] = wrapper
   }
   return originals
 }

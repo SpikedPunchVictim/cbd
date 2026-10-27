@@ -17,6 +17,13 @@ until a tag is pushed and the publish workflow runs.
   deleted or renamed files are unchanged, and an unresolvable `typescript` (including 7.x, which has
   no JavaScript transpile API), a transpile error or no matching glob keeps today's behaviour.
   No new dependency.
+- **Recording no longer breaks tests that `promisify` `exec` or `execFile`.** The process tracker
+  replaced `child_process.exec` and `execFile` with plain wrappers, dropping the
+  `util.promisify.custom` hook that makes `promisify(execFile)` resolve `{ stdout, stderr }`. Under
+  recording such a call resolved a bare string, so `const { stdout } = await execFileAsync(...)` got
+  `undefined`; on VS Code's `vs/platform` scope that failed 7 tests that pass unrecorded. The wrappers
+  now carry the original's properties and a tracked copy of the hook, so a promisified spawn still
+  works and is still recorded as opaque.
 - **A japa subset run no longer imports the spec files it did not select.** The title filter is
   applied after japa has imported every spec file, so a subset cost as much as the full run and the
   time a selection saved measured as zero. When the selection names each test's file (the v2 file

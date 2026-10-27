@@ -4,7 +4,8 @@
  * change, unless the consumer turns it off.
  */
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import childProcess, { execFileSync, spawnSync } from 'node:child_process'
+import { promisify } from 'node:util'
 import { test } from '@japa/runner'
 import { installProcessTracking } from '../src/process-tracker.js'
 
@@ -36,4 +37,27 @@ test('CBD_TRACK_PROCESSES=0 turns the tracker off', () => {
     else process.env.CBD_TRACK_PROCESSES = saved
   }
   assert.deepEqual(reasons, [])
+})
+
+test('a tracked execFile and exec keep their promisified { stdout, stderr } result', async () => {
+  const reasons: string[] = []
+  const stop = installProcessTracking({ noteOpaque: (reason) => reasons.push(reason) })
+  try {
+    // Read at call time: the named export is re-pointed at the wrapper.
+    const run = promisify(childProcess.execFile)
+    const { stdout } = await run(process.execPath, ['-e', 'process.stdout.write("hi")'])
+    assert.equal(stdout, 'hi')
+    const shell = await promisify(childProcess.exec)('printf hi')
+    assert.equal(shell.stdout, 'hi')
+    assert.ok(reasons.length >= 2, 'promisified spawns are still recorded')
+  } finally {
+    stop()
+  }
+})
+
+test('the wrapper restores the original execFile, promisify hook included', () => {
+  const original = childProcess.execFile
+  const stop = installProcessTracking({ noteOpaque: () => {} })
+  stop()
+  assert.equal(childProcess.execFile, original)
 })
