@@ -2,7 +2,7 @@
  * Rewriting a source path that resolved into a *copy* of the tree.
  *
  * A script's own source map is asked "which source line is this?", and it answers
- * correctly. Grizzly's `tsc` emits inline maps, and a deployed lane's `dist/*.js`
+ * correctly. A project's `tsc` can emit inline maps, and a deployed lane's `dist/*.js`
  * resolve to the lane's own `../src/*.ts`. That is the right answer to a question
  * nobody is asking. The map's keys have to be paths the *rest of the toolchain*
  * names — git above all, since `changesSince` returns paths built on the repo root
@@ -10,7 +10,7 @@
  * produce.
  *
  * So a path that resolved is rewritten by rule: `from` names the staging root, `to`
- * names the checkout. Measured, on grizzly key-server (ADR-0006): one logical file
+ * names the checkout. Measured, on a real service suite (ADR-0006): one logical file
  * held 3 tests at the checkout path and 2 *different* tests under the lane path,
  * overlap empty — a change to it returned a complete-looking subset that silently
  * omitted the tests that reached it over HTTP.
@@ -26,7 +26,7 @@
 import { canonicalPath, restUnder, within } from './projection.js'
 
 export interface RelocationRule {
-  /** Absolute prefix of the tree the code ran from, e.g. `<root>/.grizzly-dev/<lane>`. */
+  /** Absolute prefix of the tree the code ran from, e.g. `<root>/.deploy/<lane>`. */
   from: string
   /** Absolute prefix of the tree the code lives in, e.g. `<root>`. */
   to: string

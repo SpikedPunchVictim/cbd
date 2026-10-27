@@ -524,7 +524,7 @@ test.group('socketSource dispatch', (group) => {
    * ADR-0007's second mechanism reads a process's whole life from its snapshot when
    * the socket no longer answers. That life belongs to the window in which the
    * process died. Asking again at every later boundary would hand the same execution
-   * to every test after the death — measured on grizzly, one dead child's start-up
+   * to every test after the death — measured on a real service suite, one dead child's start-up
    * was credited to 74 windows — and re-read a multi-megabyte file each time.
    *
    * The fixture exits through its exit handler, which writes the snapshot

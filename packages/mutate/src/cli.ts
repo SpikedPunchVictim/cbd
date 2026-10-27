@@ -1,7 +1,7 @@
 /**
  * `cbd-mutate select` — the generic mutation-testing selector.
  *
- * A mutation driver (Grizzly's `mutate.mjs`, a custom harness, or anything else)
+ * A mutation driver (a project's own mutation script, a custom harness, or anything else)
  * owns mutant generation, application, builds, restarts and reporting. This
  * command owns one question: **which tests can observe a mutant at this source
  * location?** It answers from a CBD map and prints the candidates as data.

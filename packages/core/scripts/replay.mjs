@@ -56,7 +56,7 @@
  *
  * The repository must be clean: the harness checks commits out in place. A
  * `--patch` is applied after each checkout, for a worktree whose recording
- * wiring is itself uncommitted (the grizzly clone).
+ * wiring is itself uncommitted (a clone with local wiring).
  *
  * `--full-cmd` must write a shard to `$CBD_SHARD`; `<shard>.service.ndjson` is
  * merged when the run wrote one. `--subset-cmd` defaults to `--full-cmd`.
@@ -175,8 +175,8 @@ const testFiles =
  * The repository's own selection policy, from its committed `cbd.config.json`.
  *
  * A replay that ignored the config would answer a different question from the
- * product: grizzly's config marks `typescript/tools/**` as `unknownPolicyFor:
- * ignore`, and without it every step whose cumulative diff touches the dev CLI
+ * product: take a repository whose config marks its tools directory as
+ * `unknownPolicyFor: ignore` — without it every step whose cumulative diff touches the dev CLI
  * escalated to `all` — 20 of 20 steps, measuring the harness rather than the
  * selector. The CLI flags still win where they are given, so a caller can narrow
  * `--include` or override `--test-files` for a one-off question.

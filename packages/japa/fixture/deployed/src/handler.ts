@@ -2,8 +2,8 @@
  * The behaviour of the service, in a file of its own — and the file the two
  * recording paths disagree about.
  *
- * `cbd-jmn`. A deployed lane runs the server from a COPY of its build
- * (`<repo>/.grizzly-dev/<lane>/…`), and the compiler emits inline source maps, so the
+ * A deployed lane runs the server from a COPY of its build
+ * (`<repo>/.deploy/<lane>/…`), and the compiler emits inline source maps, so the
  * copy's `dist/handler.js` resolves — correctly, through its own map — to the copy's
  * own `src/handler.ts`. That path is one no repository diff can produce, which is the
  * whole defect: the map is keyed by where the code ran, not by where it lives.

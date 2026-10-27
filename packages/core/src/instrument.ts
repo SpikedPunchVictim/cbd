@@ -195,7 +195,7 @@ async function start(dir: string): Promise<void> {
   // **`unacked`, not `lifetime`.** Coverage handed to a client is dropped as soon
   // as the client says it absorbed it, so the file holds exactly what the map is
   // missing — never the same execution twice. A process nobody ever read keeps
-  // everything, which is the grizzly shape.
+  // everything, which is the shape of a long-lived service.
   //
   // **The interval is a bound on both the cost and the gap.** The file is what
   // survives a SIGKILL, and a SIGKILL runs no handler; so the snapshot has to be
@@ -360,7 +360,7 @@ async function start(dir: string): Promise<void> {
    * only way to have anything to write. The interval is still the bound for a
    * process that is killed outright — no handler runs at all — but it is not the
    * bound for a service that exits normally, and the children this mechanism
-   * exists for are exactly the ones too short-lived for a tick: on grizzly, three
+   * exists for are exactly the ones too short-lived for a tick: on a real service suite, three
    * of the five `standalone-boot` children lived 305–404 ms and left snapshots
    * with no coverage in them.
    */
@@ -798,8 +798,8 @@ async function start(dir: string): Promise<void> {
     //
     // Either order blocks this process's loop for the write. What it writes is only
     // what no reply has delivered (see `writeSnapshot`), so after the first
-    // acknowledgement it is a window, not a table. Before `cbd-3z1` it was the
-    // whole table every time: measured on grizzly, mean drift 1.16 ms against
+    // acknowledgement it is a window, not a table. Before the per-take mechanism it was the
+    // whole table every time: measured on a large real suite, mean drift 1.16 ms against
     // 114 µs without the per-take mechanism, with a tightest boundary gap of
     // 15.6 ms — the one boundary after the first take still pays for the table,
     // and every later one does not.

@@ -2,7 +2,7 @@
  * The package, and the deployed-lane fixture, built in one step.
  *
  * Two projects rather than one, because the fixture is not part of the package: it
- * compiles the way grizzly compiles a lane — `tsc`, inline source maps, `dist/` beside
+ * compiles the way a deployed lane is compiled — `tsc`, inline source maps, `dist/` beside
  * `src/` — and it has to, because the behaviour under test is what becomes of *those*
  * maps when a build is copied and run from the copy. A fixture built any other way
  * would not have the shape the bug needs.

@@ -896,7 +896,7 @@ export async function socketSource(options: SocketSourceOptions = {}): Promise<Q
    * the socket died has one. The unnumbered fallback is different — it is the
    * whole accumulated lifetime, and it is the right answer only for the window that
    * discovered the loss. Offering it at later boundaries credits one test's
-   * execution to every test that follows: measured on grizzly, one dead child's
+   * execution to every test that follows: measured on a real service suite, one dead child's
    * start-up landed in 74 windows.
    *
    * So numbered windows are always recovered; the fallback is spent once.

@@ -11,7 +11,7 @@
  * the checked-in `src/handler.ts` selects the one test that ran it in this process,
  * while two others reached the same function over HTTP in the copy. The two sets are
  * disjoint, so the answer is not "smaller" — it is wrong, and it looks complete. That
- * is the shape measured on grizzly key-server's `CreateEncrypt.ts`: 3 tests at the
+ * is the shape measured on one handler of a real service suite: 3 tests at the
  * checkout path, 2 different ones under the lane, overlap empty.
  *
  * **Both lanes are real runs against real services, and they cannot share one.** The
@@ -74,7 +74,7 @@ function changeAt(path: string, line: number): Change {
 }
 
 interface Lane {
-  /** The staged root the service ran from — grizzly's `.grizzly-dev/<lane>`. */
+  /** The staged root the service ran from — e.g. `.deploy/<lane>`. */
   stage: string
   map: CoverageMap
   testShard: ShardInput

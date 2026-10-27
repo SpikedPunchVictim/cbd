@@ -408,9 +408,9 @@ read, and a version 2 header carrying a group record is refused.
   tens of KB per script and the build reads the same stat-checked file, so repeating it is pure
   duplication; a loader-injected map (ts-node on a `.ts` file with no comment) exists only in
   `Debugger.scriptParsed` and must be recorded. When the file's declaration differs from what the
-  inspector reported, the inspector's wins — it describes the bytes V8 executed. Measured on the
-  grizzly stores run: 2,437 service script rows carried 35.2 MB of file-declared maps, 62.4% of
-  that shard (`cbd-n9t.1`).
+  inspector reported, the inspector's wins — it describes the bytes V8 executed. Measured on a
+  large real-service run: 2,437 service script rows carried 35.2 MB of file-declared maps, 62.4% of
+  that shard.
 - A **transformed script's** offsets index generated text, not the file: Vitest/Vite, Jest and
   ts-node compile in memory. A later `script` row for the same script may carry
   `generated: {"lineStarts":[…],"length":…}`; it is written after the run's last window, once the

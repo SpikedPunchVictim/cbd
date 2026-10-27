@@ -11,7 +11,7 @@
  *
  * `mutantTests` lives in core so every driver can use it; this package adds the
  * `cbd-mutate select` command for drivers that speak process boundaries (for
- * example Grizzly's `mutate.mjs`).
+ * example a project's own mutation script).
  */
 export {
   mutantTests,

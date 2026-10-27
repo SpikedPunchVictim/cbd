@@ -3,10 +3,10 @@
  * lives, not by where it ran.
  *
  * This is the shape every deployed lane has (ADR-0006). The lane runs the server
- * out of `.grizzly-dev/<lane>/`, grizzly's `tsc` emits inline source maps, and the
+ * out of `.deploy/<lane>/`, a project's `tsc` emits inline source maps, and the
  * copy's maps resolve — correctly — to the copy's own `../src/*.ts`. The map is then
  * keyed by a path no repository diff can produce, and the failure is not loud: on
- * grizzly key-server, one handler held 3 tests at the checkout path and 2 *different*
+ * a real service suite, one handler held 3 tests at the checkout path and 2 *different*
  * tests under the lane path, the overlap empty. A change to it returned a
  * complete-looking subset that silently omitted the tests reaching it over HTTP.
  *
@@ -44,11 +44,11 @@ const fixtureRoot = resolve(coreRoot, '../../fixture')
 const onWindows = process.platform === 'win32'
 const POSIX_LITERALS = 'fixture paths are POSIX literals'
 
-const rules = [{ from: '/repo/.grizzly-dev/lane', to: '/repo' }]
+const rules = [{ from: '/repo/.deploy/lane', to: '/repo' }]
 
 test('rewrites a nested path under the staging root back to the checkout', () => {
   assert.equal(
-    relocatePath('/repo/.grizzly-dev/lane/api/key-server/src/handler.ts', rules),
+    relocatePath('/repo/.deploy/lane/api/key-server/src/handler.ts', rules),
     '/repo/api/key-server/src/handler.ts',
   )
 }).skip(onWindows, POSIX_LITERALS)
@@ -59,12 +59,12 @@ test('leaves a path no rule covers unchanged, byte for byte', () => {
 }).skip(onWindows, POSIX_LITERALS)
 
 test('does not match a sibling directory sharing the prefix', () => {
-  assert.equal(relocatePath('/repo/.grizzly-dev/lane-extra/src/x.ts', rules), '/repo/.grizzly-dev/lane-extra/src/x.ts')
+  assert.equal(relocatePath('/repo/.deploy/lane-extra/src/x.ts', rules), '/repo/.deploy/lane-extra/src/x.ts')
 }).skip(onWindows, POSIX_LITERALS)
 
 test('tolerates a trailing slash on either prefix', () => {
-  const trailing = [{ from: '/repo/.grizzly-dev/lane/', to: '/repo/' }]
-  assert.equal(relocatePath('/repo/.grizzly-dev/lane/src/x.ts', trailing), '/repo/src/x.ts')
+  const trailing = [{ from: '/repo/.deploy/lane/', to: '/repo/' }]
+  assert.equal(relocatePath('/repo/.deploy/lane/src/x.ts', trailing), '/repo/src/x.ts')
 }).skip(onWindows, POSIX_LITERALS)
 
 // The deliberate difference from `projectPath`. A copy of a tree has the same file

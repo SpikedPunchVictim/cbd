@@ -5,8 +5,8 @@ can observe it, using a [CBD](https://github.com/SpikedPunchVictim/cbd) coverage
 
 This package deliberately contains **no mutation engine and no test-framework integration**. A
 mutation driver owns generating and applying mutants, building, restarting services, running tests
-and reporting. CBD owns the expensive selection question. That keeps it usable from Grizzly's
-`mutate.mjs`, a custom harness, or any other runner — no Stryker dependency.
+and reporting. CBD owns the expensive selection question. That keeps it usable from a project's own
+mutation script, a custom harness, or any other runner — no Stryker dependency.
 
 ## Install
 
@@ -61,14 +61,14 @@ if (selection.mode === 'all') runEverything()
 else if (selection.mode === 'subset') run(selection.tests.map((test) => test.title))
 ```
 
-## Grizzly
+## Example: an existing mutation driver
 
-Grizzly's `mutate.mjs` already owns mutant specs, builds, lane restarts and kill verification.
+Suppose a project's own mutation script (say `mutate.mjs`) already owns mutant specs, builds, lane restarts and kill verification.
 Integration is a selection at the spec level, not a new runner:
 
 - a row may carry `select: { "file": "src/x.ts", "line": 42 }` (the **source** location, even when
   the mutant is applied to `dist/`);
-- `mutate.mjs` calls `cbd-mutate select … --format json` for that row (or the library directly);
+- the script calls `cbd-mutate select … --format json` for that row (or the library directly);
 - it baselines the candidates, runs them after applying the mutant, and records a kill when **any**
   candidate fails; the named killers become the subset that actually died.
 
