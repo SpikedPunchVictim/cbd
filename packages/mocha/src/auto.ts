@@ -76,12 +76,10 @@ function resolveMocha(): typeof import('mocha') {
 const GUARD_ENV = 'CBD_MOCHA_SELECTION_GUARD'
 
 const shardPath = process.env.CBD_SHARD || undefined
-// The runner owns this shard for this process only. A child a test spawns inherits
-// both the preload (`NODE_OPTIONS`) and this variable, and its own preload would
-// reset the shard this process is writing — measured: one `node -e` child replaced
-// a complete parent shard with its own header line. The value has been read, so
-// removing it makes every descendant inert, exactly as the japa entry point does.
-if (shardPath !== undefined) delete process.env.CBD_SHARD
+// The shard is claimed when mocha runs, not here. `NODE_OPTIONS` also loads this in a
+// launcher (`npx mocha`, `cbd collect -- npm test`), which never runs mocha; claiming
+// the shard on load would leave it a header-only file with `CBD_SHARD` gone from the
+// process that does. Until `run`, nothing is written and the variable stays in place.
 /** Whether this process has anything to do at all; an empty selection is nothing. */
 const selecting = (process.env.CBD_SELECTION ?? '') !== ''
 
@@ -98,12 +96,13 @@ if (shardPath !== undefined || selecting) {
   let recorder: Recorder | null = null
   let stopReads: (() => void) | null = null
   let stopProcesses: (() => void) | null = null
+  const sink = new core.DeferredSink()
   if (shardPath !== undefined) {
     const source = await core.inProcessSource()
     const scan = core.scanFromEnv()
     recorder = beginShard({
       source,
-      sink: new core.FileSink(shardPath),
+      sink,
       commit: process.env.CBD_COMMIT || 'unknown',
       ...(scan === undefined ? {} : { scan }),
       ...(core.granularityFromEnv() === undefined ? {} : { granularity: 'group' }),
@@ -180,6 +179,12 @@ if (shardPath !== undefined || selecting) {
       return counted(originalRun.call(this, (failures: number) => callback?.(settle(failures))))
     }
 
+    // This process runs mocha, so it owns the shard. A child a test spawns inherits
+    // both the preload (`NODE_OPTIONS`) and the variable, and its own preload would
+    // reset the shard this process is writing — measured: one `node -e` child replaced
+    // a complete parent shard with its own header line.
+    delete process.env.CBD_SHARD
+    sink.open(shardPath!)
     const first = installMochaAdapter(this, recorder)
     adapter = first
 

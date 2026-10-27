@@ -398,6 +398,31 @@ export class FileSink implements ShardSink {
   }
 }
 
+/**
+ * Lines held in memory until `open` gives them a file, which is how a recording can start before it is known to be the one that owns its shard.
+ *
+ * `reset` before `open` only forgets what was held, so the recorder's `runStart`
+ * cannot create the shard in a process that never adopts. `open` truncates the file,
+ * which is what `reset` does for an eager sink, then writes what was held.
+ */
+export class DeferredSink implements ShardSink {
+  #path: string | undefined
+  #held: string[] = []
+  append(line: string): void {
+    if (this.#path === undefined) this.#held.push(line)
+    else appendFileSync(this.#path, `${line}\n`)
+  }
+  reset(): void {
+    if (this.#path === undefined) this.#held = []
+    else writeFileSync(this.#path, '')
+  }
+  open(path: string): void {
+    this.#path = path
+    writeFileSync(path, this.#held.map((line) => `${line}\n`).join(''))
+    this.#held = []
+  }
+}
+
 export class StringSink implements ShardSink {
   lines: string[] = []
   append(line: string): void {

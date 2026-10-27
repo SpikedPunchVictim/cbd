@@ -11,7 +11,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -106,6 +106,78 @@ test.group('japa preload e2e', () => {
     assert.equal(records.filter((r) => r.type === 'shard').length, 1)
     assert.equal(records.filter((r) => r.type === 'test').length, 4)
     assert.equal(records.at(-1)?.type, 'end')
+  })
+})
+
+// A launcher is a Node process that starts the real runner: `pnpm test` and `npm run` are
+// both that. `NODE_OPTIONS` reaches it first, so the preload loads there before it loads in
+// the runner, and it must leave the recording to the runner.
+test.group('japa preload through a launcher', () => {
+  const REGISTER = new URL('../src/register.js', import.meta.url).href
+  const LAUNCH = 'require("node:child_process").execFileSync(process.execPath, process.argv.slice(1), { stdio: "inherit" })'
+
+  /** `node -e LAUNCH -- node -e LAUNCH -- ... BIN early`: each hop runs the rest as `node <rest>`. */
+  function launched(depth: number): ShardRecord[] {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      const hops = Array.from({ length: depth }, () => ['-e', LAUNCH, '--']).flat()
+      execFileSync(process.execPath, [...hops, BIN, 'early'], {
+        encoding: 'utf8',
+        env: { ...process.env, CBD_SHARD: shard, NODE_OPTIONS: `--import ${REGISTER}` },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      return readShard(shard)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+
+  const helperScript = (records: ShardRecord[]): boolean =>
+    records.some(
+      (r) => r.type === 'script' && String(r.url).replaceAll('\\', '/').endsWith('/fixture/early/helper.js'),
+    )
+
+  test('the runner records when a launcher loads the preload first', () => {
+    const records = launched(1)
+    assert.equal(records.filter((r) => r.type === 'shard').length, 1)
+    assert.equal(records.filter((r) => r.type === 'test').length, 4)
+    assert.ok(helperScript(records), 'the early helper has no script record')
+    assert.equal(records.at(-1)?.type, 'end')
+  })
+
+  test('the runner records behind two launchers', () => {
+    const records = launched(2)
+    assert.equal(records.filter((r) => r.type === 'test').length, 4)
+    assert.ok(helperScript(records))
+  })
+
+  test('a process that never runs japa writes nothing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
+    try {
+      const shard = join(dir, 'shard.ndjson')
+      execFileSync(process.execPath, ['-e', '0'], {
+        env: { ...process.env, CBD_SHARD: shard, NODE_OPTIONS: `--import ${REGISTER}` },
+        stdio: 'ignore',
+      })
+      assert.equal(existsSync(shard), false)
+      assert.equal(existsSync(`${shard.replace('.ndjson', '')}.service.ndjson`), false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test('a non-adopting process leaves CBD_SHARD for its child', () => {
+    const out = execFileSync(
+      process.execPath,
+      ['-e', 'require("node:child_process").execFileSync(process.execPath, ["-p", "process.env.CBD_SHARD"], { stdio: "inherit" })'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, CBD_SHARD: 'sentinel.ndjson', NODE_OPTIONS: `--import ${REGISTER}` },
+        stdio: ['ignore', 'pipe', 'inherit'],
+      },
+    )
+    assert.equal(out.trim(), 'sentinel.ndjson')
   })
 })
 

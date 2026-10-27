@@ -5,6 +5,14 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **The japa `register` preload now records when it is set through `NODE_OPTIONS` behind a launcher.**
+  It used to take the shard in the first Node process that loaded it — `pnpm`, `npm` or a project
+  CLI — which wrote a header-only shard and removed `CBD_SHARD`, so the runner recorded nothing. The
+  preload now holds coverage and read tracking in memory (`DeferredSink`) and leaves `CBD_SHARD` in
+  the environment; the plugin claims the shard when it adopts the session, in the process that runs
+  japa, opening the file, writing what was held and removing the variable so a test's child does not
+  reopen it. A process that never adopts writes nothing. The mocha `auto` entry claims its shard
+  the same way, when mocha runs rather than when the module loads.
 - **Windows: a path with an 8.3 short name (`C:\Users\RUNNER~1\…`) no longer breaks selection.**
   Git and the map keys spell such a path with its long names, but Node's JS `realpathSync` keeps
   the short ones, so `--root`, the repository-root and dirty-tree checks, projection and relocation

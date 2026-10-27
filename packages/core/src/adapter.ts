@@ -131,6 +131,7 @@ export {
 } from './source-maps.js'
 
 export {
+  DeferredSink,
   FileSink,
   IncompleteShardError,
   ShardVersionError,

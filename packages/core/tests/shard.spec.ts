@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
 import {
+  DeferredSink,
   FileSink,
   IncompleteShardError,
   parseShard,
@@ -163,6 +164,36 @@ test('FileSink.reset starts a new run at the same path', () => {
     sink.reset()
     sink.append('{"type":"shard"}')
     assert.equal(readFileSync(path, 'utf8'), '{"type":"shard"}\n')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('DeferredSink creates no file until it is opened', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-sink-'))
+  const path = join(dir, 'run.ndjson')
+  try {
+    const sink = new DeferredSink()
+    sink.reset()
+    sink.append('{"type":"shard"}')
+    assert.equal(existsSync(path), false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('DeferredSink.open writes what was held, then appends directly', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-sink-'))
+  const path = join(dir, 'run.ndjson')
+  try {
+    writeFileSync(path, 'old-run\n')
+    const sink = new DeferredSink()
+    sink.append('stale')
+    sink.reset()
+    sink.append('first')
+    sink.open(path)
+    sink.append('second')
+    assert.equal(readFileSync(path, 'utf8'), 'first\nsecond\n')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

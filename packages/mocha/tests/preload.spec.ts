@@ -7,7 +7,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -18,16 +18,20 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const AUTO = new URL('../src/auto.js', import.meta.url).href
 
 /**
- * A runner-shaped process that starts a child and reports its own pid.
+ * A runner-shaped process: it runs mocha, then starts a child and reports its own pid.
  *
  * The child inherits everything the runner has left in its environment — which is
- * the question: whether the preload cleared `CBD_SHARD` before a test could spawn
- * one.
+ * the question: whether the preload cleared `CBD_SHARD` once this process took the
+ * shard, before a test could spawn a child.
  */
 const DRIVER = `import { spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
+const Mocha = createRequire(process.argv[2])('mocha')
+new Mocha().run(() => {})
 const child = spawnSync(process.execPath, ['-e', '0'], { stdio: 'inherit' })
 if (child.status !== 0) process.exit(1)
 process.stdout.write(String(process.pid))
+process.exit(0)
 `
 
 test('a child process spawned by the runner does not touch the shard', () => {
@@ -37,7 +41,7 @@ test('a child process spawned by the runner does not touch the shard', () => {
   writeFileSync(shard, '')
   writeFileSync(driver, DRIVER)
   try {
-    const runner = spawnSync(process.execPath, [driver], {
+    const runner = spawnSync(process.execPath, [driver, join(PACKAGE_ROOT, 'package.json')], {
       cwd: PACKAGE_ROOT,
       env: {
         ...process.env,
@@ -55,6 +59,28 @@ test('a child process spawned by the runner does not touch the shard', () => {
     // file would have replaced it with its own pid, which is the loss this test
     // exists for: every record the runner had written would be gone.
     assert.equal((JSON.parse(header) as { pid: number }).pid, Number(runner.stdout))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * `NODE_OPTIONS` also reaches a launcher (`npx mocha`, `npm test`): a process that
+ * starts the runner but never runs mocha itself. It must leave the shard, and the
+ * variable that names it, to the process that does.
+ */
+test('a launcher that never runs mocha leaves the shard and the variable alone', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-preload-'))
+  const shard = join(dir, 'run.ndjson')
+  try {
+    const launcher = spawnSync(process.execPath, ['-p', 'process.env.CBD_SHARD'], {
+      cwd: PACKAGE_ROOT,
+      env: { ...process.env, CBD_SHARD: shard, NODE_OPTIONS: `--import ${AUTO}` },
+      encoding: 'utf8',
+    })
+    assert.equal(launcher.status, 0, launcher.stderr)
+    assert.equal(launcher.stdout.trim(), shard)
+    assert.equal(existsSync(shard), false)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -50,16 +50,18 @@ recording earlier:
 { "scripts": { "test": "node --import @spikedpunch/cbd-japa/register bin/test.js" } }
 ```
 
-Put the preload on the command line of the process that runs japa, not in `NODE_OPTIONS`. The first
-Node process that loads it with `CBD_SHARD` set takes the shard and removes the variable, so a
-child it spawns does not reopen the file. Through `NODE_OPTIONS` that first process is whatever
-starts the runner — `pnpm`, `npm`, a project CLI — and the runner itself then records nothing. The
-preload is inert when `CBD_SHARD` is unset, so it can stay in the script permanently.
+The preload works on the runner's command line or through `NODE_OPTIONS`, including behind a
+launcher (`pnpm`, `npm`, a project CLI). Every Node process that loads it holds the early recording
+in memory and leaves `CBD_SHARD` alone; the process that runs japa claims the shard when the plugin
+installs, and only then removes the variable, so a child a test spawns does not reopen the file. A
+process that never runs japa writes nothing. The preload is inert when `CBD_SHARD` is unset, so it
+can stay in the script permanently.
 
 Keep `plugins: [cbd()]` in `configure`, unconditionally: the plugin joins the session the preload
 started rather than starting a second one, and what ran before the first test is recorded as
-load-time execution. Do not gate it on `CBD_SHARD` — the preload has already removed it by the time
-`bin/test.js` runs. The plugin does nothing when there is no shard, no selection and no session.
+load-time execution. Do not gate it on `CBD_SHARD` — the plugin removes it when it joins the
+session, before `bin/test.js` has finished running. The plugin does nothing when there is no shard,
+no selection and no session.
 Shard, commit and scan settings come from the environment when the preload is used; the same options
 passed to `cbd()` do not apply to its session.
 

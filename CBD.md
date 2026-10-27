@@ -551,9 +551,11 @@ Wiring facts the implementation rests on, all measured (`.explore/A0-japa-hooks.
   opens the session before the entry runs and parks it; the plugin adopts it instead of starting a
   second, so those executions land in `@load`. The plugin line stays — the preload cannot install
   the window hooks — and a plugin-only setup behaves as before. The preload is inert without
-  `CBD_SHARD`, which it reads and removes so a spawned child does not reopen the shard. Because the
-  first process to load it claims the shard, it belongs on the runner's own command line: through
-  `NODE_OPTIONS`, a launcher (`pnpm`, `npm`, a project CLI) claims it and the runner records nothing.
+  `CBD_SHARD`. Until the plugin adopts the session the preload holds its recording in memory and
+  leaves `CBD_SHARD` set, so it works on the runner's command line and through `NODE_OPTIONS`
+  behind a launcher (`pnpm`, `npm`, a project CLI), which loads it too and never adopts. Adoption,
+  in the process that runs japa, opens the shard and removes the variable so a spawned child does
+  not reopen it.
 - **The adapter's own files are excluded from the scan.** So are core's. `NODE_OPTIONS` reaches the
   test runner too (ADR-0005), and a workspace link resolves outside `node_modules`, where the
   default prefilter cannot hide the tool. `CBD_INCLUDE_SELF=1` lifts that floor for the
