@@ -502,7 +502,8 @@ test.group('createCbd', () => {
       )
       const tsconfig = join(toolchain, 'tsconfig.json')
       writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
-      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig }]
+      const pin = (JSON.parse(readFileSync(join(toolchain, 'node_modules/typescript/package.json'), 'utf8')) as { version: string }).version
+      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig, typescript: pin }]
       const original = readFileSync(a, 'utf8')
 
       const plain = createCbd({ root: repo.root })
@@ -515,6 +516,22 @@ test.group('createCbd', () => {
       assert.deepEqual(
         narrowed.reasons.map((reason) => reason.kind),
         ['module-scope-unchanged'],
+      )
+
+      assert.deepEqual(
+        narrowed.reasons,
+        [{ kind: 'module-scope-unchanged', file: a, typescript: pin }],
+      )
+
+      // A compiler other than the one the tests run with proves nothing: ignore it and say why.
+      const wrong = createCbd({
+        root: repo.root,
+        select: { emitCheck: [{ ...emitCheck[0]!, typescript: '0.0.1' }] },
+      }).select().selection
+      assert.deepEqual(wrong.tests, [0, 1])
+      assert.ok(
+        wrong.warnings.some((warning) => /emitCheck skipped for .*: resolved typescript .*, pinned 0\.0\.1/.test(warning)),
+        wrong.warnings.join('\n'),
       )
 
       repo.write('src/a.ts', `${original}export const id = 1\n`)

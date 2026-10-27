@@ -32,9 +32,21 @@
     },
     "emitCheck": {
       "type": "object",
-      "additionalProperties": { "type": "string", "minLength": 1 },
-      "description": "Opt-in. Maps globs of TypeScript files to the tsconfig used to decide whether a change outside every function can affect runtime. The project's own typescript (resolved from the tsconfig's directory) transpiles the base and current version; if the module-scope JavaScript is identical, those hunks no longer select every test that loaded the file. Needs typescript 5 or 6 (7 has no JS transpile API); anything unresolved or failing keeps the normal rule. A tsconfig with noEmit still works: only its other options are used.",
-      "examples": [{ "typescript/sdk/src/**": "typescript/sdk/tsconfig.test.json" }]
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tsconfig", "typescript"],
+        "properties": {
+          "tsconfig": { "type": "string", "minLength": 1, "description": "The tsconfig the tests run under; its options drive the emit." },
+          "typescript": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$",
+            "description": "The exact typescript version the tests run with. The check runs only when the typescript resolved from the tsconfig's directory has exactly this version; otherwise it is skipped with a warning."
+          }
+        }
+      },
+      "description": "Opt-in. Maps globs of TypeScript files to { tsconfig, typescript }. The project's own typescript (resolved from the tsconfig's directory, pinned to an exact version) transpiles the base and current version of each modified file; if the module-scope JavaScript is identical, hunks outside every function no longer select every test that loaded the file. Needs typescript 5 or 6 (7 has no JS transpile API). A version mismatch, an unresolvable typescript or a failing transpile keeps the normal rule. A tsconfig with noEmit still works: only its other options are used.",
+      "examples": [{ "typescript/sdk/src/**": { "tsconfig": "typescript/sdk/tsconfig.test.json", "typescript": "5.9.3" } }]
     },
     "alwaysSelect": {
       "type": "array",

@@ -38,11 +38,16 @@ export interface ModuleScopeVerdict {
   unchanged: boolean
   /** Why the check could not prove it, for tests and diagnostics. */
   why?: string
+  /** The compiler version that produced a proven verdict. */
+  typescript?: string
+  /** True when the whole project was unusable (not resolvable, wrong version), not one file. */
+  skipped?: boolean
 }
 
 interface Project {
   ts: Ts
   options: object
+  version: string
 }
 
 const projects = new Map<string, Project | string>()
@@ -78,6 +83,7 @@ function load(tsconfig: string): Project | string {
   const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dir, undefined, tsconfig)
   return {
     ts,
+    version: String(ts.version),
     options: {
       ...parsed.options,
       sourceMap: false,
@@ -129,9 +135,19 @@ export function compareModuleScope(
   fileName: string,
   bases: readonly string[],
   head: string,
+  pinned: string,
 ): ModuleScopeVerdict {
   const project = loadProject(tsconfig)
-  if (typeof project === 'string') return { unchanged: false, why: project }
+  if (typeof project === 'string') return { unchanged: false, why: project, skipped: true }
+  // The compiler resolved here may not be the one the tests run with; a different
+  // version (or a different transpiler) can emit differently, so only an exact match counts.
+  if (project.version !== pinned) {
+    return {
+      unchanged: false,
+      why: `resolved typescript ${project.version}, pinned ${pinned}`,
+      skipped: true,
+    }
+  }
   try {
     const wanted = skeleton(project, head, fileName)
     for (const base of bases) {
@@ -139,7 +155,7 @@ export function compareModuleScope(
         return { unchanged: false, why: 'module scope differs' }
       }
     }
-    return { unchanged: true }
+    return { unchanged: true, typescript: project.version }
   } catch (error) {
     return { unchanged: false, why: `transpile failed: ${String(error)}` }
   }
@@ -176,9 +192,16 @@ function gitShow(root: string, ref: string, path: string): string | undefined {
  * project's compiler says did not change between every base ref and the current
  * version. Added, deleted, renamed and non-TypeScript files are never reported.
  */
-export function moduleScopeUnchangedFiles(input: EmitCheckInput): { files: Set<string> } {
-  const files = new Set<string>()
-  if (input.entries.length === 0 || input.refs.length === 0) return { files }
+export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
+  /** Path to the compiler version that proved it. */
+  files: Map<string, string>
+  /** One per entry that could not run at all (wrong or missing compiler). */
+  warnings: string[]
+} {
+  const files = new Map<string, string>()
+  const warnings: string[] = []
+  const warned = new Set<string>()
+  if (input.entries.length === 0 || input.refs.length === 0) return { files, warnings }
   for (const change of input.changes) {
     if (change.status !== 'M') continue
     if (!TS_SOURCE.test(change.path) || DECLARATION.test(change.path)) continue
@@ -199,8 +222,18 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): { files: Set<s
     const bases = input.refs.map((ref) => gitShow(input.root, ref, change.path))
     if (bases.some((base) => base === undefined)) continue
 
-    const verdict = compareModuleScope(entry.tsconfig, change.path, bases as string[], head)
-    if (verdict.unchanged) files.add(change.path)
+    const verdict = compareModuleScope(
+      entry.tsconfig,
+      change.path,
+      bases as string[],
+      head,
+      entry.typescript,
+    )
+    if (verdict.unchanged) files.set(change.path, verdict.typescript!)
+    else if (verdict.skipped === true && !warned.has(entry.glob)) {
+      warned.add(entry.glob)
+      warnings.push(`emitCheck skipped for ${entry.glob}: ${verdict.why ?? 'unusable compiler'}`)
+    }
   }
-  return { files }
+  return { files, warnings }
 }

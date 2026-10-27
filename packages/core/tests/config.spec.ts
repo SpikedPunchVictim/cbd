@@ -108,28 +108,47 @@ test.group('cbd.config.json', () => {
     }
   })
 
-  test('emitCheck maps globs to a tsconfig, both made absolute', () => {
+  test('emitCheck maps globs to a tsconfig and the compiler version it pins', () => {
     const { root, cleanup } = tempRoot()
     try {
       const config = parseConfig(
-        { emitCheck: { 'sdk/src/**': 'sdk/tsconfig.test.json', 'lib/**': 'tsconfig.json' } },
+        {
+          emitCheck: {
+            'sdk/src/**': { tsconfig: 'sdk/tsconfig.test.json', typescript: '5.9.3' },
+            'lib/**': { tsconfig: 'tsconfig.json', typescript: '5.8.3' },
+          },
+        },
         root,
       )
       assert.deepEqual(config.select?.emitCheck, [
-        { glob: join(root, 'sdk/src/**'), tsconfig: join(root, 'sdk/tsconfig.test.json') },
-        { glob: join(root, 'lib/**'), tsconfig: join(root, 'tsconfig.json') },
+        { glob: join(root, 'sdk/src/**'), tsconfig: join(root, 'sdk/tsconfig.test.json'), typescript: '5.9.3' },
+        { glob: join(root, 'lib/**'), tsconfig: join(root, 'tsconfig.json'), typescript: '5.8.3' },
       ])
     } finally {
       cleanup()
     }
   })
 
-  test('emitCheck must be an object of non-empty strings', () => {
+  test('emitCheck requires the exact compiler version; the bare tsconfig string is refused', () => {
     const { root, cleanup } = tempRoot()
     try {
       assert.throws(() => parseConfig({ emitCheck: ['src/**'] }, root), /"emitCheck" must be an object/)
-      assert.throws(() => parseConfig({ emitCheck: { 'src/**': 3 } }, root), /"emitCheck"/)
-      assert.throws(() => parseConfig({ emitCheck: { 'src/**': '' } }, root), /"emitCheck"/)
+      assert.throws(
+        () => parseConfig({ emitCheck: { 'src/**': 'tsconfig.json' } }, root),
+        /pin the exact typescript version/,
+      )
+      assert.throws(
+        () => parseConfig({ emitCheck: { 'src/**': { tsconfig: 'tsconfig.json' } } }, root),
+        /pin the exact typescript version/,
+      )
+      assert.throws(
+        () => parseConfig({ emitCheck: { 'src/**': { tsconfig: 'tsconfig.json', typescript: '^5.9.0' } } }, root),
+        /exact typescript version/,
+      )
+      assert.throws(
+        () => parseConfig({ emitCheck: { 'src/**': { tsconfig: '', typescript: '5.9.3' } } }, root),
+        /"emitCheck"/,
+      )
     } finally {
       cleanup()
     }

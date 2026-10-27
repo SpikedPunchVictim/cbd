@@ -1382,11 +1382,25 @@ test('C7: without per-shard attribution a load-only shared file means every test
 // for hunks outside every mapped function of a file the map knows.
 test('module-scope-unchanged: a module-scope hunk selects nothing and says why', () => {
   const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], {
-    moduleScopeUnchanged: new Set([SRC]),
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['module-scope-unchanged'])
   assert.deepEqual(result.tests, [])
   assert.equal(result.mode, 'subset')
+})
+
+test('module-scope-unchanged: the reason carries the compiler version', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], {
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
+  })
+  assert.deepEqual(result.reasons, [{ kind: 'module-scope-unchanged', file: SRC, typescript: '5.9.3' }])
+})
+
+test('module-scope-unchanged: the reason carries the compiler version', () => {
+  const result = select(makeMap(), [change(SRC, [{ start: 4, end: 4 }])], {
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
+  })
+  assert.deepEqual(result.reasons, [{ kind: 'module-scope-unchanged', file: SRC, typescript: '5.9.3' }])
 })
 
 test('module-scope-unchanged: without the verdict the same hunk still widens', () => {
@@ -1397,7 +1411,7 @@ test('module-scope-unchanged: without the verdict the same hunk still widens', (
 
 test('module-scope-unchanged: a function-interior hunk still selects that function only', () => {
   const result = select(makeMap(), [change(SRC, [{ start: 2, end: 2 }])], {
-    moduleScopeUnchanged: new Set([SRC]),
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['function'])
   assert.deepEqual(result.tests, [0])
@@ -1406,7 +1420,7 @@ test('module-scope-unchanged: a function-interior hunk still selects that functi
 test('module-scope-unchanged: a hunk in a function the map never recorded selects nothing', () => {
   // Line 50 is outside every mapped function; no recorded test ran that code.
   const result = select(makeMap(), [change(SRC, [{ start: 50, end: 50 }])], {
-    moduleScopeUnchanged: new Set([SRC]),
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['module-scope-unchanged'])
   assert.deepEqual(result.tests, [])
@@ -1414,7 +1428,7 @@ test('module-scope-unchanged: a hunk in a function the map never recorded select
 
 test('module-scope-unchanged: a hunk touching a function and module scope keeps only the function', () => {
   const result = select(makeMap(), [change(SRC, [{ start: 4, end: 5 }])], {
-    moduleScopeUnchanged: new Set([SRC]),
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['function', 'module-scope-unchanged'])
   assert.deepEqual(result.tests, [1])
@@ -1432,21 +1446,21 @@ test('module-scope-unchanged: a changed function that ran at load still selects 
     shardTests: [[0, 1]],
   })
   const result = select(map, [change(SRC, [{ start: 2, end: 2 }])], {
-    moduleScopeUnchanged: new Set([SRC]),
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
   })
   assert.deepEqual(result.tests, [0, 1])
 })
 
 test('module-scope-unchanged: an unknown file still takes the unknown-file ladder', () => {
   const result = select(makeMap(), [change('/repo/src/new.ts', [{ start: 1, end: 1 }])], {
-    moduleScopeUnchanged: new Set(['/repo/src/new.ts']),
+    moduleScopeUnchanged: new Map([['/repo/src/new.ts', '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['all:unknown-file'])
 })
 
 test('module-scope-unchanged: a file reached only at load still escalates', () => {
   const result = select(makeMap(), [change(LOADED_ONLY, [{ start: 1, end: 1 }])], {
-    moduleScopeUnchanged: new Set([LOADED_ONLY]),
+    moduleScopeUnchanged: new Map([[LOADED_ONLY, '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['all:load'])
 })

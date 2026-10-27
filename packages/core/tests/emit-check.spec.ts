@@ -5,7 +5,7 @@
  * is 7.x, which has no JS transpile API, and that case is a fallback test too).
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,7 @@ import type { Change } from '../src/changes.js'
 import { tempRepo } from './support/git.js'
 
 const TYPESCRIPT = realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url)))
+const PIN = (JSON.parse(readFileSync(join(TYPESCRIPT, 'package.json'), 'utf8')) as { version: string }).version
 
 interface Project {
   dir: string
@@ -37,7 +38,7 @@ function project(options: { compilerOptions?: object; withTypescript?: boolean }
 }
 
 const verdict = (p: Project, base: string, head: string): ReturnType<typeof compareModuleScope> =>
-  compareModuleScope(p.tsconfig, join(p.dir, 'src/a.ts'), [base], head)
+  compareModuleScope(p.tsconfig, join(p.dir, 'src/a.ts'), [base], head, PIN)
 
 test.group('compareModuleScope', () => {
   test('a type-only module-scope change is unchanged', ({ cleanup }) => {
@@ -120,8 +121,31 @@ test.group('compareModuleScope', () => {
       join(p.dir, 'src/a.ts'),
       [`export const a = 1\n`, `export const a = 2\n`],
       `export const a = 1\n`,
+      PIN,
     )
     assert.equal(result.unchanged, false)
+  })
+
+  test('a matching pin runs the check and reports the compiler version', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    const result = verdict(p, `export interface A {}\n`, `export interface B {}\n`)
+    assert.equal(result.unchanged, true)
+    assert.equal(result.typescript, PIN)
+  })
+
+  test('a pin that differs from the resolved compiler is a fallback that says so', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    const result = compareModuleScope(
+      p.tsconfig,
+      join(p.dir, 'src/a.ts'),
+      [`export interface A {}\n`],
+      `export interface B {}\n`,
+      '0.0.1',
+    )
+    assert.equal(result.unchanged, false)
+    assert.match(result.why ?? '', new RegExp(`resolved typescript ${PIN.replaceAll('.', '\\.')}, pinned 0\\.0\\.1`))
   })
 
   test('typescript missing from the project is a fallback', ({ cleanup }) => {
@@ -143,7 +167,7 @@ test.group('compareModuleScope', () => {
   test('an unreadable tsconfig is a fallback', ({ cleanup }) => {
     const p = project()
     cleanup(p.cleanup)
-    const result = compareModuleScope(join(p.dir, 'absent.json'), join(p.dir, 'src/a.ts'), ['x'], 'x')
+    const result = compareModuleScope(join(p.dir, 'absent.json'), join(p.dir, 'src/a.ts'), ['x'], 'x', PIN)
     assert.equal(result.unchanged, false)
   })
 
@@ -159,9 +183,10 @@ test.group('compareModuleScope', () => {
 })
 
 test.group('moduleScopeUnchangedFiles', () => {
-  const entryFor = (p: Project): { glob: string; tsconfig: string } => ({
+  const entryFor = (p: Project): { glob: string; tsconfig: string; typescript: string } => ({
     glob: join(p.dir, 'src/**'),
     tsconfig: p.tsconfig,
+    typescript: PIN,
   })
 
   function repoWith(base: Record<string, string>) {
@@ -189,11 +214,11 @@ test.group('moduleScopeUnchangedFiles', () => {
     const result = moduleScopeUnchangedFiles({
       root: repo.root,
       changes: [modified(repo.root, 'src/a.ts')],
-      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json') }],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }],
       refs: [repo.head()],
       worktree: true,
     })
-    assert.deepEqual([...result.files], [join(repo.root, 'src/a.ts')])
+    assert.deepEqual([...result.files.keys()], [join(repo.root, 'src/a.ts')])
   })
 
   test('a value change is not reported', ({ cleanup }) => {
@@ -203,7 +228,7 @@ test.group('moduleScopeUnchangedFiles', () => {
     const result = moduleScopeUnchangedFiles({
       root: repo.root,
       changes: [modified(repo.root, 'src/a.ts')],
-      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json') }],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }],
       refs: [repo.head()],
       worktree: true,
     })
@@ -215,7 +240,7 @@ test.group('moduleScopeUnchangedFiles', () => {
     cleanup(repo.cleanup)
     repo.write('src/b.js', `export const v = 1 // c\n`)
     repo.write('other/c.ts', `export const v = 1\n`)
-    const entries = [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json') }]
+    const entries = [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }]
     const result = moduleScopeUnchangedFiles({
       root: repo.root,
       changes: [
@@ -239,7 +264,7 @@ test.group('moduleScopeUnchangedFiles', () => {
     const result = moduleScopeUnchangedFiles({
       root: repo.root,
       changes: [modified(repo.root, 'src/new.ts')],
-      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json') }],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }],
       refs: [repo.head()],
       worktree: true,
     })
@@ -254,11 +279,28 @@ test.group('moduleScopeUnchangedFiles', () => {
     const result = moduleScopeUnchangedFiles({
       root: repo.root,
       changes: [modified(repo.root, 'src/a.ts')],
-      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json') }],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }],
       refs: [repo.head()],
       worktree: true,
     })
     assert.equal(result.files.size, 0)
+  })
+
+  test('a mismatched pin is reported once per entry as a warning and skips the file', ({ cleanup }) => {
+    const repo = repoWith({ 'src/a.ts': `export interface A {}\n`, 'src/b.ts': `export interface A {}\n` })
+    cleanup(repo.cleanup)
+    repo.write('src/a.ts', `export interface B {}\n`)
+    repo.write('src/b.ts', `export interface B {}\n`)
+    const result = moduleScopeUnchangedFiles({
+      root: repo.root,
+      changes: [modified(repo.root, 'src/a.ts'), modified(repo.root, 'src/b.ts')],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: '0.0.1' }],
+      refs: [repo.head()],
+      worktree: true,
+    })
+    assert.equal(result.files.size, 0)
+    assert.equal(result.warnings.length, 1)
+    assert.match(result.warnings[0]!, /emitCheck skipped for .*src\/\*\*: resolved typescript .*, pinned 0\.0\.1/)
   })
 
   test('an entry list of one unused project is harmless', () => {

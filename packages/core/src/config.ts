@@ -48,7 +48,7 @@ export interface CbdConfigFile {
    * emit decides whether a change to module scope is visible at runtime. The
    * project's own `typescript` is used; absent means today's module-scope rule.
    */
-  emitCheck?: Record<string, string>
+  emitCheck?: Record<string, { tsconfig: string; typescript: string }>
   unknownPolicy?: 'all' | 'ignore'
   /**
    * Per-glob overrides for a file the map has never seen. First matching entry
@@ -326,19 +326,45 @@ function unknownPolicyFor(
   })
 }
 
-/** `emitCheck`: glob -> tsconfig, both made absolute against the root. */
+/**
+ * `emitCheck`: glob -> `{ tsconfig, typescript }`, paths made absolute against the root.
+ *
+ * The exact compiler version is required. The check is only sound when the compiler
+ * that decides "identical emit" is the one the tests run with, so a bare tsconfig
+ * string is refused rather than guessed at.
+ */
 function emitCheck(raw: unknown, root: string, path: string): SelectConfig['emitCheck'] | undefined {
   if (raw === undefined) return undefined
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error(`cbd: ${path} "emitCheck" must be an object mapping globs to a tsconfig path`)
+    throw new Error(
+      `cbd: ${path} "emitCheck" must be an object mapping globs to { "tsconfig", "typescript" }`,
+    )
   }
-  return Object.entries(raw as Record<string, unknown>).map(([glob, tsconfig]) => {
-    if (glob === '' || typeof tsconfig !== 'string' || tsconfig === '') {
-      throw new Error(`cbd: ${path} "emitCheck" entry "${glob}" must map a glob to a non-empty tsconfig path`)
+  return Object.entries(raw as Record<string, unknown>).map(([glob, value]) => {
+    const where = `"emitCheck" entry "${glob}"`
+    const pin = `pin the exact typescript version the tests run with, e.g. { "tsconfig": "tsconfig.json", "typescript": "5.9.3" }`
+    if (glob === '' || value === null || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`cbd: ${path} ${where} must be an object; ${pin}`)
+    }
+    const record = value as Record<string, unknown>
+    for (const key of Object.keys(record)) {
+      if (key !== 'tsconfig' && key !== 'typescript') {
+        throw new Error(`cbd: ${path} ${where} has an unknown key "${key}"`)
+      }
+    }
+    const tsconfig = record.tsconfig
+    if (typeof tsconfig !== 'string' || tsconfig === '') {
+      throw new Error(`cbd: ${path} ${where} needs a non-empty "tsconfig" path`)
+    }
+    const version = record.typescript
+    if (version === undefined) throw new Error(`cbd: ${path} ${where} must ${pin}`)
+    if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
+      throw new Error(`cbd: ${path} ${where} "typescript" must be an exact typescript version such as "5.9.3", not a range`)
     }
     return {
       glob: isAbsolute(glob) ? glob : join(root, glob),
       tsconfig: isAbsolute(tsconfig) ? tsconfig : join(root, tsconfig),
+      typescript: version,
     }
   })
 }

@@ -829,13 +829,14 @@ export function createCbd(config: CbdConfig): Cbd {
       // Opt-in: the project's own TypeScript says which modified files kept their
       // module scope. Both the range's base and the map's commit must agree, since
       // the map recorded the module as it was at its own commit.
-      const moduleScopeUnchanged = moduleScopeUnchangedFiles({
+      const emitChecked = moduleScopeUnchangedFiles({
         root,
         changes,
         entries: config.select?.emitCheck ?? [],
         refs: [...new Set([since, loaded.map.commit])],
         worktree: options.worktree !== false,
-      }).files
+      })
+      const moduleScopeUnchanged = emitChecked.files
 
       const info = summarize(loaded)
       const base = selectCore(loaded.map, changes, {
@@ -858,7 +859,9 @@ export function createCbd(config: CbdConfig): Cbd {
         // The factory's list is what the scope filter dropped; `select` adds the
         // paths an `unknownPolicyFor` entry deliberately ignored. Merge both.
         ignored: [...new Set([...ignored, ...base.ignored])].sort(),
-        ...(stale.length === 0 ? {} : { warnings: [...base.warnings, ...stale] }),
+        ...(stale.length === 0 && emitChecked.warnings.length === 0
+          ? {}
+          : { warnings: [...base.warnings, ...stale, ...emitChecked.warnings] }),
       }
       const selected = selection.tests
         .map((index) => loaded.map.tests[index])

@@ -49,7 +49,7 @@ export type Reason =
   | { kind: 'always'; file?: string; tests: number[] }
   | { kind: 'shared-state'; file: string; tests: number[] }
   | { kind: 'env-changed'; keys: string[]; tests: number[] }
-  | { kind: 'module-scope-unchanged'; file: string }
+  | { kind: 'module-scope-unchanged'; file: string; typescript: string }
   | { kind: 'all'; why: AllWhy; file?: string }
 
 /**
@@ -194,7 +194,7 @@ export interface SelectConfig {
   order?: 'impact'
   /**
    * Opt-in compile-time check (`emitCheck` in the config): TypeScript files whose
-   * module scope is proven unchanged. Absolute globs mapped to a tsconfig; the
+   * module scope is proven unchanged. Absolute globs mapped to a tsconfig and a pinned compiler version; the
    * factory turns these into `moduleScopeUnchanged`. `select` never reads it.
    */
   emitCheck?: EmitCheckEntry[]
@@ -204,13 +204,17 @@ export interface SelectConfig {
    * every mapped function select nothing; function hunks, the load rule and the
    * unknown-file ladder are untouched.
    */
-  moduleScopeUnchanged?: ReadonlySet<string>
+  moduleScopeUnchanged?: ReadonlyMap<string, string>
 }
 
-/** One `emitCheck` entry: files matching `glob` are compared using `tsconfig`. */
+/**
+ * One `emitCheck` entry: files matching `glob` are compared using `tsconfig`, and
+ * only when the resolved compiler is exactly `typescript` (the version the tests run with).
+ */
 export interface EmitCheckEntry {
   glob: string
   tsconfig: string
+  typescript: string
 }
 
 const DEFAULT_TEST_FILES = [
@@ -777,11 +781,12 @@ export function select(
         // touch to the tests in the process that produced it; those tests shared
         // the module instance and are the honest answer. A map built before that
         // attribution existed has no answer, and falls back to rule 2's `all`.
-        if (config.moduleScopeUnchanged?.has(path) === true) {
+        const compiler = config.moduleScopeUnchanged?.get(path)
+        if (compiler !== undefined) {
           // The compiler proved the file's module scope identical at runtime, so
           // these hunks cannot change what any test observed at load. A hunk in a
           // function the map never recorded is here too: no recorded test ran it.
-          reasons.push({ kind: 'module-scope-unchanged', file: path })
+          reasons.push({ kind: 'module-scope-unchanged', file: path, typescript: compiler })
         } else if (loadFiles.has(path) || teardownFiles.has(path)) {
           selectLoadObservers(path, testsTouchingFile(path))
         } else if (betweenFiles.has(path) && betweenPolicy === 'all') {

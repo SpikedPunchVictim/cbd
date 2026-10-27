@@ -8,10 +8,12 @@ until a tag is pushed and the publish workflow runs.
 - **`emitCheck` stops erased TypeScript edits from selecting every test that loaded the file.** On a
   one-process suite the module-scope rule named every test for an edit to an import, interface or
   type alias, although the compiler erases them. The opt-in config key `emitCheck` maps globs to a
-  tsconfig; for each modified matching file CBD transpiles the base and current version with the
+  `{ tsconfig, typescript }` pair, where `typescript` is the exact compiler version the tests run
+  with (required: a bare tsconfig string is refused). For each modified matching file CBD transpiles the base and current version with the
   project's own `typescript` and that tsconfig, hollows out function bodies, and when the rest is
   identical the hunks outside every mapped function select nothing and the output says
-  `module-scope-unchanged`. Function hunks, the load rule, the unknown-file ladder and added,
+  `module-scope-unchanged` with the compiler version. A resolved version that differs from the pin
+  skips the check and adds a warning. Function hunks, the load rule, the unknown-file ladder and added,
   deleted or renamed files are unchanged, and an unresolvable `typescript` (including 7.x, which has
   no JavaScript transpile API), a transpile error or no matching glob keeps today's behaviour.
   No new dependency.

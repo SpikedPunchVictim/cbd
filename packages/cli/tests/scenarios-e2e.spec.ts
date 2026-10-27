@@ -28,7 +28,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -552,6 +552,7 @@ test('emitCheck: an erased module-scope edit selects nothing; a real one and a f
   const TYPESCRIPT = realpathSync(
     fileURLToPath(new URL('../../../core/node_modules/typescript5', import.meta.url)),
   )
+  const TS_VERSION = (JSON.parse(readFileSync(join(TYPESCRIPT, 'package.json'), 'utf8')) as { version: string }).version
   const original = `export interface Shape {
   n: number
 }
@@ -566,7 +567,7 @@ export function double(n: number): number {
     'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }),
     'cbd.config.json': JSON.stringify({
       include: ['src/**', 'tests/**'],
-      emitCheck: { 'src/**': 'tsconfig.json' },
+      emitCheck: { 'src/**': { tsconfig: 'tsconfig.json', typescript: TS_VERSION } },
     }),
     'tests/mod.spec.js': `import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
