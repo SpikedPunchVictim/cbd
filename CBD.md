@@ -141,8 +141,10 @@ and takes all of them at each boundary, in parallel.
 `connectToMainThread()` from a worker. Covers unit and integration tests that import the code under
 test, which is most projects.
 
-- Works inside worker threads (Vitest, Jest workers, Mocha parallel): each worker has its own
-  isolate and its own source, and an adapter in each worker records its own tests.
+- Works inside worker threads (Vitest, Jest workers): each worker has its own isolate and its own
+  source, and an adapter in each worker records its own tests. Mocha `--parallel` is not recorded:
+  its workers are child processes the `auto` entry does not record, and it warns that the shard
+  will be empty.
 - The inspector's in-process `post` completes synchronously on the main thread — measured, including
   inside `process.on('exit')`. `inProcessSource.takeSync()` is what makes a framework that does not
   await its hooks recordable (section 7.1).
@@ -646,7 +648,9 @@ With `CBD_SHARD` unset the environment is inert; `CBD_SELECTION` narrows the run
 which sets Jest's `testNamePattern` from the selection — escaped titles with ` > ` turned into `\s+`
 and anchored, because Jest joins the same parts with spaces. The config is loaded before the run and
 the pattern is the only filter that sees an expanded `test.each` row; a setup-file wrapper did not,
-and `.each` rows bypassed it (on a real Strapi run, refusing them failed 12 suites). Jest creates **one environment per test file**, and `setup()` is awaited before the test file
+and `.each` rows bypassed it (on a real Strapi run, refusing them failed 12 suites). With a selection
+set, `withCbd` also adds a reporter that fails the run when no test ran, instead of passing having run
+nothing. Jest creates **one environment per test file**, and `setup()` is awaited before the test file
 is evaluated — so the source is created then (the file's imports land in `@load`) and `teardown()`
 writes the footer. That gives **one shard per test file**, named from the file's path, so two files in
 one worker never append to one another and a worker killed mid-file leaves a shard with no footer

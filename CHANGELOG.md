@@ -5,6 +5,22 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A socket path written off as stale is attached again when a new process binds it.** A
+  `pid-N.sock` that failed twice was ignored for the rest of the run, so a later process that reused
+  pid N was never read and its coverage was missing. The verdict now belongs to the file it judged:
+  a different file under the same name starts over.
+- **A dead process found through its stale socket is no longer dropped from the window.** The
+  lifetime recovered from its exit snapshot arrived after the boundary had gathered its parts, and
+  was lost whenever the snapshot scan had already skipped the file. It now lands in the window that
+  found it.
+- **A take on a socket whose service has gone fails at once.** It waited out the whole reply
+  timeout, ten seconds by default, for an answer that could not come.
+- **A mocha or Jest run whose selection runs no test now fails.** A selection naming titles the
+  suite no longer has ended green having run nothing. Mocha exits 1 with a message, and
+  `withCbd` adds a reporter that fails Jest the same way. Vitest and `node:test` do not check yet,
+  because they have no run-level hook.
+- **`mocha --parallel` with a recording warns that the shard will be empty.** The tests run in worker
+  processes the recorder does not reach, so the shard was valid and empty with no sign of why.
 - **A child spawned at import, or by a hook between tests, now leaves its opaque mark.** The process
   tracker's opaque note and a declared environment variable were kept only inside a test window, so
   a spec that spawned a server at import or in a `beforeAll` lost them and was not widened. They now
