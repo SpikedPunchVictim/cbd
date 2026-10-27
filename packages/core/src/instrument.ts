@@ -1047,7 +1047,9 @@ async function start(dir: string): Promise<void> {
     server.listen(endpoint, () => {
       if (onPipe) {
         try {
-          fs.writeFileSync(socketPath, endpoint)
+          // Renamed into place so a collector listing the directory never reads it half written.
+          fs.writeFileSync(`${socketPath}.tmp`, endpoint)
+          fs.renameSync(`${socketPath}.tmp`, socketPath)
         } catch (error) {
           warn(
             `cannot publish its pipe at ${socketPath} (${String(error)}); this process records no coverage`,
