@@ -1018,7 +1018,7 @@ test.group('cbd explain and stats', () => {
 
       const unknown = invoke(root, 'reaches', 'adds', 'src/nope.ts')
       assert.equal(unknown.code, EXIT.ok)
-      assert.match(unknown.out[0]!, /does not reach src\/nope\.ts \(file not in the map/)
+      assert.match(unknown.out[0]!, /does not reach src[\\/]nope\.ts \(file not in the map/)
     } finally {
       cleanup()
     }

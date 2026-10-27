@@ -506,7 +506,7 @@ test.group('socketSource dispatch', (group) => {
       assert.ok(
         tight.meanUs > spaced.meanUs && tight.meanUs >= spaced.meanUs * 2,
         'a hundred-deep queue must drift far more than a drained one, or the depth is not the ' +
-          `mechanism: spaced mean ${spaced.meanUs.toFixed(1)}µs, tight mean ${tight.meanUs.toFixed(1)}µs`,
+          `mechanism: spaced mean ${spaced.meanUs.toFixed(1)}µs, tight mean ${tight.meanUs.toFixed(1)}µs DEBUG ${JSON.stringify({ spaced, tight })}`,
       )
     })
   })

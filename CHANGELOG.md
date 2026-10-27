@@ -5,6 +5,12 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **Windows: three path spellings no longer break the default root, the binding-read proof and Vitest module-scope reads.**
+  `cbd` compared git's `C:/…` top level against native `C:\…` paths while looking for a
+  `cbd.config.json`, so the default root was wrong; the TypeScript program behind `emitCheck`'s
+  binding-read proof was never matched to its file, so no module-scope edit narrowed; and the
+  Vitest adapter attributed a spec's module-scope reads to `C:/…/x.spec.ts` while its tests were
+  keyed by `C:\…\x.spec.ts`, so those reads selected nothing.
 - **A node:test run whose selection matches no test can now fail.** The adapter selects with the
   runner's name pattern, and `node --test` exits 0 when every test is filtered out, so a selection
   naming tests the suite no longer has passed having run nothing. `@spikedpunch/cbd-node-test/reporter`,

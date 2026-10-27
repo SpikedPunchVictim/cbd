@@ -104,8 +104,9 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
   if (recorder !== null) {
     recorder.runStart()
     // The test file imports after this setup file; a module-scope read belongs to
-    // the tests in this file, and the worker filepath is the scope.
-    recorder.specStart(file ?? null)
+    // the tests in this file, and the worker filepath is the scope. Through `absolute`
+    // so it is spelled as the tests' own file is: Vitest reports `C:/…` on Windows.
+    recorder.specStart(file === undefined ? null : absolute(file))
   }
   // The setup file runs once per test file; installs form a stack so the active
   // file's recorder receives the reads.

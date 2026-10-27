@@ -75,9 +75,12 @@ function analyze(
   const kind = /x$/i.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   const parsed = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind)
   const host = ts.createCompilerHost(options, true)
-  host.getSourceFile = (name: string) => (name === fileName ? parsed : undefined)
-  host.fileExists = (name: string) => name === fileName
-  host.readFile = (name: string) => (name === fileName ? text : undefined)
+  // TypeScript hands the host its own `/`-separated spelling of the root name, so a
+  // Windows path compared as written would never match and the program would be empty.
+  const isFile = (name: string): boolean => name.replaceAll('\\', '/') === fileName.replaceAll('\\', '/')
+  host.getSourceFile = (name: string) => (isFile(name) ? parsed : undefined)
+  host.fileExists = (name: string) => isFile(name)
+  host.readFile = (name: string) => (isFile(name) ? text : undefined)
   host.directoryExists = () => false
   host.getDirectories = () => []
   const program = ts.createProgram({
