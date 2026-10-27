@@ -488,7 +488,7 @@ function configChangedOutside(root: string, configFile: string, base: string): b
   try {
     const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
     const rel = relative(top, configFile)
-    if (rel === '' || (rel === '..' || rel.startsWith(`..${sep}`)) || isAbsolute(rel)) return false
+    if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return false
     const changed = git(top, ['diff', '--name-only', base, '--', rel]).replace(/\r?\n$/, '')
     if (changed !== '') return true
     const untracked = git(top, [

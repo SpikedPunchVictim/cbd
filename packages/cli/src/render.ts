@@ -26,7 +26,7 @@ import type { GcResult } from './gc.js'
 
 export const shown = (root: string, path: string): string => {
   const rel = relative(root, path)
-  return rel === '' || (rel === '..' || rel.startsWith(`..${sep}`)) ? path : rel
+  return rel === '' || rel === '..' || rel.startsWith(`..${sep}`) ? path : rel
 }
 
 export const plural = (count: number, one: string, many = `${one}s`): string =>

@@ -180,7 +180,8 @@ export function parseConfig(raw: unknown, root: string, path: string = configPat
       stateDir === '' ||
       isAbsolute(stateDir) ||
       rel === '' ||
-      (rel === '..' || rel.startsWith(`..${sep}`)) ||
+      rel === '..' ||
+      rel.startsWith(`..${sep}`) ||
       isAbsolute(rel)
     ) {
       throw new Error(
