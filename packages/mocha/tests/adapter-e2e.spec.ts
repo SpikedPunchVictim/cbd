@@ -9,7 +9,7 @@
  * true rather than aspirational.
  */
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -83,12 +83,12 @@ function makeProject(): { root: string; cleanup: () => void } {
  * first: under `cbd collect` this test process has both, and a child that inherits
  * them would write into its parent's shard.
  */
-function runMocha(
+function runMochaResult(
   root: string,
   shardPath: string | null,
   extra: NodeJS.ProcessEnv = {},
   args: string[] = [],
-): string {
+): { status: number | null; stdout: string; stderr: string } {
   const require = createRequire(join(packageRoot, 'package.json'))
   const mochaBin = require.resolve('mocha/bin/mocha.js')
   const env: NodeJS.ProcessEnv = { ...process.env }
@@ -103,20 +103,22 @@ function runMocha(
   if (shardPath !== null) env.CBD_SHARD = shardPath
   Object.assign(env, extra)
 
-  try {
-    const argv = [mochaBin, '--exit', join(root, 'spec/calc.spec.js'), ...args]
-    return execFileSync(process.execPath, argv, {
-      cwd: packageRoot,
-      env,
-      stdio: 'pipe',
-    }).toString()
-  } catch (error) {
-    const failed = error as { message: string; stdout?: Buffer; stderr?: Buffer }
-    throw new Error(
-      `mocha run failed: ${failed.message}\n` +
-        `${failed.stdout?.toString() ?? ''}\n${failed.stderr?.toString() ?? ''}`,
-    )
+  const argv = [mochaBin, '--exit', join(root, 'spec/calc.spec.js'), ...args]
+  const result = spawnSync(process.execPath, argv, { cwd: packageRoot, env, encoding: 'utf8' })
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr }
+}
+
+function runMocha(
+  root: string,
+  shardPath: string | null,
+  extra: NodeJS.ProcessEnv = {},
+  args: string[] = [],
+): string {
+  const result = runMochaResult(root, shardPath, extra, args)
+  if (result.status !== 0) {
+    throw new Error(`mocha run failed: status ${String(result.status)}\n${result.stdout}\n${result.stderr}`)
   }
+  return result.stdout
 }
 
 // Amendment 5, at its narrowest. A skipped test emits an end event in japa with
@@ -288,6 +290,48 @@ test('a selection and --invert are refused rather than run as the complement', (
       /--invert/,
       'the selected tests would have been skipped silently',
     )
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a selection that matches no test fails the run rather than passing it', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-selected-'))
+  try {
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['calc no such test'] }))
+    const result = runMochaResult(project.root, null, { CBD_SELECTION: selection })
+    assert.notEqual(result.status, 0, 'a run that executed nothing was reported as a pass')
+    assert.match(result.stderr, /no test ran/)
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('--parallel with a recording says the shard will be empty', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-parallel-'))
+  try {
+    const result = runMochaResult(project.root, join(dir, 'shard.jsonl'), {}, ['--parallel'])
+    assert.match(result.stderr, /--parallel/)
+  } finally {
+    project.cleanup()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a --parallel run whose workers ran the selected tests is not failed by the guard', () => {
+  const project = makeProject()
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-selected-'))
+  try {
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['calc adds two numbers'] }))
+    const result = runMochaResult(project.root, null, { CBD_SELECTION: selection }, ['--parallel'])
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.doesNotMatch(result.stderr, /no test ran/)
   } finally {
     project.cleanup()
     rmSync(dir, { recursive: true, force: true })

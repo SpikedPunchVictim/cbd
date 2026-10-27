@@ -72,6 +72,9 @@ function resolveMocha(): typeof import('mocha') {
   throw new Error(`@spikedpunch/cbd-mocha/auto could not resolve "mocha":\n${failures.join('\n')}`)
 }
 
+/** Set by the first process that checks a selection ran something, so no descendant does. */
+const GUARD_ENV = 'CBD_MOCHA_SELECTION_GUARD'
+
 const shardPath = process.env.CBD_SHARD || undefined
 // The runner owns this shard for this process only. A child a test spawns inherits
 // both the preload (`NODE_OPTIONS`) and this variable, and its own preload would
@@ -135,6 +138,38 @@ if (shardPath !== undefined || selecting) {
       this.grep(pattern)
     }
 
+    // Only the process that runs the suite checks that something ran. A test that
+    // spawns its own mocha, and every parallel worker (a file with none of the
+    // selected tests is normal there), inherits the selection and must not fail on it;
+    // the marker is set before any of them exist.
+    const guard = pattern !== undefined && process.env[GUARD_ENV] === undefined
+    if (guard) process.env[GUARD_ENV] = '1'
+    let ran = 0
+    const settle = (failures: number): number => {
+      if (!guard || ran > 0) return failures
+      process.stderr.write(
+        'cbd: the selection named tests, but no test ran, so the run proves nothing. ' +
+          'Failing the run rather than reporting a pass with nothing run.\n',
+      )
+      process.exitCode = 1
+      return failures === 0 ? 1 : failures
+    }
+    const counted = (runner: Mocha.Runner): Mocha.Runner => {
+      // A skipped test is reported as pending and is not "nothing ran".
+      runner.on('test end', () => void (ran += 1))
+      runner.on('pending', () => void (ran += 1))
+      return runner
+    }
+
+    if (recorder !== null && this.options.parallel === true) {
+      // Workers run the tests in other processes, where nothing records: this
+      // process sees no windows, and an empty shard is a valid one.
+      process.stderr.write(
+        'cbd: mocha is running with --parallel, whose tests run in worker processes the ' +
+          'recorder does not reach, so this run records no tests. Run without --parallel to collect.\n',
+      )
+    }
+
     if (recorder === null || adapter !== null) {
       // A second Mocha instance in the same process. VS Code's node runner builds
       // exactly one — the extra instance the mocha CLI constructs when it is
@@ -142,7 +177,7 @@ if (shardPath !== undefined || selecting) {
       // Recording two instances into one shard would interleave their windows and
       // lose the boundaries, so the first instance wins and the second runs
       // unrecorded rather than corrupting the first.
-      return originalRun.call(this, callback)
+      return counted(originalRun.call(this, (failures: number) => callback?.(settle(failures))))
     }
 
     const first = installMochaAdapter(this, recorder)
@@ -155,8 +190,9 @@ if (shardPath !== undefined || selecting) {
       stopReads?.()
       stopProcesses?.()
       stopProcesses = null
-      return callback?.(failures)
+      return callback?.(settle(failures))
     })
+    counted(runner)
     // One window per suite, when the recording asked for group granularity. The
     // listener is inert in per-test mode (`groupEnd` is a no-op). A suite end is
     // asynchronous, so attaching after `run` returns still sees every one; a
