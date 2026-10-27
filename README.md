@@ -105,7 +105,7 @@ arguments, so scripts can branch without parsing output. Use `cbd explain <file>
 tests reach a line, and `cbd reaches <test> <file>` for the inverse.
 
 `--patch` and `--change` answer what a prospective edit would select without applying it — no
-checkout to restore, no `dist` to rebuild. Patch paths are read relative to `--root` (the coordinate
+checkout to restore, no `dist` to rebuild. Patch and `--change` paths are read relative to `--root` (the coordinate
 `--since` prints), so a diff made at a nested `--root` is the one that resolves. `--emit-selection`
 writes the same v2 file adapters read, and removes a stale one when the answer is "all" or empty, or
 when `select` fails;

@@ -102,6 +102,26 @@ function opaqueTests(map: CoverageMap): Set<number> {
   return out
 }
 
+/**
+ * A map's tests as outcomes. A failure is in `nonGreen`, by identity alone, so its
+ * index (-1) names no touches and no reads: the other side of the flip carries them.
+ */
+function outcomesOf(map: CoverageMap): Array<{ test: TestEntry; index: number }> {
+  const out = map.tests.map((test, index) => ({ test, index }))
+  for (const entry of map.nonGreen ?? []) {
+    out.push({
+      test: {
+        title: entry.title,
+        file: entry.file,
+        ...(entry.ordinal === undefined ? {} : { ordinal: entry.ordinal }),
+        status: 'failed',
+      },
+      index: -1,
+    })
+  }
+  return out
+}
+
 const observation = (commit: string, builtAt: string, test: TestEntry): FlakyObservation => ({
   commit,
   builtAt,
@@ -164,16 +184,16 @@ export function findFlaky(options: FlakyOptions): FlakyResult {
     const opaqueBefore = opaqueTests(before)
     const opaqueAfter = opaqueTests(after)
     const prior = new Map<string, { test: TestEntry; index: number }>()
-    before.tests.forEach((test, at) => prior.set(keyOf(test), { test, index: at }))
+    for (const { test, index } of outcomesOf(before)) prior.set(keyOf(test), { test, index })
 
-    after.tests.forEach((test, at) => {
+    for (const { test, index: at } of outcomesOf(after)) {
       const earlier = prior.get(keyOf(test))
-      if (earlier === undefined) return
+      if (earlier === undefined) continue
       const from = earlier.test.status
       const to = test.status
-      if (from !== 'passed' && from !== 'failed') return
-      if (to !== 'passed' && to !== 'failed') return
-      if (from === to) return
+      if (from !== 'passed' && from !== 'failed') continue
+      if (to !== 'passed' && to !== 'failed') continue
+      if (from === to) continue
 
       const relevant = (files: Set<string> | undefined): boolean =>
         files !== undefined && [...files].some((file) => changed.has(file))
@@ -193,7 +213,7 @@ export function findFlaky(options: FlakyOptions): FlakyResult {
         underListed(dirsAfter.get(at)) ||
         (spec !== undefined && changed.has(spec))
       ) {
-        return
+        continue
       }
 
       const key = keyOf(test)
@@ -203,7 +223,7 @@ export function findFlaky(options: FlakyOptions): FlakyResult {
         to: observation(after.commit, after.builtAt, test),
       })
       groups.set(key, group)
-    })
+    }
   }
 
   return {

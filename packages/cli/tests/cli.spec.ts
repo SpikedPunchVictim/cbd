@@ -322,6 +322,18 @@ test.group('cbd select', () => {
     }
   })
 
+  test('--change reads a relative path against --root, the base explain and --patch use', () => {
+    const { root, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const result = invoke(join(root, 'src'), 'select', '--root', root, '--change', 'src/a.ts:2')
+      assert.equal(result.code, EXIT.ok)
+      assert.match(result.out.at(-1)!, /^2 tests for 1 changed file/)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('--patch and --since are exclusive; a malformed --change is a usage error', () => {
     const { root, cleanup } = prepared()
     try {
@@ -1586,6 +1598,74 @@ test('a suite removed from the invocation loses its stale file', () => {
     rmSync(dir, { recursive: true, force: true })
     cleanup()
   }
+})
+
+test.group('cbd flaky on maps a real build writes', () => {
+  // A build keeps only green tests in `tests`; a failure is `nonGreen`, identity only.
+  const passing = (root: string, commit: string, builtAt: string): CoverageMap => ({
+    version: MAP_VERSION,
+    commit,
+    builtAt,
+    tests: [{ title: 't', file: join(root, 'tests/a.spec.ts'), status: 'passed' }],
+    files: { [join(root, 'src/a.ts')]: { 'f@0': { startLine: 1, endLine: 2, tests: [0] } } },
+    load: [],
+    between: [],
+    teardown: [],
+    seen: [join(root, 'src/a.ts'), join(root, 'tests/a.spec.ts')],
+    shards: ['shard'],
+  })
+  const failing = (root: string, commit: string, builtAt: string): CoverageMap => ({
+    ...passing(root, commit, builtAt),
+    tests: [],
+    files: {},
+    nonGreen: [{ file: join(root, 'tests/a.spec.ts'), title: 't' }],
+  })
+
+  test('a pass that turns into a failure with nothing relevant changed is reported', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    try {
+      repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      repo.write('README.md', 'one\n')
+      const a = repo.commit('a')
+      repo.write('README.md', 'two\n')
+      const b = repo.commit('b')
+
+      saveMap(root, passing(root, a, '2026-01-01T00:00:00.000Z'))
+      saveMap(root, failing(root, b, '2026-01-02T00:00:00.000Z'))
+
+      const result = invoke(root, 'flaky', '--format', 'json')
+      const parsed = JSON.parse(result.out.join('\n')) as {
+        flaky: Array<{ title: string; flips: Array<{ from: { status: string }; to: { status: string } }> }>
+      }
+      assert.equal(parsed.flaky.length, 1)
+      assert.equal(parsed.flaky[0]!.flips[0]!.from.status, 'passed')
+      assert.equal(parsed.flaky[0]!.flips[0]!.to.status, 'failed')
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('a failure after a change to what the test reached is not called flaky', () => {
+    const repo = tempRepo()
+    const root = realpathSync(repo.root)
+    try {
+      repo.write('src/a.ts', 'export function f() {\n  return 1;\n}\n')
+      repo.write('tests/a.spec.ts', "import { f } from '../src/a.js'\n")
+      const a = repo.commit('a')
+      repo.write('src/a.ts', 'export function f() {\n  return 2;\n}\n')
+      const b = repo.commit('b')
+
+      saveMap(root, passing(root, a, '2026-01-01T00:00:00.000Z'))
+      saveMap(root, failing(root, b, '2026-01-02T00:00:00.000Z'))
+
+      const result = invoke(root, 'flaky', '--format', 'json')
+      assert.deepEqual((JSON.parse(result.out.join('\n')) as { flaky: unknown[] }).flaky, [])
+    } finally {
+      repo.cleanup()
+    }
+  })
 })
 
 test.group('cbd flaky reads', () => {

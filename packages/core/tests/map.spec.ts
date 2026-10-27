@@ -115,6 +115,27 @@ test('many tests sharing many functions merge in linear time', () => {
   assert.ok(elapsed < 750, `merging took ${String(Math.round(elapsed))} ms`)
 })
 
+// A failed test's window is not trustworthy, so it earns no touches and no entry
+// in `tests`; its outcome is still history, kept apart where selection never looks.
+test('a failed test is listed as non-green and never as a test of the map', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [
+        testRecord('adds', [ref(A, 'add@0', 1, 3)]),
+        { ...testRecord('breaks', [ref(A, 'add@0', 1, 3)], 'failed'), file: B },
+        testRecord('later', [], 'skipped'),
+      ]),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(
+    map.tests.map((t) => t.title),
+    ['adds'],
+  )
+  assert.deepEqual(map.nonGreen, [{ file: B, title: 'breaks' }])
+  assert.deepEqual(testsForFunction(map, A, 'add@0').map((t) => t.title), ['adds'])
+})
+
 // The query the tool exists to answer.
 test('a function maps back to the tests that reach it', () => {
   const map = mergeShards(

@@ -92,7 +92,7 @@ select exits 0 when it selected a subset and 3 when the answer is "run all",
 so a script can branch without parsing output. Failures exit 1; bad arguments 2.
 --patch and --change ask what a prospective edit would select without applying it:
 the patch is parsed by the same diff reader --since uses, and the changed lines are
-old-side, as a map always is. Patch paths are read relative to --root, the same
+old-side, as a map always is. Patch and --change paths are read relative to --root, the same
 coordinate --since prints. --order impact keeps the same selected set but puts a
 changed function first, then module scope, reads, changed test files, opaque
 declarations and alwaysSelect, so a runner that follows the order fails early.
@@ -395,11 +395,11 @@ function changesFrom(parsed: ParsedArgs): Change[] | undefined {
       throw new UsageError(`the patch at ${parsed.patch} changes no files`)
     }
   }
-  if (parsed.change !== undefined) changes.push(changeFrom(parsed.change, parsed.cwd))
+  if (parsed.change !== undefined) changes.push(changeFrom(parsed.change, parsed.root))
   return changes
 }
 
-function changeFrom(spec: string, cwd: string): Change {
+function changeFrom(spec: string, root: string): Change {
   // The path may itself contain a colon (a Windows drive, a URL-looking name), so
   // the range is what follows the LAST one.
   const colon = spec.lastIndexOf(':')
@@ -417,7 +417,7 @@ function changeFrom(spec: string, cwd: string): Change {
   }
   const line = { start, end }
   return {
-    path: resolve(cwd, file),
+    path: resolve(root, file),
     status: 'M',
     hunks: [line],
     newHunks: [line],

@@ -110,6 +110,14 @@ export interface CoverageMap {
    */
   readGroups?: ReadGroup[]
   /**
+   * Tests whose recorded outcome was a failure, by identity alone.
+   *
+   * A failed test's window is not trustworthy, so it is never in `tests` and has no
+   * touches; selection does not read this. It exists so the history of maps can say
+   * a test failed at a commit (`cbd flaky`).
+   */
+  nonGreen?: Array<{ file: string | null; title: string; ordinal?: number }>
+  /**
    * Tests that declared an invisible dependency, by the reason they gave.
    *
    * `recordOpaque` is the honest fallback for a test that spawns a tool or drives
@@ -388,6 +396,7 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
   const dirReads = new Map<string, Set<number>>()
   const readGroups: ReadGroup[] = []
   const opaque = new Map<string, Set<number>>()
+  const failedTests = new Map<string, { file: string | null; title: string; ordinal?: number }>()
   const included: string[] = []
   const partial = new Set<string>()
   const unhealthy: string[] = []
@@ -521,7 +530,16 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
         attributedTests.push(test)
         continue
       }
-      if (!options.includeNonGreen && test.status !== 'passed') continue
+      if (!options.includeNonGreen && test.status !== 'passed') {
+        if (test.status === 'failed') {
+          failedTests.set(testKey, {
+            file: test.file,
+            title: test.title,
+            ...(test.ordinal === undefined || test.ordinal === 0 ? {} : { ordinal: test.ordinal }),
+          })
+        }
+        continue
+      }
       const index = indexOfTest(test)
       allTests.push(index)
       if (test.touches.length > 0) touchedTests.add(testKey)
@@ -684,6 +702,11 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     addTouches(index, test.touches)
   }
 
+  const nonGreen = [...failedTests]
+    .filter(([key]) => !testIndex.has(key))
+    .map(([, entry]) => entry)
+    .sort((a, b) => a.title.localeCompare(b.title) || (a.file ?? '').localeCompare(b.file ?? ''))
+
   const sortedFiles: Record<string, Record<string, FunctionEntry>> = {}
   for (const file of [...files.keys()].sort()) {
     const byKey = files.get(file)!
@@ -733,6 +756,8 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     dirReads: indexed(dirReads),
     ...(readGroups.length === 0 ? {} : { readGroups }),
     ...(opaque.size === 0 ? {} : { opaque: indexed(opaque) }),
+    // A test that failed in one shard and passed in another is in the map as green.
+    ...(nonGreen.length === 0 ? {} : { nonGreen }),
     seen: [...seen].sort(),
     shards: included,
     dirty: options.dirty === true,
@@ -1111,6 +1136,7 @@ export function carryMap(
     tests,
     files,
     ...(Object.keys(opaque).length === 0 ? {} : { opaque }),
+    ...(next.nonGreen === undefined ? {} : { nonGreen: next.nonGreen }),
     reads: merge(next.reads, readByTest),
     dirReads: merge(next.dirReads, dirByTest),
     ...(readGroups.length === 0 ? {} : { readGroups }),
@@ -1232,6 +1258,13 @@ function mapPaths(
       Object.entries(map.files).map(([file, functions]) => [to(root, file), functions]),
     ),
     ...(map.partial === undefined ? {} : { partial: map.partial.map((path) => to(root, path)) }),
+    ...(map.nonGreen === undefined
+      ? {}
+      : {
+          nonGreen: map.nonGreen.map((entry) =>
+            entry.file === null ? entry : { ...entry, file: to(root, entry.file) },
+          ),
+        }),
     ...(map.dirtyFiles === undefined
       ? {}
       : { dirtyFiles: map.dirtyFiles.map((path) => to(root, path)) }),

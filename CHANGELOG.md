@@ -17,6 +17,19 @@ until a tag is pushed and the publish workflow runs.
 - **The instrument's own look for a declared source map is no longer reported as a read.** It
   opened each script's file through the tracked `fs`, so every compiled file counted as a
   dependency of the tests that ran against the service and over-selected.
+- **`cbd flaky` can now report a flip to a failure.** A map holds only green tests, so a test that
+  failed was absent rather than failed and no pair of maps ever disagreed. A build now records each
+  failed test by identity in a `nonGreen` list, which selection never reads and which adds no
+  touches, and `flaky` compares it with the neighbouring map's green entry.
+- **`select --change <path>:<line>` reads a relative path against `--root`**, as `--patch` and
+  `explain` do, instead of against the working directory. From a subdirectory the same spelling
+  named two different files.
+- **mocha and japa record a spec reached through a symlink under its real path.** The map's keys are
+  real paths and the other adapters already resolved the runner's spelling, so such a spec was
+  recorded under a name selection never matched.
+- **Building a map from thousands of tests that share functions is linear.** Each test added to a
+  function scanned the tests already listed on it, so 8,000 tests over 200 shared functions took
+  1.5 s and each doubling quadrupled it.
 - **A socket path written off as stale is attached again when a new process binds it.** A
   `pid-N.sock` that failed twice was ignored for the rest of the run, so a later process that reused
   pid N was never read and its coverage was missing. The verdict now belongs to the file it judged:

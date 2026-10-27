@@ -1053,7 +1053,7 @@ export type Reason =
 `cbd`'s verbs and the exported API answer the map's two directions. The map on disk is
 `<stateDir>/maps/<commit>/map.json` (or `<mapsDir>/<commit>/map.json` when `mapsDir` is set); its
 shape (`CoverageMap`: `tests`, `files`, buckets, `seen`, `shardTests`, `loadShards`, `reads`,
-`dirReads`, `readGroups`, `opaque`, `partial` and `carried`) is the supported export for another tool, and every
+`dirReads`, `readGroups`, `opaque`, `nonGreen`, `partial` and `carried`) is the supported export for another tool, and every
 query below is derived from it.
 The map carries `version: 2`; this build also reads version 1, and an older build refuses a
 version 2 map rather than ignore `readGroups` and under-select.
