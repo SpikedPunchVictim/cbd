@@ -324,6 +324,20 @@ test('stateDir must name a directory under the root', () => {
   }
 })
 
+test('mapsDir must not be the repository root or a parent of it', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-maps-')))
+  try {
+    for (const mapsDir of ['.', '..', './', root, join(root, '..')]) {
+      assert.throws(() => parseConfig({ mapsDir }, root), /"mapsDir" must be a directory of its own/, mapsDir)
+    }
+    for (const mapsDir of ['maps', '.cbd/maps', '../shared-maps', join(tmpdir(), 'cbd-shared-maps')]) {
+      assert.doesNotThrow(() => parseConfig({ mapsDir }, root), mapsDir)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('an empty include or exclude is refused instead of matching nothing', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-include-')))
   try {

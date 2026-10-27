@@ -111,7 +111,9 @@ shard with no footer (an interrupted run) when that is deliberate.
 ### `cbd gc`
 
 Keeps the newest `--keep` runs of each kind (default 10) under the state directory, always keeps the
-map `select` is using, and touches nothing else in `.cbd`.
+map `select` is using, and touches nothing else in `.cbd`. A run's shards (one per test file for
+Jest, Vitest and node:test) are grouped by their run name and kept or removed together; only
+directories named like a commit and holding a `map.json` count as maps.
 
 ## Typical workflows
 

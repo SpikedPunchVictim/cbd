@@ -21,7 +21,7 @@
  * run into one window.
  */
 import { readFileSync, realpathSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { CbdConfig } from './factory.js'
 import { matchesAnyGlob } from './glob.js'
 import type { AlwaysSelectEntry, SelectConfig } from './select.js'
@@ -151,6 +151,16 @@ const policy = (raw: unknown, key: string, path: string): 'all' | 'ignore' | und
   return raw
 }
 
+/** The real path of the deepest part that exists, so a symlinked spelling cannot hide an ancestor. */
+function resolveExisting(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    const parent = dirname(path)
+    return parent === path ? path : join(resolveExisting(parent), basename(path))
+  }
+}
+
 /** A repository-relative glob becomes absolute, because the map is keyed absolutely. */
 const absoluteGlobs = (root: string, globs: string[]): string[] =>
   globs.map((glob) => (isAbsolute(glob) ? glob : join(root, glob)))
@@ -186,6 +196,19 @@ export function parseConfig(raw: unknown, root: string, path: string = configPat
     ) {
       throw new Error(
         `cbd: ${path} "stateDir" must name a non-empty directory under the root, not "${stateDir}"`,
+      )
+    }
+  }
+  const mapsDir = file.mapsDir
+  if (typeof mapsDir === 'string') {
+    // `gc` prunes this directory's children. The root or one of its ancestors
+    // holds the sources, so it can only be a mistake; a shared directory outside
+    // the root (an absolute path) is the supported case.
+    const resolved = resolveExisting(resolve(canonical, mapsDir))
+    const rel = relative(resolved, canonical)
+    if (!rel.startsWith('..') && !isAbsolute(rel)) {
+      throw new Error(
+        `cbd: ${path} "mapsDir" must be a directory of its own, not the repository root or a parent of it: "${mapsDir}"`,
       )
     }
   }

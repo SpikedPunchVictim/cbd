@@ -108,7 +108,8 @@ collector lock is checked before anything runs.
 
 gc keeps the newest --keep runs of each kind (default 10) under the state
 directory and removes the rest. It always keeps the map select is using, and
-never touches anything else in .cbd.
+never touches anything else in .cbd. A run's shards (one per test file
+for Jest, Vitest and node:test) are kept or removed together.
 
 reaches answers the question explain asks backwards: does this one test reach this
 file or line? A bare title that names more than one test is refused; --file picks
@@ -160,7 +161,7 @@ function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
     ...(parsed.commit === undefined ? {} : { commit: parsed.commit }),
     ...(changes === undefined ? { worktree: parsed.worktree } : { changes }),
     ...(parsed.order === undefined ? {} : { order: parsed.order }),
-    strict: parsed.strict,
+    ...(parsed.strict === undefined ? {} : { strict: parsed.strict }),
   })
   for (const warning of result.selection.warnings) io.err(`cbd: warning: ${warning}`)
   // A patch made at the repository top level has top-level paths; under a nested

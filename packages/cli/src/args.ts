@@ -40,7 +40,8 @@ export interface ParsedArgs {
   partial: boolean
   /** Diff against the working tree (default) or against HEAD. */
   worktree: boolean
-  strict: boolean
+  /** Only when `--strict` or `--no-strict` was given; otherwise the config's `strict` decides. */
+  strict?: boolean
   /** `collect`: resolve a selection before running. Default true. */
   select: boolean
   /** `collect`: merge the shards into a map afterwards. Default true. */
@@ -487,6 +488,7 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
       : explicitRoot === undefined
         ? defaultRoot(cwd)
         : canonical(resolve(cwd, explicitRoot))
+  const strict = flags.get('strict')
   return {
     command,
     format: formatOf(flags, command),
@@ -511,7 +513,7 @@ export function parseArgs(argv: string[], cwd: string): ParsedArgs {
     partial: flags.get('partial') === true,
     // The factory diffs the worktree by default; `--no-worktree` is the HEAD side.
     worktree: flags.get('worktree') !== false,
-    strict: flags.get('strict') === true,
+    ...(typeof strict === 'boolean' ? { strict } : {}),
     // Both default on: an automatic run selects, and a collecting run builds.
     select: flags.get('select') !== false,
     build: flags.get('build') !== false,

@@ -19,6 +19,17 @@ until a tag is pushed and the publish workflow runs.
   cap the title was offered only as its split parts, never as the single stored title a runner may
   report; both readings are now offered.
 
+- **`cbd gc` no longer deletes directories that are not maps.** Every directory under the maps
+  directory was a prune candidate, so `"mapsDir": "."` with `cbd gc --keep 1` removed `src/`, `docs/`
+  and `tests/`. `gc` now prunes only directories named like a full commit id that contain a
+  `map.json`, and `cbd.config.json` rejects a `mapsDir` that is the repository root or a parent of it.
+- **`cbd gc --keep` keeps a whole run.** Jest, Vitest and node:test write one shard per test file, and
+  `--keep 10` counted files, so it deleted most of the newest run and the next `build` silently missed
+  those tests. Shards are now grouped by run (the name up to the first dot) and kept or removed
+  together, aged by the newest file in the group.
+- **`strict: true` in `cbd.config.json` now takes effect for `cbd select`.** The CLI always passed
+  `strict: false` when `--strict` was absent, overriding the config. The flag now overrides the config
+  only when given; `--no-strict` turns a configured `strict` off.
 - **`select --change` and `explain` no longer let `emitCheck` drop tests for a what-if.** A `--change`
   or `--patch` edits no file, so `emitCheck` compared a file with itself, found its module scope
   unchanged, and the `module-scope-unchanged` verdict suppressed the load-observer escalation: on the

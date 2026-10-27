@@ -3,20 +3,24 @@
  *
  * Two pools under the state directory, pruned independently:
  *
- *   `<state>/shards/*`   one raw recording run each — ~50 MB on a real suite,
- *                        and the reason a retention policy exists at all;
+ *   `<state>/shards/*`   the recordings of runs — ~50 MB on a real suite, and the
+ *                        reason a retention policy exists at all. A run can write
+ *                        many files (one per test file for Jest, Vitest and
+ *                        node:test), so they are grouped by run and kept or removed
+ *                        whole;
  *   `<state>/maps/<c>`   one merged map per commit, small but unbounded.
  *
- * `--keep <n>` keeps the newest `n` of each pool by mtime, so the answer does not
- * depend on how a shard happens to be named. The map `select` would use is kept
+ * `--keep <n>` keeps the newest `n` runs of the shard pool and the newest `n` maps,
+ * by mtime (a run's age is its newest file's). The map `select` would use is kept
  * even when it is older than that, because deleting the map the next command
  * depends on turns a working repository into one that fails — the same reason
  * `collect` never hands the build a half-written map.
  *
- * **Deliberately narrow.** Only regular files directly in `shards/` and
- * directories directly in `maps/` are candidates. Anything else a person puts in
- * `.cbd` — a config, a scratch file, a nested directory — is not this command's
- * to delete, and a missing state directory is an empty pool rather than an error.
+ * **Deliberately narrow.** Only regular files directly in `shards/` and directories
+ * directly in `maps/` that are named like a commit and hold a `map.json` are
+ * candidates. Anything else a person puts in `.cbd` — a config, a scratch file, a
+ * nested directory — is not this command's to delete, and a missing state directory
+ * is an empty pool rather than an error.
  */
 import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -54,42 +58,96 @@ export interface GcResult {
 }
 
 interface Candidate {
-  path: string
+  /** The pool entry's identity: the directory for a map, the run's key for shards. */
+  key: string
+  /** Everything removed with this entry. One path for a map, every shard file of a run. */
+  paths: string[]
   mtimeMs: number
 }
 
-/**
- * Direct children that may be pruned.
- *
- * `filter` is what keeps this from being `rm -rf`: shards are files, maps are
- * directories, and neither pool accepts anything else.
- */
-function candidates(dir: string, kind: 'file' | 'dir'): Candidate[] {
-  let entries
+/** A full commit id, SHA-1 or SHA-256 — the only names `mapDir` ever creates. */
+const COMMIT_NAME = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+
+function listDir(dir: string) {
   try {
-    entries = readdirSync(dir, { withFileTypes: true })
+    return readdirSync(dir, { withFileTypes: true })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
     throw error
   }
+}
+
+// Another gc, or a collect pruning the same directory, can remove an entry between
+// the listing and the stat. One that is gone is not a candidate, and is not a
+// reason to abort the whole prune.
+function mtimeOf(path: string): number | undefined {
+  try {
+    return statSync(path).mtimeMs
+  } catch {
+    return undefined
+  }
+}
+
+/** Newest first; the key breaks a tie so same-millisecond entries prune in a stable order. */
+function newestFirst(pool: Candidate[]): Candidate[] {
+  return pool.sort((a, b) =>
+    a.mtimeMs === b.mtimeMs ? (a.key < b.key ? 1 : -1) : b.mtimeMs - a.mtimeMs,
+  )
+}
+
+/**
+ * Map directories that may be pruned.
+ *
+ * `mapsDir` is user-configurable and can name a directory that holds other things
+ * (`.` is the repository itself), so a directory is a candidate only if it is named
+ * like a commit and holds a `map.json`. This is what keeps gc from being `rm -rf`.
+ */
+function mapCandidates(dir: string): Candidate[] {
   const out: Candidate[] = []
-  for (const entry of entries) {
-    if (!(kind === 'file' ? entry.isFile() : entry.isDirectory())) continue
+  for (const entry of listDir(dir)) {
+    if (!entry.isDirectory() || !COMMIT_NAME.test(entry.name)) continue
     const path = join(dir, entry.name)
-    // Another gc, or a collect pruning the same directory, can remove this between
-    // the listing and the stat. A file that is gone is not a candidate, and is not
-    // a reason to abort the whole prune.
-    try {
-      out.push({ path, mtimeMs: statSync(path).mtimeMs })
-    } catch {
-      continue
+    if (!existsSync(join(path, 'map.json'))) continue
+    const mtimeMs = mtimeOf(path)
+    if (mtimeMs !== undefined) out.push({ key: path, paths: [path], mtimeMs })
+  }
+  return newestFirst(out)
+}
+
+/**
+ * The run a shard belongs to: its name up to the first dot.
+ *
+ * Adapters derive per-file and service shards beside the run's base name,
+ * `<stem>.<leaf>.ndjson` (Jest, Vitest and node:test write one per test file), and
+ * `collect` names the base `collect-<time>-<pid>.ndjson`. Pruning by file would
+ * keep a fraction of the newest run, and the next build would miss the tests whose
+ * shards were cut.
+ */
+function runOf(name: string): string {
+  const dot = name.indexOf('.')
+  return dot <= 0 ? name : name.slice(0, dot)
+}
+
+/**
+ * Shard files grouped by run, each group aged by its newest file. Only regular
+ * files directly in `shards/` are candidates; anything nested is left alone.
+ */
+function shardCandidates(dir: string): Candidate[] {
+  const groups = new Map<string, Candidate>()
+  for (const entry of listDir(dir)) {
+    if (!entry.isFile()) continue
+    const path = join(dir, entry.name)
+    const mtimeMs = mtimeOf(path)
+    if (mtimeMs === undefined) continue
+    const key = join(dir, runOf(entry.name))
+    const group = groups.get(key)
+    if (group === undefined) groups.set(key, { key, paths: [path], mtimeMs })
+    else {
+      group.paths.push(path)
+      group.mtimeMs = Math.max(group.mtimeMs, mtimeMs)
     }
   }
-  // Newest first, and the name breaks a tie so two runs recorded in the same
-  // millisecond are pruned in a stable order.
-  return out.sort((a, b) =>
-    a.mtimeMs === b.mtimeMs ? (a.path < b.path ? 1 : -1) : b.mtimeMs - a.mtimeMs,
-  )
+  return newestFirst([...groups.values()])
 }
 
 function sizeOf(path: string): number {
@@ -113,22 +171,28 @@ function prune(
   keep: number,
   essential: string | undefined,
 ): { kept: number; removed: number; bytes: number } {
-  const keepSet = new Set(pool.slice(0, keep).map((entry) => entry.path))
+  const keepSet = new Set(pool.slice(0, keep).map((entry) => entry.key))
   if (essential !== undefined) keepSet.add(essential)
 
+  let kept = 0
   let removed = 0
   let bytes = 0
   for (const entry of pool) {
-    if (keepSet.has(entry.path)) continue
-    try {
-      bytes += sizeOf(entry.path)
-    } catch {
-      // Removed by a concurrent run between the listing and here.
+    if (keepSet.has(entry.key)) {
+      kept += entry.paths.length
+      continue
     }
-    rmSync(entry.path, { recursive: true, force: true })
-    removed += 1
+    for (const path of entry.paths) {
+      try {
+        bytes += sizeOf(path)
+      } catch {
+        // Removed by a concurrent run between the listing and here.
+      }
+      rmSync(path, { recursive: true, force: true })
+      removed += 1
+    }
   }
-  return { kept: pool.length - removed, removed, bytes }
+  return { kept, removed, bytes }
 }
 
 export function gc(options: GcOptions): GcResult {
@@ -139,7 +203,7 @@ export function gc(options: GcOptions): GcResult {
   // same directory would make the essential-map set miss the map it just found.
   const root = realpathSync(options.root)
   const stateDir = options.stateDir ?? '.cbd'
-  const shards = prune(candidates(join(root, stateDir, 'shards'), 'file'), options.keep, undefined)
+  const shards = prune(shardCandidates(join(root, stateDir, 'shards')), options.keep, undefined)
 
   // `select` reads the nearest map in the commit history, which is not
   // necessarily the newest one built — a recorded commit can sit under newer
@@ -151,7 +215,7 @@ export function gc(options: GcOptions): GcResult {
   const mapsRoot =
     options.mapsDir === undefined ? join(root, stateDir, 'maps') : resolve(root, options.mapsDir)
   const maps = prune(
-    candidates(mapsRoot, 'dir'),
+    mapCandidates(mapsRoot),
     options.keep,
     essential !== undefined && existsSync(essential) ? essential : undefined,
   )

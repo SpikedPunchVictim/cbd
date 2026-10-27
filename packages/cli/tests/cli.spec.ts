@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import { MAP_VERSION, saveMap, type CoverageMap } from '@spikedpunch/cbd'
 import { defaultRoot, parseArgs } from '../src/args.js'
+import { gc } from '../src/gc.js'
 import { EXIT } from '../src/cli.js'
 import { tempRepo } from './support/git.js'
 import { invoke, prepared, shardText } from './support/repo.js'
@@ -598,6 +599,24 @@ test.group('cbd select', () => {
     }
   })
 
+  test('strict from cbd.config.json applies to select unless a flag overrides it', () => {
+    const { repo, root, cleanup } = prepared({ config: { strict: true, include: ['src/**'] } })
+    try {
+      // A map built from a dirty tree: strict refuses to trust it.
+      repo.write('notes.txt', 'scratch\n')
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const fromConfig = invoke(root, 'select', '--format', 'json')
+      assert.equal((JSON.parse(fromConfig.out.join('\n')) as { selection: { mode: string } }).selection.mode, 'all')
+      assert.equal(invoke(root, 'select', '--strict').code, EXIT.all)
+      const relaxed = invoke(root, 'select', '--no-strict')
+      assert.notEqual(relaxed.code, EXIT.all, relaxed.out.join('\n'))
+    } finally {
+      cleanup()
+    }
+  })
+
   test('--format json carries the selection and the resolved tests', () => {
     const { repo, root, cleanup } = prepared()
     try {
@@ -1136,6 +1155,9 @@ test.group('cbd explain and stats', () => {
 })
 
 test.group('cbd gc', () => {
+  /** A map directory name, which gc only prunes when it is a full commit id. */
+  const H = (char: string): string => char.repeat(40)
+
   /** Makes an old file or directory, so "newest" is the test's decision. */
   const aged = (path: string, hours: number): void => {
     const when = new Date(Date.UTC(2026, 9, 1) + hours * 3_600_000)
@@ -1156,7 +1178,7 @@ test.group('cbd gc', () => {
         aged(path, index)
       }
       const maps = join(root, '.cbd', 'maps')
-      for (const [index, name] of ['m1', 'm2', 'm3', 'm4'].entries()) {
+      for (const [index, name] of [H('1'), H('2'), H('3'), H('4')].entries()) {
         const dir = join(maps, name)
         mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, 'map.json'), '{}')
@@ -1173,7 +1195,7 @@ test.group('cbd gc', () => {
         bytes: 10,
       })
       assert.deepEqual(readdirSync(shards).sort(), ['four.ndjson', 'three.ndjson'])
-      assert.deepEqual(readdirSync(maps).sort(), ['m3', 'm4'])
+      assert.deepEqual(readdirSync(maps).sort(), [H('3'), H('4')])
     } finally {
       repo.cleanup()
     }
@@ -1186,7 +1208,7 @@ test.group('cbd gc', () => {
       repo.commit('base')
       const root = realpathSync(repo.root)
       const shared = join(root, 'shared-maps')
-      for (const name of ['m1', 'm2', 'm3']) {
+      for (const name of [H('1'), H('2'), H('3')]) {
         const dir = join(shared, name)
         mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, 'map.json'), '{}')
@@ -1201,7 +1223,7 @@ test.group('cbd gc', () => {
         (JSON.parse(result.out.join('\n')) as { maps: { removed: number } }).maps.removed,
         2,
       )
-      assert.deepEqual(readdirSync(shared).sort(), ['m3'])
+      assert.deepEqual(readdirSync(shared).sort(), [H('3')])
     } finally {
       repo.cleanup()
     }
@@ -1218,7 +1240,7 @@ test.group('cbd gc', () => {
       mkdirSync(current, { recursive: true })
       writeFileSync(join(current, 'map.json'), '{}')
       aged(current, 0)
-      for (const [index, name] of ['newer-1', 'newer-2'].entries()) {
+      for (const [index, name] of [H('a'), H('b')].entries()) {
         const dir = join(maps, name)
         mkdirSync(dir, { recursive: true })
         writeFileSync(join(dir, 'map.json'), '{}')
@@ -1232,8 +1254,72 @@ test.group('cbd gc', () => {
         removed: 1,
       })
       assert.ok(existsSync(join(current, 'map.json')), 'the map select would read survives')
-      assert.ok(existsSync(join(maps, 'newer-2')), 'the newest map survives')
-      assert.ok(!existsSync(join(maps, 'newer-1')), 'and only the excess is removed')
+      assert.ok(existsSync(join(maps, H('b'))), 'the newest map survives')
+      assert.ok(!existsSync(join(maps, H('a'))), 'and only the excess is removed')
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('never removes a directory that is not a map, even when mapsDir is the repository', () => {
+    const repo = tempRepo()
+    try {
+      repo.write('src/a.ts', 'export const a = 1\n')
+      repo.write('docs/readme.md', 'docs\n')
+      repo.commit('base')
+      const root = realpathSync(repo.root)
+      // A commit-shaped name without a map.json is not a map either.
+      mkdirSync(join(root, H('9')), { recursive: true })
+      writeFileSync(join(root, H('9'), 'keep.txt'), 'x')
+      for (const name of [H('1'), H('2')]) {
+        mkdirSync(join(root, name), { recursive: true })
+        writeFileSync(join(root, name, 'map.json'), '{}')
+      }
+      writeFileSync(join(root, 'cbd.config.json'), '{"mapsDir":"sub"}')
+      // Bypass config validation, which refuses "." by design: gc itself must hold.
+      const result = gc({ root, mapsDir: '.', keep: 1 })
+      assert.equal(result.maps.removed, 1)
+      for (const survivor of ['src', 'docs', H('9')]) {
+        assert.ok(existsSync(join(root, survivor)), `${survivor} survives`)
+      }
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('keeps whole runs when a run writes one shard per test file', () => {
+    const repo = tempRepo()
+    try {
+      repo.write('src/a.ts', 'export const a = 1\n')
+      repo.commit('base')
+      const root = realpathSync(repo.root)
+      const shards = join(root, '.cbd', 'shards')
+      mkdirSync(shards, { recursive: true })
+      const runs = ['run-a', 'run-b', 'run-c']
+      for (const [index, run] of runs.entries()) {
+        for (const leaf of ['one.spec.ts.11111111', 'two.spec.ts.22222222', 'three.spec.ts.33333333']) {
+          const path = join(shards, `${run}.${leaf}.ndjson`)
+          writeFileSync(path, run)
+          aged(path, index * 10)
+        }
+        // The base name itself, written by a service or the run's own recorder.
+        const base = join(shards, `${run}.ndjson`)
+        writeFileSync(base, run)
+        aged(base, index * 10)
+      }
+
+      const result = invoke(root, 'gc', '--keep', '2', '--format', 'json')
+      assert.equal(result.code, EXIT.ok)
+      assert.deepEqual((JSON.parse(result.out.join('\n')) as { shards: unknown }).shards, {
+        kept: 8,
+        removed: 4,
+      })
+      assert.deepEqual(
+        readdirSync(shards).filter((name) => name.startsWith('run-a')),
+        [],
+      )
+      assert.equal(readdirSync(shards).filter((name) => name.startsWith('run-b')).length, 4)
+      assert.equal(readdirSync(shards).filter((name) => name.startsWith('run-c')).length, 4)
     } finally {
       repo.cleanup()
     }

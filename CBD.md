@@ -702,10 +702,11 @@ and warn.
 
 **Retention.** A shard is roughly the size of the coverage it holds — tens of megabytes for a real
 suite — so an unbounded `.cbd/shards` grows by that much per run. `cbd gc --keep <n>` keeps the
-newest `n` shards and the newest `n` maps (default 10, ordered by mtime rather than by name) and
+newest `n` runs of shards (a run's per-test-file shards are kept or removed together, aged by the
+newest file) and the newest `n` maps (default 10, ordered by mtime rather than by name) and
 removes the rest. It always keeps the map `select` would read, which can be older than the newest
 `n` when another branch has recorded since; deleting it would turn a working selection into "no
-map". Only files directly in `shards/` and directories directly in `maps/` are candidates, so a
+map". Only files directly in `shards/` and commit-named directories holding a `map.json` directly in `maps/` are candidates, so a
 scratch file beside them is never touched.
 
 ### 8.2 Which changes

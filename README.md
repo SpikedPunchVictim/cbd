@@ -301,7 +301,7 @@ services the suite drives (`CBD_SOCKET_DIR`). [Adapter README](packages/japa/REA
 | `maxAgeCommits` | How old a map may be before it is stale. Default 50. |
 | `strict` | `true` makes a stale or dirty map force a full run instead of warning. |
 | `stateDir` | Where shards and maps live. Default `.cbd`. |
-| `mapsDir` | Where per-commit maps live, instead of `<stateDir>/maps`. An absolute path (for example the git common directory) lets worktrees and review sandboxes share one set. |
+| `mapsDir` | Where per-commit maps live, instead of `<stateDir>/maps`. An absolute path (for example the git common directory) lets worktrees and review sandboxes share one set. It must not be the repository root or a parent of it. |
 | `sharedState` | Globs of files whose state tests share; a selected test that touched one pulls in every test that touched it (reason `shared-state`). Opt-in. |
 | `emitCheck` | `{ "<glob>": { "tsconfig": "...", "typescript": "5.9.3" } }`: transpile a modified TypeScript file with the project's own pinned compiler, and skip module-scope escalation when the runtime output is unchanged. A version mismatch skips the check with a warning. |
 | `granularity` | `"test"` (default; one window per test) or `"group"` (one window per runner group, far fewer takes, over-selects within a group). japa and mocha's `auto` end groups; Jest, Vitest and `node:test` warn and record per test. `cbd collect` passes it as `CBD_GRANULARITY`. |
