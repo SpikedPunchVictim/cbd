@@ -8,7 +8,8 @@
   "exports": {
     ".": "./dist/src/index.js",
     "./environment": "./dist/cjs/environment.cjs",
-    "./config": "./dist/cjs/config.cjs"
+    "./config": "./dist/cjs/config.cjs",
+    "./reporter": "./dist/cjs/reporter.cjs"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

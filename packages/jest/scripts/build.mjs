@@ -21,7 +21,7 @@ execFileSync(join(root, 'node_modules', '.bin', 'tsc'), ['-p', 'tsconfig.json'],
   stdio: 'inherit',
 })
 
-for (const entry of ['environment', 'config']) {
+for (const entry of ['environment', 'config', 'reporter']) {
   await build({
     absWorkingDir: root,
     entryPoints: [`src/${entry}.ts`],

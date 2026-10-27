@@ -155,3 +155,49 @@ test('an each row can be selected', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// Jest reports tests the pattern filtered out as skipped and exits 0, so a selection
+// that names nothing the suite has would pass having run nothing.
+test('a selection that matches no test fails the run', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-jest-zero-'))
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, CBD_COMMIT: 'jest-e2e' }
+    delete env.CBD_SHARD
+    delete env.CBD_SOCKET_DIR
+    delete env.NODE_OPTIONS
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['no such test'] }))
+    env.CBD_SELECTION = selection
+    const result = spawnSync(jest, ['--config', config, '--runInBand'], {
+      cwd: packageRoot,
+      env,
+      encoding: 'utf8',
+    })
+    assert.notEqual(result.status, 0, `jest passed having run nothing:\n${result.stderr}`)
+    assert.match(result.stderr, /no test ran/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a selection that matches a test passes the guard', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-jest-one-'))
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, CBD_COMMIT: 'jest-e2e' }
+    delete env.CBD_SHARD
+    delete env.CBD_SOCKET_DIR
+    delete env.NODE_OPTIONS
+    const selection = join(dir, 'selection.json')
+    writeFileSync(selection, JSON.stringify({ titles: ['outer > passes'] }))
+    env.CBD_SELECTION = selection
+    const result = spawnSync(jest, ['--config', config, '--runInBand'], {
+      cwd: packageRoot,
+      env,
+      encoding: 'utf8',
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.doesNotMatch(result.stderr, /no test ran/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

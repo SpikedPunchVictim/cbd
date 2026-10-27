@@ -68,7 +68,16 @@ export function selectionPattern(path: string | undefined = process.env.CBD_SELE
  *
  * Without `CBD_SELECTION` the config is returned unchanged.
  */
-export function withCbd<T extends Record<string, unknown>>(config: T): T & { testNamePattern?: string } {
+export function withCbd<T extends Record<string, unknown>>(
+  config: T,
+): T & { testNamePattern?: string; reporters?: unknown[] } {
   const pattern = selectionPattern()
-  return pattern === undefined ? config : { ...config, testNamePattern: pattern }
+  if (pattern === undefined) return config
+  // The reporter fails a selection that ran nothing; the project's own reporters stay.
+  const reporters = Array.isArray(config.reporters) ? config.reporters : ['default']
+  return {
+    ...config,
+    testNamePattern: pattern,
+    reporters: [...reporters, require.resolve('./reporter.cjs')],
+  }
 }
