@@ -1458,11 +1458,55 @@ test('module-scope-unchanged: an unknown file still takes the unknown-file ladde
   assert.deepEqual(reasonKinds(result), ['all:unknown-file'])
 })
 
-test('module-scope-unchanged: a file reached only at load still escalates', () => {
-  const result = select(makeMap(), [change(LOADED_ONLY, [{ start: 1, end: 1 }])], {
+test('module-scope-unchanged: a load-only file with an edit in a function that never ran selects nothing', () => {
+  // Line 20 is inside no function the map recorded, in a file that only ran at load.
+  const result = select(makeMap(), [change(LOADED_ONLY, [{ start: 20, end: 20 }])], {
+    moduleScopeUnchanged: new Map([[LOADED_ONLY, '5.9.3']]),
+  })
+  assert.deepEqual(result.reasons, [{ kind: 'module-scope-unchanged', file: LOADED_ONLY, typescript: '5.9.3' }])
+  assert.deepEqual(result.tests, [])
+  assert.equal(result.mode, 'subset')
+})
+
+test('module-scope-unchanged: a load-only file with an edit in a function that ran at load still escalates', () => {
+  const map = makeMap({ load: [[LOADED_ONLY, '<module>@0', 0, 30], [LOADED_ONLY, 'init@0', 5, 8]] })
+  const result = select(map, [change(LOADED_ONLY, [{ start: 6, end: 6 }])], {
     moduleScopeUnchanged: new Map([[LOADED_ONLY, '5.9.3']]),
   })
   assert.deepEqual(reasonKinds(result), ['all:load'])
+})
+
+test('module-scope-unchanged: an insertion inside a function that ran at load still escalates', () => {
+  const map = makeMap({ load: [[LOADED_ONLY, '<module>@0', 0, 30], [LOADED_ONLY, 'init@0', 5, 8]] })
+  const result = select(map, [{ ...change(LOADED_ONLY, []), insertions: [6] }], {
+    moduleScopeUnchanged: new Map([[LOADED_ONLY, '5.9.3']]),
+  })
+  assert.deepEqual(reasonKinds(result), ['all:load'])
+})
+
+test('module-scope-unchanged: a load-only file still selects its readers', () => {
+  const map = makeMap({ reads: { [LOADED_ONLY]: [1] } })
+  const result = select(map, [change(LOADED_ONLY, [{ start: 20, end: 20 }])], {
+    moduleScopeUnchanged: new Map([[LOADED_ONLY, '5.9.3']]),
+  })
+  assert.deepEqual(result.tests, [1])
+  assert.deepEqual(reasonKinds(result), ['read', 'module-scope-unchanged'])
+})
+
+test('module-scope-unchanged: a file reached only in teardown keeps its rule when a teardown function changed', () => {
+  const map = makeMap({ load: [], teardown: [[LOADED_ONLY, 'cleanup@0', 1, 3]] })
+  const result = select(map, [change(LOADED_ONLY, [{ start: 2, end: 2 }])], {
+    moduleScopeUnchanged: new Map([[LOADED_ONLY, '5.9.3']]),
+  })
+  assert.notDeepEqual(reasonKinds(result), ['module-scope-unchanged'])
+})
+
+test('module-scope-unchanged: an in-map file edited inside a load-only function still escalates', () => {
+  const map = makeMap({ load: [[SRC, '<module>@0', 0, 30], [SRC, 'boot@0', 20, 24]] })
+  const result = select(map, [change(SRC, [{ start: 21, end: 21 }])], {
+    moduleScopeUnchanged: new Map([[SRC, '5.9.3']]),
+  })
+  assert.ok(!reasonKinds(result).includes('module-scope-unchanged'))
 })
 
 test('a change to a file in a shared read group selects the group\'s tests, and unions with per-test reads', () => {

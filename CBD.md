@@ -882,9 +882,13 @@ every function body in the emitted JavaScript with `{}`, and compares the printe
 means nothing that runs when the module is evaluated changed, so the hunks outside every mapped
 function select nothing and the selection carries a `module-scope-unchanged` reason naming the
 file and the compiler version (`typescript`) that proved it. Nothing else is relaxed: a hunk inside a mapped function still selects that function (and its
-load observers if it also ran at load); an added, deleted or renamed file, a file the map has never
-seen, and a file reached only at load keep their rules; and a hunk inside a function the map never
-recorded selects nothing, because no recorded test ran it. Source maps are off and comments are
+load observers if it also ran at load); an added, deleted or renamed file and a file the map has never
+seen keep their rules; a hunk inside a function the map never recorded selects nothing, because no
+recorded test ran it. That holds for a file reached only at load (or between tests, or at teardown)
+as well: it has no function entry, but the compiler's verdict covers its module scope, so a hunk
+outside every function that bucket recorded selects nothing. A hunk inside a function recorded in
+the load, between or teardown bucket keeps that bucket's rule (its load observers, or `all` for
+between), in a file with function entries or without. Source maps are off and comments are
 removed for the comparison only. The base is checked at both the range's base and the map's own
 commit, and both must match. The pin exists because a different compiler (TypeScript 7, swc, esbuild) can emit differently from
 the one the tests run under: if the version resolved from the tsconfig's directory is not exactly

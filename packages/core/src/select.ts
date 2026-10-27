@@ -497,6 +497,25 @@ export function select(
   const betweenFiles = new Set(map.between.map((ref) => ref[0]))
   const seen = new Set(map.seen)
 
+  /**
+   * Whether a hunk or insertion of `change` lies in a function that ran outside
+   * any test window (load, between, teardown). Such a function is recorded in its
+   * bucket, not in `map.files`, so the module-scope-unchanged verdict cannot vouch
+   * for it: the compiler hollows function bodies, and this body did run.
+   */
+  const touchesBucketFunction = (change: Change): boolean => {
+    const ranges = [...map.load, ...map.between, ...map.teardown].filter(
+      (ref) => ref[0] === change.path && !ref[1].startsWith('<module>'),
+    )
+    return ranges.some((ref) => {
+      const range = { start: ref[2], end: ref[3] }
+      return (
+        change.hunks.some((hunk) => intersects(hunk, range)) ||
+        (change.insertions ?? []).some((point) => point >= range.start && point < range.end)
+      )
+    })
+  }
+
   const forceAll = (why: AllWhy, file?: string): void => {
     forced = true
     reasons.push(file === undefined ? { kind: 'all', why } : { kind: 'all', why, file })
@@ -780,7 +799,7 @@ export function select(
         // the module instance and are the honest answer. A map built before that
         // attribution existed has no answer, and falls back to rule 2's `all`.
         const compiler = config.moduleScopeUnchanged?.get(path)
-        if (compiler !== undefined) {
+        if (compiler !== undefined && !touchesBucketFunction(change)) {
           // The compiler proved the file's module scope identical at runtime, so
           // these hunks cannot change what any test observed at load. A hunk in a
           // function the map never recorded is here too: no recorded test ran it.
@@ -798,6 +817,22 @@ export function select(
           }
         }
       }
+      continue
+    }
+
+    // A file that ran only outside the test windows has no function entry, so the
+    // branch above never saw it. When the compiler proved its module scope
+    // unchanged, a hunk elsewhere is inside a function body that no bucket
+    // recorded running, which no recorded test could observe. A hunk in a function
+    // that did run at load (or between/teardown) keeps the ladder's answer. A file
+    // the map has no evidence for at all is not vouched for: it stays unknown.
+    const compilerVerdict = config.moduleScopeUnchanged?.get(path)
+    if (
+      compilerVerdict !== undefined &&
+      (loadFiles.has(path) || teardownFiles.has(path) || betweenFiles.has(path)) &&
+      !touchesBucketFunction(change)
+    ) {
+      reasons.push({ kind: 'module-scope-unchanged', file: path, typescript: compilerVerdict })
       continue
     }
 

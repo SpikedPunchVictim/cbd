@@ -30,8 +30,12 @@ until a tag is pushed and the publish workflow runs.
   the base and current version with the project's own `typescript` and that tsconfig, hollows out
   function bodies, and when the rest is identical the hunks outside every mapped function select
   nothing and the output says `module-scope-unchanged` with the compiler version. A resolved version
-  that differs from the pin skips the check and adds a warning. Function hunks, the load rule, the
-  unknown-file ladder and added, deleted or renamed files are unchanged, and an unresolvable
+  that differs from the pin skips the check and adds a warning. It also applies to a file that ran
+  only at load, between tests or at teardown (no function in the map), so such a file with an erased
+  or never-run-function edit no longer selects every load observer; a hunk inside a function the map
+  recorded in one of those buckets keeps its load, between or teardown rule, in a file that has
+  function entries too. Function hunks, the unknown-file ladder and added, deleted or renamed files
+  are unchanged, and an unresolvable
   `typescript` (including 7.x, which has no JavaScript transpile API), a transpile error or no
   matching glob keeps today's behaviour. The pin cannot vouch for a test runner that transpiles with
   swc or esbuild instead. Enums, namespaces, class static blocks, class field initializers and const enums always

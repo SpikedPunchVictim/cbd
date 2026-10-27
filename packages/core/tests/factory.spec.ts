@@ -588,6 +588,60 @@ test.group('createCbd', () => {
     }
   })
 
+  test('emitCheck vouches for a load-only file except inside a function that ran at load', () => {
+    const repo = tempRepo()
+    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-load-')))
+    try {
+      const root = realpathSync(repo.root)
+      const a = join(root, 'src/a.ts')
+      const b = join(root, 'src/b.ts')
+      const spec = join(root, 'tests/a.spec.ts')
+      const source = (boot: number, unused: number): string =>
+        `export function boot() {\n  return ${String(boot)};\n}\nexport function unused() {\n  return ${String(unused)};\n}\nboot();\n`
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return a + b;\n}\n')
+      repo.write('src/b.ts', source(1, 1))
+      repo.write('tests/a.spec.ts', "import { add } from '../src/a.js'\n")
+      const commit = repo.commit('base')
+      writeShard(
+        repo.root,
+        'run.ndjson',
+        shardText(
+          commit,
+          [
+            { title: 'adds', file: spec, touches: [ref(a, 'add@0', 1, 3)] },
+            { title: 'other', file: spec, touches: [ref(a, 'add@0', 1, 3)] },
+          ],
+          { buckets: { load: [ref(b, 'boot@0', 1, 3)] } },
+        ),
+      )
+      mkdirSync(join(toolchain, 'node_modules'))
+      symlinkSync(
+        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        join(toolchain, 'node_modules', 'typescript'),
+        'dir',
+      )
+      const tsconfig = join(toolchain, 'tsconfig.json')
+      writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+      const pin = (JSON.parse(readFileSync(join(toolchain, 'node_modules/typescript/package.json'), 'utf8')) as { version: string }).version
+      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig, typescript: pin }]
+
+      createCbd({ root: repo.root, select: { emitCheck } }).build()
+
+      repo.write('src/b.ts', source(1, 2))
+      const never = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(never.tests, [])
+      assert.deepEqual(never.reasons, [{ kind: 'module-scope-unchanged', file: b, typescript: pin }])
+
+      repo.write('src/b.ts', source(2, 1))
+      const ran = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.ok(!ran.reasons.some((reason) => reason.kind === 'module-scope-unchanged'))
+      assert.ok(ran.mode === 'all' || ran.tests.length > 0)
+    } finally {
+      rmSync(toolchain, { recursive: true, force: true })
+      repo.cleanup()
+    }
+  })
+
   test('a root inside the repository resolves only its own changes', () => {
     const repo = tempRepo()
     try {
