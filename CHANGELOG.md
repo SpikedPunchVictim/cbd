@@ -24,7 +24,13 @@ until a tag is pushed and the publish workflow runs.
   unknown-file ladder and added, deleted or renamed files are unchanged, and an unresolvable
   `typescript` (including 7.x, which has no JavaScript transpile API), a transpile error or no
   matching glob keeps today's behaviour. The pin cannot vouch for a test runner that transpiles with
-  swc or esbuild instead. No new runtime dependency.
+  swc or esbuild instead. Enums, namespaces, class static blocks and const enums always escalate:
+  TypeScript wraps the first three in functions it synthesizes, which run at load but are not source
+  functions, so any edit to one counts as a module-scope change; a const enum's members are inlined
+  into importing files by a type-checked emit, so editing one is never "unchanged". No new runtime
+  dependency.
+- **A config validation error names the file that was loaded.** With `--config /x/bad.json` the
+  message named `<root>/cbd.config.json`.
 - **Recording no longer breaks tests that `promisify` `exec` or `execFile`.** The process tracker
   replaced `child_process.exec` and `execFile` with plain wrappers, dropping the
   `util.promisify.custom` hook that makes `promisify(execFile)` resolve `{ stdout, stderr }`. Under

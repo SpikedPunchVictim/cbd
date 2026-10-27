@@ -123,7 +123,46 @@ function skeleton(project: Project, text: string, fileName: string): string {
     hollow = `${hollow.slice(0, start)}{}${hollow.slice(end)}`
   }
   const printer = ts.createPrinter({ removeComments: true })
-  return printer.printFile(ts.createSourceFile('hollow.js', hollow, ts.ScriptTarget.Latest, true, kind))
+  const hollowed = printer.printFile(ts.createSourceFile('hollow.js', hollow, ts.ScriptTarget.Latest, true, kind))
+  return `${hollowed}\n${synthesizedConstructs(project, text, fileName).join('\n')}`
+}
+
+/**
+ * The source text of every construct whose emit TypeScript wraps in a function it
+ * synthesizes, and which runs when the module loads: enums (`(function (E) {...})(E || (E = {}))`),
+ * namespaces and class static blocks (an IIFE below ES2022). The hollowing above empties
+ * those wrappers too, because the emitted JavaScript does not say which functions the
+ * source wrote. A hunk in such a construct lies outside every mapped source function, so
+ * nothing else would catch it. Appending the construct's own source text, printed to drop
+ * comments and layout, makes any edit inside it a difference. A const enum is included:
+ * a type-checked emit inlines its members into importing files, so its declaring file's
+ * emit may not change when it does. Ambient namespaces and non-const `declare enum`s emit
+ * nothing and are left out.
+ */
+function synthesizedConstructs(project: Project, text: string, fileName: string): string[] {
+  const { ts } = project
+  const kind = /x$/i.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+  const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind)
+  const printer = ts.createPrinter({ removeComments: true })
+  const found: string[] = []
+  const hasModifier = (node: Ts, modifier: number): boolean =>
+    (ts.getCombinedModifierFlags(node) & modifier) !== 0
+  const visit = (node: Ts): void => {
+    const isConst = ts.isEnumDeclaration(node) && hasModifier(node, ts.ModifierFlags.Const)
+    const ambient = hasModifier(node, ts.ModifierFlags.Ambient)
+    const wanted =
+      (ts.isEnumDeclaration(node) && (!ambient || isConst)) ||
+      (ts.isModuleDeclaration(node) && !ambient) ||
+      ts.isClassStaticBlockDeclaration(node)
+    if (wanted) {
+      // Outermost only: the printed text of a construct includes everything inside it.
+      found.push(printer.printNode(ts.EmitHint.Unspecified, node, source))
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  return found
 }
 
 /**

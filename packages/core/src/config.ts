@@ -132,7 +132,7 @@ export function loadConfigFile(path: string, root: string): LoadedConfig | undef
   } catch (error) {
     throw new Error(`cbd: ${path} is not valid JSON: ${String(error)}`)
   }
-  return { config: { ...parseConfig(parsed, root), configFile: realpathSync(path) }, path }
+  return { config: { ...parseConfig(parsed, root, path), configFile: realpathSync(path) }, path }
 }
 
 function strings(raw: unknown, key: string, path: string): string[] | undefined {
@@ -162,8 +162,7 @@ const absoluteGlobs = (root: string, globs: string[]): string[] =>
  * the CLI's `--config`, a test, an editor integration — uses one validator rather
  * than a second copy of these checks.
  */
-export function parseConfig(raw: unknown, root: string): CbdConfig {
-  const path = configPath(root)
+export function parseConfig(raw: unknown, root: string, path: string = configPath(root)): CbdConfig {
   // One canonical root for the globs and the returned config. Building the globs
   // against a symlinked spelling while the factory resolves changed paths against
   // the realpath made `include` reject every change — a silent zero-test answer.

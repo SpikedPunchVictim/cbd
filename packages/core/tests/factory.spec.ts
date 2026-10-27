@@ -547,6 +547,47 @@ test.group('createCbd', () => {
     }
   })
 
+  test('emitCheck escalates an enum edit end to end', () => {
+    const repo = tempRepo()
+    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-enum-')))
+    try {
+      const root = realpathSync(repo.root)
+      const a = join(root, 'src/a.ts')
+      const spec = join(root, 'tests/a.spec.ts')
+      repo.write('src/a.ts', "export enum Mode {\n  On = 'on',\n}\nexport function add(a, b) {\n  return a + b;\n}\n")
+      repo.write('tests/a.spec.ts', "import { add } from '../src/a.js'\n")
+      const commit = repo.commit('base')
+      writeShard(
+        repo.root,
+        'run.ndjson',
+        shardText(commit, [
+          { title: 'adds', file: spec, touches: [ref(a, 'add@0', 4, 6)] },
+          { title: 'reads', file: spec, touches: [ref(a, 'add@0', 4, 6)] },
+        ]),
+      )
+      mkdirSync(join(toolchain, 'node_modules'))
+      symlinkSync(
+        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        join(toolchain, 'node_modules', 'typescript'),
+        'dir',
+      )
+      const tsconfig = join(toolchain, 'tsconfig.json')
+      writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+      const pin = (JSON.parse(readFileSync(join(toolchain, 'node_modules/typescript/package.json'), 'utf8')) as { version: string }).version
+      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig, typescript: pin }]
+
+      const cbd = createCbd({ root: repo.root, select: { emitCheck } })
+      cbd.build()
+      repo.write('src/a.ts', "export enum Mode {\n  On = 'on',\n  Off = 'off',\n}\nexport function add(a, b) {\n  return a + b;\n}\n")
+      const selection = createCbd({ root: repo.root, select: { emitCheck } }).select().selection
+      assert.deepEqual(selection.tests, [0, 1])
+      assert.ok(!selection.reasons.some((reason) => reason.kind === 'module-scope-unchanged'))
+    } finally {
+      rmSync(toolchain, { recursive: true, force: true })
+      repo.cleanup()
+    }
+  })
+
   test('a root inside the repository resolves only its own changes', () => {
     const repo = tempRepo()
     try {

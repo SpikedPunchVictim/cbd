@@ -886,6 +886,15 @@ a transpile error, no matching glob. The tsconfig matters: `emitDecoratorMetadat
 type observable, `verbatimModuleSyntax` keeps imports, so use the one the tests run under. Its
 `noEmit` is ignored, as `transpileModule` ignores it. CBD adds no dependency; `typescript` is the
 consumer's.
+Only emitted functions that correspond to a source function are hollowed in the comparison. TypeScript
+synthesizes functions for enums, namespaces and class static blocks (lowered to an IIFE below ES2022),
+and they run at load, so the printed source of every enum, non-ambient namespace and static block is
+appended to the compared text: an edit in one is always "changed". A real source IIFE is a source
+function, so its body edit is the function rule's to catch (a changed function that ran at load
+selects its load observers). `emitCheck` compares `transpileModule` output, which matches a
+transpile-only runner exactly; with a type-checked emit (ts-node without `transpileOnly`, `tsc`) a
+const enum's members are inlined into importing files, so any changed `const enum` or
+`declare const enum` is "changed" by escalation.
 
 `alwaysAll` is checked **before** `include`, because it is a statement that a change there is beyond
 the map's ability to answer, not a filter. The example config above lists `**/migrations/**` there

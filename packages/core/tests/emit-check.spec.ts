@@ -87,6 +87,64 @@ test.group('compareModuleScope', () => {
     assert.equal(verdict(p, base, head).unchanged, true)
   })
 
+  test('adding an enum member is a change', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    const base = `export enum E { A = 'a' }\n`
+    const head = `export enum E { A = 'a', B = 'b' }\n`
+    assert.equal(verdict(p, base, head).unchanged, false)
+  })
+
+  test('changing an enum value is a change', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    assert.equal(verdict(p, `export enum E { A = 1 }\n`, `export enum E { A = 2 }\n`).unchanged, false)
+  })
+
+  test('changing a namespace const is a change', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    const base = `export namespace N { export const x = 1 }\n`
+    const head = `export namespace N { export const x = 2 }\n`
+    assert.equal(verdict(p, base, head).unchanged, false)
+  })
+
+  test('changing a static block is a change, lowered (es2020) or kept (es2022)', ({ cleanup }) => {
+    const base = `export class C { static v = 0; static { C.v = 1 } }\n`
+    const head = `export class C { static v = 0; static { C.v = 2 } }\n`
+    for (const target of ['es2020', 'es2022']) {
+      const p = project({ compilerOptions: { target } })
+      cleanup(p.cleanup)
+      assert.equal(verdict(p, base, head).unchanged, false, target)
+    }
+  })
+
+  test('changing a const enum value is a change', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    assert.equal(verdict(p, `export const enum E { A = 1 }\n`, `export const enum E { A = 2 }\n`).unchanged, false)
+    assert.equal(
+      verdict(p, `export declare const enum E { A = 1 }\n`, `export declare const enum E { A = 2 }\n`).unchanged,
+      false,
+    )
+  })
+
+  test('erased edits beside an enum stay unchanged', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    const base = `import type { T } from './t.js'\nexport interface I { a: number }\nexport enum E { A = 1 }\n`
+    const head = `import type { T } from './t.js'\nimport type { U } from './u.js'\nexport interface I { a: number; b: string }\n// note\nexport enum E { A = 1 }\n`
+    assert.equal(verdict(p, base, head).unchanged, true)
+  })
+
+  test('a body edit inside a source IIFE is unchanged (the function rule covers it)', ({ cleanup }) => {
+    const p = project()
+    cleanup(p.cleanup)
+    const base = `export let x = 0\n;(function () { x = 1 })()\n`
+    const head = `export let x = 0\n;(function () { x = 2 })()\n`
+    assert.equal(verdict(p, base, head).unchanged, true)
+  })
+
   test('a class field initializer is module-scope work and is a change', ({ cleanup }) => {
     const p = project({ compilerOptions: { useDefineForClassFields: true } })
     cleanup(p.cleanup)

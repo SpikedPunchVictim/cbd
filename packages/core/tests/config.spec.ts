@@ -154,6 +154,20 @@ test.group('cbd.config.json', () => {
     }
   })
 
+  test('a validation error names the file that was loaded, not <root>/cbd.config.json', () => {
+    const { root, cleanup } = tempRoot()
+    try {
+      const other = join(root, 'elsewhere.json')
+      writeFileSync(other, JSON.stringify({ includ: ['src/**'] }))
+      assert.throws(
+        () => loadConfigFile(other, root),
+        (error: Error) => error.message.includes(other) && !error.message.includes('cbd.config.json'),
+      )
+    } finally {
+      cleanup()
+    }
+  })
+
   test('an unknown key is refused rather than ignored', () => {
     const { root, cleanup } = tempRoot()
     try {
