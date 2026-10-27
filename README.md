@@ -33,18 +33,18 @@ reason. It never silently skips a test.
 | --- | --- |
 | [`@spikedpunch/cbd`](packages/core/README.md) | Core: coverage map, diff, selection, and the library API (`createCbd`). |
 | [`@spikedpunch/cbd-cli`](packages/cli/README.md) | The `cbd` binary: `collect`, `build`, `select`, `explain`, `reaches`, `stats`, `gc`. |
-| [`@spikedpunch/cbd-japa`](packages/japa/README.md) | japa plugin. |
-| [`@spikedpunch/cbd-mocha`](packages/mocha/README.md) | mocha preload (`/auto`). |
 | [`@spikedpunch/cbd-vitest`](packages/vitest/README.md) | Vitest setup file. |
 | [`@spikedpunch/cbd-jest`](packages/jest/README.md) | Jest test environment and config helper. |
+| [`@spikedpunch/cbd-mocha`](packages/mocha/README.md) | mocha preload (`/auto`). |
 | [`@spikedpunch/cbd-node-test`](packages/node-test/README.md) | `node:test` preload (`/register`). |
+| [`@spikedpunch/cbd-japa`](packages/japa/README.md) | japa plugin and preload (`/register`). |
 
 ## Requirements
 
 - Node.js **20.16 or newer** (the `node:test` adapter needs `TestContext.fullName`; the core runs on
   Node 20).
 - `git` on `PATH`.
-- One supported test runner: japa, mocha, Vitest, Jest, or `node:test`.
+- One supported test runner: Vitest, Jest, mocha, `node:test`, or japa.
 
 ## How it works
 
@@ -133,33 +133,48 @@ if (selection.mode === 'all') {
 
 ## Framework setup
 
-Recording is triggered by `CBD_SHARD`, which `cbd collect` sets for the child run. It is an
-environment variable, not a config key or an adapter option; without it the adapter does nothing,
-so the setup snippets below can be committed.
+Every adapter follows the same pattern:
 
-**Vitest**
+1. Add one setup line to your runner's config or `test` script, and commit it. It does nothing until
+   `CBD_SHARD` is set, so ordinary runs are unaffected.
+2. Run the suite through `cbd collect`. The first run has no map, so it records every test and builds
+   one. Later runs narrow to the tests the working-tree change reaches, record them, and update the
+   map. Use `--no-select` to record the full suite on purpose, for example on `main` in CI.
+3. Ask `cbd select` what a change would run, without running anything.
+
+The runners are listed most widely used first. Each adapter's README covers manual recording,
+options and limits.
+
+### Vitest
+
+```sh
+pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-vitest
+```
 
 ```ts
 // vitest.config.ts
+import { defineConfig } from 'vitest/config'
+
 export default defineConfig({
-  test: { setupFiles: ['@spikedpunch/cbd-vitest/setup'] },
+  test: {
+    setupFiles: ['@spikedpunch/cbd-vitest/setup'],
+  },
 })
 ```
 
-**japa**
-
-```js
-import { cbd } from '@spikedpunch/cbd-japa'
-configure({ files: ['tests/**/*.spec.js'], plugins: [cbd()] })
+```sh
+pnpm exec cbd collect -- pnpm vitest run   # record (and, once a map exists, run the subset)
+pnpm exec cbd select                       # what would a change run?
 ```
 
-**mocha** — preload the module, or set this in the `test` script:
+Vitest 3.2–5. One shard per test file, so parallel workers do not share a file. An unselected test
+is skipped before its window opens. [Adapter README](packages/vitest/README.md).
+
+### Jest
 
 ```sh
-NODE_OPTIONS="--import @spikedpunch/cbd-mocha/auto" mocha
+pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-jest jest-environment-node
 ```
-
-**Jest**
 
 ```js
 // jest.config.cjs
@@ -170,17 +185,90 @@ module.exports = withCbd({
 })
 ```
 
-**node:test**
-
 ```sh
-node --import @spikedpunch/cbd-node-test/register --test
+pnpm exec cbd collect -- pnpm jest
+pnpm exec cbd select
 ```
 
-Then record with the same command wrapped by the CLI:
+Jest 29–30. The environment records, and `withCbd` narrows the run. Without `withCbd` the run still
+records but is not narrowed. If you already use a custom environment, see the
+[adapter README](packages/jest/README.md).
+
+### mocha
 
 ```sh
-pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, npx jest, ...
+pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-mocha
 ```
+
+```jsonc
+// package.json
+{
+  "scripts": {
+    "test": "NODE_OPTIONS=\"--import @spikedpunch/cbd-mocha/auto\" mocha"
+  }
+}
+```
+
+```sh
+pnpm exec cbd collect -- pnpm test
+pnpm exec cbd select
+```
+
+mocha 10. The preload changes no test files. It turns a selection into mocha's own anchored `grep`,
+which replaces any `--grep` you pass. It supports `granularity: "group"`.
+[Adapter README](packages/mocha/README.md).
+
+### node:test
+
+```sh
+pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-node-test
+```
+
+```jsonc
+// package.json
+{
+  "scripts": {
+    "test": "node --import @spikedpunch/cbd-node-test/register --test"
+  }
+}
+```
+
+```sh
+pnpm exec cbd collect -- pnpm test
+pnpm exec cbd select
+```
+
+Node.js 20.16 or newer. Works with ESM and CommonJS test files. Each test file runs in its own child
+process and writes its own shard. [Adapter README](packages/node-test/README.md).
+
+### japa
+
+```sh
+pnpm add -D @spikedpunch/cbd @spikedpunch/cbd-cli @spikedpunch/cbd-japa
+```
+
+```js
+// bin/test.js
+import { configure, processCLIArgs, run } from '@japa/runner'
+import { cbd } from '@spikedpunch/cbd-japa'
+
+processCLIArgs(process.argv.slice(2))
+configure({
+  files: ['tests/**/*.spec.js'],
+  plugins: [cbd()],
+})
+await run()
+```
+
+```sh
+pnpm exec cbd collect -- pnpm test
+pnpm exec cbd select
+```
+
+`@japa/runner` 5. A subset run imports only the selected spec files. If `bin/test.js` imports shared
+code before `configure`, add the `register` preload so that code is recorded too:
+`NODE_OPTIONS="--import @spikedpunch/cbd-japa/register"`. It supports `granularity: "group"` and
+services the suite drives (`CBD_SOCKET_DIR`). [Adapter README](packages/japa/README.md).
 
 ## The config file
 
@@ -215,7 +303,9 @@ pnpm exec cbd collect -- pnpm test          # or: node --test, npx vitest run, n
 | `strict` | `true` makes a stale or dirty map force a full run instead of warning. |
 | `stateDir` | Where shards and maps live. Default `.cbd`. |
 | `mapsDir` | Where per-commit maps live, instead of `<stateDir>/maps`. An absolute path (for example the git common directory) lets worktrees and review sandboxes share one set. |
-| `granularity` | Only `"test"` is implemented. |
+| `sharedState` | Globs of files whose state tests share; a selected test that touched one pulls in every test that touched it (reason `shared-state`). Opt-in. |
+| `emitCheck` | `{ "<glob>": { "tsconfig": "...", "typescript": "5.9.3" } }`: transpile a modified TypeScript file with the project's own pinned compiler, and skip module-scope escalation when the runtime output is unchanged. A version mismatch skips the check with a warning. |
+| `granularity` | `"test"` (default; one window per test) or `"group"` (one window per runner group, far fewer takes, over-selects within a group). japa and mocha's `auto` end groups; Jest, Vitest and `node:test` warn and record per test. `cbd collect` passes it as `CBD_GRANULARITY`. |
 
 ### Files coverage cannot see
 
