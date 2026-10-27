@@ -3,7 +3,7 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
-## Unreleased
+## 0.0.5 — 2026-10-26
 
 - **A read shared by a whole shard is stored once in the map.** An import-phase read that a
   one-process suite cannot pin to a spec belongs to every test in the shard, and the map listed every
