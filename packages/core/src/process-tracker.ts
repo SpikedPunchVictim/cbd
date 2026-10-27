@@ -17,8 +17,10 @@
  * widen a selection to everything on any change, but it never drops a dependency.
  */
 import childProcess from 'node:child_process'
+import cluster from 'node:cluster'
 import { syncBuiltinESMExports } from 'node:module'
 import { promisify } from 'node:util'
+import workerThreads from 'node:worker_threads'
 
 /** What the recorder exposes to the process tracker. */
 export interface ProcessSink {
@@ -37,12 +39,18 @@ const METHODS = [
 
 type AnyFn = (...args: unknown[]) => unknown
 
+interface Saved {
+  target: Record<string, unknown>
+  name: string
+  original: unknown
+}
+
 interface Installed {
   sink: ProcessSink
 }
 
 const stack: Installed[] = []
-let saved: Array<{ name: string; original: AnyFn }> | null = null
+let saved: Saved[] | null = null
 
 function note(): void {
   const sink = stack[stack.length - 1]?.sink
@@ -54,13 +62,13 @@ function note(): void {
   }
 }
 
-function patch(): Array<{ name: string; original: AnyFn }> {
+function patch(): Saved[] {
+  const originals: Saved[] = []
   const target = childProcess as unknown as Record<string, unknown>
-  const originals: Array<{ name: string; original: AnyFn }> = []
   for (const name of METHODS) {
     const original = target[name]
     if (typeof original !== 'function') continue
-    originals.push({ name, original: original as AnyFn })
+    originals.push({ target, name, original })
     const wrapper = function (this: unknown, ...args: unknown[]) {
       note()
       return (original as AnyFn).apply(this, args)
@@ -88,6 +96,30 @@ function patch(): Array<{ name: string; original: AnyFn }> {
     }
     target[name] = wrapper
   }
+  // A worker thread and a forked cluster worker run code in another isolate the
+  // in-process source never sees, exactly like a spawned process.
+  const clusterTarget = cluster as unknown as Record<string, unknown>
+  const fork = clusterTarget.fork
+  if (typeof fork === 'function') {
+    originals.push({ target: clusterTarget, name: 'fork', original: fork })
+    clusterTarget.fork = function (this: unknown, ...args: unknown[]) {
+      note()
+      return (fork as AnyFn).apply(this, args)
+    }
+  }
+  const threads = workerThreads as unknown as Record<string, unknown>
+  const Worker = threads.Worker
+  if (typeof Worker === 'function') {
+    originals.push({ target: threads, name: 'Worker', original: Worker })
+    // A proxy, not a subclass: `instanceof`, `extends`, and statics all see the
+    // real class, and only `new` is intercepted.
+    threads.Worker = new Proxy(Worker, {
+      construct(real, args, newTarget) {
+        note()
+        return Reflect.construct(real, args, newTarget)
+      },
+    })
+  }
   return originals
 }
 
@@ -113,8 +145,7 @@ export function installProcessTracking(sink: ProcessSink): () => void {
     const index = stack.indexOf(entry)
     if (index !== -1) stack.splice(index, 1)
     if (stack.length === 0 && saved !== null) {
-      const target = childProcess as unknown as Record<string, unknown>
-      for (const { name, original } of saved) target[name] = original
+      for (const { target, name, original } of saved) target[name] = original
       saved = null
       syncBuiltinESMExports()
     }

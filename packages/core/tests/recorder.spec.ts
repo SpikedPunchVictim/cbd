@@ -354,6 +354,42 @@ test('every record call made while a spec file is importing lands in that spec\'
   }
 })
 
+test('a process-tracker opaque mark and an env note outside a window are kept', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    const spec = '/repo/tests/a.spec.ts'
+    recorder.runStart()
+    recorder.specStart(spec)
+    // A child spawned while the spec imports.
+    recorder.noteOpaque('spawned at import')
+    recorder.noteEnv('IMPORT_ENV')
+    recorder.testStart('a', spec)
+    recorder.testEnd('a', 'passed')
+    // A server spawned by a hook between tests.
+    recorder.noteOpaque('spawned between')
+    recorder.noteEnv('BETWEEN_ENV')
+    recorder.testStart('b', spec)
+    recorder.testEnd('b', 'passed')
+    recorder.runEnd()
+
+    const loads = parseShard(sink.text, 'noteout').filter((record) => record.type === 'loadReads')
+    const imported = loads.find((load) => load.file === spec)
+    assert.deepEqual(imported?.opaque, ['spawned at import'])
+    assert.deepEqual(Object.keys(imported?.env ?? {}), ['IMPORT_ENV'])
+    const between = loads.find((load) => load.file === null)
+    assert.deepEqual(between?.opaque, ['spawned between'])
+    assert.deepEqual(Object.keys(between?.env ?? {}), ['BETWEEN_ENV'])
+  } finally {
+    tree.cleanup()
+  }
+})
+
 test('each window lands in the bucket it belongs to', async () => {
   const tree = makeTree()
   try {

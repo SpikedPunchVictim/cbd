@@ -1162,20 +1162,32 @@ export class Recorder {
     else this.#spec?.dirReads.add(path)
   }
 
-  /** Note an invisible dependency of the open test. See `recordOpaque`. */
   /**
    * Note an environment variable the open test declared.
    *
    * Synchronous, like the other record calls: the hash is taken at `testEnd` from
    * the value in force while the window runs, so a test that mutates its own
    * environment is recorded against the value it actually used.
+   *
+   * With no window open it falls to the import-phase spec scope, then to the
+   * out-of-window scope, like the record API does. Unlike an incidental read, an
+   * env declaration is the only signal there is.
    */
   noteEnv(key: string): void {
     if (this.#open !== null) this.#env.add(key)
+    else (this.#spec ?? this.#outside)?.env.add(key)
   }
 
+  /**
+   * Note an invisible dependency of the open test. See `recordOpaque`.
+   *
+   * A spawn at import time or in a hook between tests has no window, and the
+   * opaque mark is the only trace it leaves, so it is filed against the spec
+   * (import phase) or the out-of-window scope rather than dropped.
+   */
   noteOpaque(reason: string): void {
     if (this.#open !== null) this.#opaque.add(reason)
+    else (this.#spec ?? this.#outside)?.opaque.add(reason)
   }
 
   runEnd(): void {
