@@ -21,7 +21,7 @@
 import { spawnSync } from 'node:child_process'
 import { after, afterEach, beforeEach } from 'node:test'
 import { readSelection } from '@spikedpunch/cbd/adapter'
-import { existingPattern, selectionPattern } from './identity.js'
+import { existingPattern, fitsCommandLine, selectionPattern } from './identity.js'
 import { installNodeTest, type NodeTestHooks } from './install.js'
 
 const titles = readSelection(process.env)
@@ -40,6 +40,14 @@ if (titles !== undefined) {
           'CBD_SELECTION cannot be applied; the whole suite runs.\n',
       )
     }
+  } else if (
+    existing === undefined &&
+    !fitsCommandLine(process.execPath, [...process.execArgv, flag, ...process.argv.slice(1)])
+  ) {
+    process.stderr.write(
+      'cbd: the selection is too long for a command line, so CBD_SELECTION was not applied; ' +
+        'the whole suite runs.\n',
+    )
   } else if (existing === undefined) {
     const result = spawnSync(
       process.execPath,

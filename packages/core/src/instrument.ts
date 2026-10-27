@@ -53,6 +53,7 @@ import {
   socketDirFromEnv,
   encodeMessage,
   nowUs,
+  pipeNameFor,
   resolveRole,
   snapshotPath,
   type HelloResult,
@@ -652,6 +653,10 @@ async function start(dir: string): Promise<void> {
   const role = resolveRole()
 
   const socketPath = path.join(dir, `pid-${process.pid}.sock`)
+  // On Windows the listener is a named pipe and `socketPath` is a plain file naming it
+  // (see `pipeNameFor`); elsewhere the socket file is the listener.
+  const onPipe = process.platform === 'win32'
+  const endpoint = onPipe ? pipeNameFor(dir, process.pid) : socketPath
   let closed = false
 
   function disconnect(): void {
@@ -1039,7 +1044,18 @@ async function start(dir: string): Promise<void> {
     // A socket left by a previous process that held this pid. Removing it is the
     // only way to bind the path again.
     removeSocket()
-    server.listen(socketPath, () => {
+    server.listen(endpoint, () => {
+      if (onPipe) {
+        try {
+          fs.writeFileSync(socketPath, endpoint)
+        } catch (error) {
+          warn(
+            `cannot publish its pipe at ${socketPath} (${String(error)}); this process records no coverage`,
+          )
+          server.close()
+        }
+        return
+      }
       // Node 22 can report a successful bind for a path past the platform's
       // unix-socket limit and create the socket somewhere else (measured: the
       // callback ran, no error event fired, and no file existed at this path).

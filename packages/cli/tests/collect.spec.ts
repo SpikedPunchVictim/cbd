@@ -22,6 +22,7 @@ import { test } from '@japa/runner'
 import { loadMap } from '@spikedpunch/cbd'
 import { inspectorLockPath, resolveInspectorTarget } from '@spikedpunch/cbd/adapter'
 import { EXIT } from '../src/cli.js'
+import { spawnPlan } from '../src/collect.js'
 import { invoke, prepared, shardText } from './support/repo.js'
 
 interface Logged {
@@ -762,4 +763,20 @@ test('an inherited CBD_INSPECT is checked like --target', () => {
     else process.env.CBD_INSPECT = previous
     cleanup()
   }
+})
+
+test('on win32 the test command goes through the shell with each word quoted', () => {
+  assert.deepEqual(spawnPlan(['npm', 'test', '--', 'my file.js'], 'win32'), {
+    file: 'npm',
+    args: ['test', '--', '"my file.js"'],
+    shell: true,
+  })
+})
+
+test('elsewhere the test command is started directly, as typed', () => {
+  assert.deepEqual(spawnPlan(['npm', 'test', 'my file.js'], 'linux'), {
+    file: 'npm',
+    args: ['test', 'my file.js'],
+    shell: false,
+  })
 })

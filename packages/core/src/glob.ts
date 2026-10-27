@@ -7,7 +7,7 @@
  * while a single star does not cross a separator.
  */
 
-function toRegExp(pattern: string): RegExp {
+function toRegExp(pattern: string, caseInsensitive: boolean): RegExp {
   let out = ''
   for (let i = 0; i < pattern.length; i++) {
     const char = pattern[i]!
@@ -44,7 +44,7 @@ function toRegExp(pattern: string): RegExp {
       out += char
     }
   }
-  return new RegExp(`^${out}$`)
+  return new RegExp(`^${out}$`, caseInsensitive ? 'i' : '')
 }
 
 /** Braces group alternatives: `*.{ts,tsx}` is two globs. */
@@ -63,22 +63,36 @@ const normalize = (path: string): string => path.replaceAll('\\', '/')
 
 const cache = new Map<string, RegExp>()
 
-export function matchesGlob(path: string, pattern: string): boolean {
+/**
+ * Windows filesystems ignore case, so `src/App.ts` and `src/app.ts` are one file and
+ * a pattern written either way must match the path git or the inspector reports.
+ * Elsewhere matching is exact.
+ */
+export function matchesGlob(
+  path: string,
+  pattern: string,
+  caseInsensitive: boolean = process.platform === 'win32',
+): boolean {
   const candidate = normalize(path)
   for (const expanded of expandBraces(normalize(pattern))) {
-    let regex = cache.get(expanded)
+    const key = `${caseInsensitive ? 'i' : 's'}:${expanded}`
+    let regex = cache.get(key)
     if (regex === undefined) {
-      regex = toRegExp(expanded)
-      cache.set(expanded, regex)
+      regex = toRegExp(expanded, caseInsensitive)
+      cache.set(key, regex)
     }
     if (regex.test(candidate)) return true
   }
   return false
 }
 
-export function matchesAnyGlob(path: string, patterns: string[]): string | null {
+export function matchesAnyGlob(
+  path: string,
+  patterns: string[],
+  caseInsensitive: boolean = process.platform === 'win32',
+): string | null {
   for (const pattern of patterns) {
-    if (matchesGlob(path, pattern)) return pattern
+    if (matchesGlob(path, pattern, caseInsensitive)) return pattern
   }
   return null
 }

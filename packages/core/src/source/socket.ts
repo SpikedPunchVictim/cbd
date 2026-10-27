@@ -81,7 +81,7 @@
  * stays, because a source opened once cannot read a process that arrived after it.
  */
 import { randomUUID } from 'node:crypto'
-import { readdirSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import net from 'node:net'
 import { basename, dirname, join } from 'node:path'
@@ -340,9 +340,28 @@ function buildRequest(
   }
 }
 
+/**
+ * What to connect to for a `pid-N.sock` path: the path itself, or on Windows the
+ * pipe name the file holds (see `pipeNameFor`). A file that names no pipe is a
+ * stale or foreign file and is refused like any other unreachable socket.
+ */
+export function endpointOf(path: string, platform: NodeJS.Platform = process.platform): string {
+  if (platform !== 'win32') return path
+  const name = readFileSync(path, 'utf8').trim()
+  if (!name.startsWith('\\\\.\\pipe\\')) throw new SocketSourceError(`${path} does not name a pipe`)
+  return name
+}
+
 function connect(path: string, timeoutMs: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(path)
+    let endpoint: string
+    try {
+      endpoint = endpointOf(path)
+    } catch (error) {
+      reject(new SocketSourceError(`cannot reach ${path}: ${error instanceof Error ? error.message : String(error)}`))
+      return
+    }
+    const socket = net.connect(endpoint)
     const timer = setTimeout(() => {
       socket.destroy()
       reject(new SocketSourceError(`no instrument socket at ${path} within ${String(timeoutMs)}ms`))

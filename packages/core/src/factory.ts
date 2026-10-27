@@ -17,6 +17,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
+import { gitRelative } from './paths.js'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { changesSince, commitsSince, headCommit, mergeChanges, type Change } from './changes.js'
 import { moduleScopeUnchangedFiles } from './emit-check.js'
@@ -423,7 +424,7 @@ function dirtyTree(root: string, stateDir: string): boolean {
     const out = git(root, ['status', '--porcelain', '--', '.'])
     // Strip the line ending, not whitespace: a path may end in a space.
     const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
-    const prefix = relative(top, root)
+    const prefix = gitRelative(top, root)
     const state = stateDir.replace(/^\.\//, '').replace(/\/+$/, '')
     return out.split('\n').some((line) => {
       if (line.trim() === '') return false

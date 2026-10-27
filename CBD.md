@@ -170,6 +170,8 @@ test, which is most projects.
 `NODE_OPTIONS="--import @spikedpunch/cbd/instrument"` and `CBD_SOCKET_DIR=<dir>`. The module runs
 inside the target, drives `node:inspector` for its own isolate, and serves the coverage delta plus
 `Debugger.scriptParsed` rows on `pid-<pid>.sock` in that directory. `socketSource` reads one target;
+On Windows the listener is a named pipe and `pid-<pid>.sock` is a plain file holding the pipe's name, so
+discovery by listing the directory is the same on every platform.
 `rescanningSocketSource` re-lists the directory at every boundary so a service the suite starts
 itself is picked up too (ADR-0007).
 

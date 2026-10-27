@@ -23,7 +23,7 @@
  * resolved into is a copy of the checkout. So it never swaps extensions — a copy of
  * a tree has the same file names — and it never drops a file it does not describe.
  */
-import { canonicalPath, within } from './projection.js'
+import { canonicalPath, restUnder, within } from './projection.js'
 
 export interface RelocationRule {
   /** Absolute prefix of the tree the code ran from, e.g. `<root>/.grizzly-dev/<lane>`. */
@@ -77,11 +77,21 @@ export function relocatePath(file: string, rules: readonly RelocationRule[]): st
 }
 
 function relocate(file: string, rules: readonly RelocationRule[]): string {
-  const resolved = canonical(file)
+  return rebase(canonical(file), file, rules)
+}
+
+/** The prefix swap itself, on an already canonical path; `file` is what no rule covers. */
+export function rebase(
+  resolved: string,
+  file: string,
+  rules: readonly RelocationRule[],
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const sep = platform === 'win32' ? '\\' : '/'
   for (const rule of rules) {
-    if (!within(resolved, rule.from)) continue
-    const rest = resolved.slice(rule.from.length).replace(/^\//, '')
-    return `${rule.to.replace(/\/$/, '')}/${rest}`
+    if (!within(resolved, rule.from, platform)) continue
+    const rest = restUnder(resolved, rule.from, platform)
+    return `${rule.to.replace(platform === 'win32' ? /[\\/]$/ : /\/$/, '')}${sep}${rest}`
   }
   return file
 }

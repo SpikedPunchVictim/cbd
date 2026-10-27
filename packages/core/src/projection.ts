@@ -35,14 +35,37 @@ const DEFAULT_EXTENSIONS: Record<string, string> = { '.js': '.ts' }
  * would rewrite `/repo/out-nomaps-extra/...` under a rule for `/repo/out-nomaps`,
  * pointing the map at files that do not exist.
  */
-export function within(file: string, prefix: string): boolean {
+export function within(file: string, prefix: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'win32') {
+    // Both separators are one on Windows, and the filesystem ignores case: a `from`
+    // typed `c:\repo` must match the `C:\repo\...` the inspector reports.
+    const f = file.replaceAll('/', '\\').toLowerCase()
+    const p = prefix.replaceAll('/', '\\').toLowerCase()
+    return f === p || f.startsWith(p.endsWith('\\') ? p : `${p}\\`)
+  }
   if (file === prefix) return true
   const normalized = prefix.endsWith('/') ? prefix : `${prefix}/`
   return file.startsWith(normalized)
 }
 
-function swapExtension(file: string, extensions: Record<string, string>): string {
-  const slash = file.lastIndexOf('/')
+/** What follows `prefix` in `file`, without a leading separator. Call only after `within`. */
+export function restUnder(file: string, prefix: string, platform: NodeJS.Platform = process.platform): string {
+  return file.slice(prefix.length).replace(platform === 'win32' ? /^[\\/]/ : /^\//, '')
+}
+
+/** `base` and `rest` joined with the platform's separator, `base` losing any trailing one. */
+export function joinUnder(base: string, rest: string, platform: NodeJS.Platform = process.platform): string {
+  const win = platform === 'win32'
+  const trimmed = base.replace(win ? /[\\/]$/ : /\/$/, '')
+  return rest === '' ? trimmed : `${trimmed}${win ? '\\' : '/'}${rest}`
+}
+
+function swapExtension(
+  file: string,
+  extensions: Record<string, string>,
+  platform: NodeJS.Platform,
+): string {
+  const slash = Math.max(file.lastIndexOf('/'), platform === 'win32' ? file.lastIndexOf('\\') : -1)
   const dot = file.lastIndexOf('.')
   if (dot <= slash) return file
   const ext = file.slice(dot)
@@ -57,15 +80,17 @@ function swapExtension(file: string, extensions: Record<string, string>): string
  * Rules are tried in order, so a caller can put a narrow output directory before
  * a broad one.
  */
-export function projectPath(file: string, rules: ProjectionRule[]): string | null {
+export function projectPath(
+  file: string,
+  rules: ProjectionRule[],
+  platform: NodeJS.Platform = process.platform,
+): string | null {
   for (const rule of rules) {
-    if (!within(file, rule.from)) continue
-    const rest = file.slice(rule.from.length).replace(/^\//, '')
-    const base = rule.to.replace(/\/$/, '')
+    if (!within(file, rule.from, platform)) continue
     // The rule's own prefix (a directory a test listed) must not come back with a
     // trailing slash: the map keys it as a path, and `/repo/src` !== `/repo/src/`.
-    const joined = rest === '' ? base : `${base}/${rest}`
-    return swapExtension(joined, rule.extensions ?? DEFAULT_EXTENSIONS)
+    const joined = joinUnder(rule.to, restUnder(file, rule.from, platform), platform)
+    return swapExtension(joined, rule.extensions ?? DEFAULT_EXTENSIONS, platform)
   }
   return null
 }

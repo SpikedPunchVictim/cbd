@@ -13,7 +13,7 @@
  * records: probing with it re-entered the tracker without end.
  */
 import { realpathSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import nodePath, { basename, dirname, join, resolve } from 'node:path'
 
 export function canonicalPath(path: string): string {
   const absolute = resolve(path)
@@ -29,4 +29,14 @@ export function canonicalPath(path: string): string {
       current = parent
     }
   }
+}
+
+/**
+ * `root` relative to `top`, spelled the way git spells paths: always with `/`.
+ *
+ * `git status` prints forward slashes on every platform, so a prefix built from
+ * `path.relative` on Windows (`pkg\\app`) would never match its lines.
+ */
+export function gitRelative(top: string, root: string, pathModule: typeof nodePath = nodePath): string {
+  return pathModule.relative(top, root).split(pathModule.sep).join('/')
 }

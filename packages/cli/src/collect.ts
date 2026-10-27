@@ -106,6 +106,24 @@ interface SelectionPlan {
  * runner stack trace after the suite has already started. No connection is opened:
  * the CLI would hold the very lock it is checking.
  */
+/**
+ * How to start the user's command.
+ *
+ * On Windows `npm`, `pnpm` and `yarn` are `.cmd` shims, which `CreateProcess` will
+ * not start by name and Node refuses to start without a shell. So there the command
+ * goes through the shell, each word quoted so a path with a space stays one word.
+ * Elsewhere it is started directly, exactly as typed.
+ */
+export function spawnPlan(
+  exec: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): { file: string; args: string[]; shell: boolean } {
+  if (platform !== 'win32') return { file: exec[0]!, args: exec.slice(1), shell: false }
+  const quote = (word: string): string =>
+    /^[\w\-.:\\/=@,+]+$/.test(word) ? word : `"${word.replaceAll('"', '""')}"`
+  return { file: quote(exec[0]!), args: exec.slice(1).map(quote), shell: true }
+}
+
 function checkInspectTarget(target: string, allowRemote: boolean): void {
   let parsed
   try {
@@ -322,7 +340,9 @@ export function collect(options: CollectOptions): number {
   // directory so the build takes the ones this run touched, not an older run's.
   const shardsBefore = shardSizes(shardDir)
   const started = performance.now()
-  const result = spawnSync(options.exec[0]!, options.exec.slice(1), {
+  const command = spawnPlan(options.exec)
+  const result = spawnSync(command.file, command.args, {
+    shell: command.shell,
     cwd: options.cwd,
     env: childEnv(options, shard, selectionPath, plan.titles),
     // The suite is the user's to watch: forwarding rather than capturing keeps it

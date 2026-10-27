@@ -31,6 +31,7 @@
  * of kilobytes per take at the target suite's scale — 1555 tests, 1555 takes —
  * for data that never changes after the first time.
  */
+import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
 import type { GeneratedScript, V8ScriptCoverage } from './types.js'
 
@@ -332,6 +333,21 @@ export interface SnapshotFile {
 /** The file the instrument writes, derived from the pid it belongs to. */
 export function snapshotPath(dir: string, pid: number): string {
   return join(dir, `pid-${String(pid)}.coverage.json`)
+}
+
+/**
+ * The name a Windows instrument listens on.
+ *
+ * A named pipe has no file in the socket directory, and the collector discovers
+ * instruments by listing that directory. So on win32 the instrument listens on this
+ * pipe and writes the pipe's name into `pid-N.sock` (a plain file); everything that
+ * lists, stats or removes that file works unchanged, and `socket.ts` reads the name
+ * out of it to connect. The directory is hashed in so two socket directories on one
+ * machine cannot collide on a pid.
+ */
+export function pipeNameFor(dir: string, pid: number): string {
+  const tag = createHash('sha1').update(resolve(dir)).digest('hex').slice(0, 12)
+  return `\\\\.\\pipe\\cbd-${tag}-${String(pid)}`
 }
 
 export type InstrumentOp = 'hello' | 'take' | 'close' | 'ack' | 'correlate' | 'generated'

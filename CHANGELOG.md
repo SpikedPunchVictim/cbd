@@ -12,6 +12,14 @@ until a tag is pushed and the publish workflow runs.
   flags allow reading (`r`, `r+`, `a+`, `w+`, numeric `O_RDONLY` / `O_RDWR`, no flags); write-only
   opens (`w`, `a`, `wx`, `O_WRONLY`) do not. A copy records its source (and, for `cp`, the
   directory), and `readlink` records the link itself rather than its target.
+- **Windows is supported.** CI now runs on `windows-latest` as well as Ubuntu. The instrument listens
+  on a named pipe there (a unix socket path does not work) and writes the pipe's name into
+  `pid-<pid>.sock`, so discovery by listing the socket directory is unchanged. Prefix matching and
+  path rewriting for `projection` and `relocate` rules, and the dirty-tree check, now use the
+  platform's separator and, on Windows, ignore case. Map paths are stored with `/` so a map moves
+  between operating systems, and globs ignore case on Windows. `cbd collect -- npm test` runs the
+  command through the shell on Windows so `.cmd` shims start, and the node:test adapter runs the
+  whole suite (with a warning) instead of failing when the selection is too long for a command line.
 - **A very large line from an instrumented process no longer stalls the collector.** The line
   splitter searched the whole buffered text again for every chunk, so one huge reply took time
   quadratic in its size (100 MB took 15 s, longer than the take timeout). Each chunk is now searched

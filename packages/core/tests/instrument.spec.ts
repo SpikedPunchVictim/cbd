@@ -28,6 +28,7 @@ import {
   type TakeResult,
 } from '../src/instrument-protocol.js'
 import { CORRELATION_HEADER } from '../src/correlate.js'
+import { endpointOf } from '../src/source/socket.js'
 import {
   INSTRUMENT_SPECIFIER,
   launchService,
@@ -48,7 +49,7 @@ interface Client {
 
 async function connect(socketPath: string, session = 'test-session'): Promise<Client> {
   const socket = await new Promise<net.Socket>((resolve, reject) => {
-    const candidate = net.connect(socketPath)
+    const candidate = net.connect(endpointOf(socketPath))
     candidate.once('connect', () => resolve(candidate))
     candidate.once('error', reject)
   })
@@ -226,7 +227,7 @@ test.group('instrument module', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
-  })
+  }).skip(process.platform === 'win32', 'the failure is the unix-socket path-length limit; a pipe has none')
 
   test('announces its pid, protocol and role over hello', async () => {
     await withService({}, async (service) => {

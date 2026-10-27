@@ -11,30 +11,30 @@ import type { ScriptInfo, Source, V8ScriptCoverage } from '../src/types.js'
 const rules = [{ from: '/repo/out-nomaps', to: '/repo' }]
 
 test('projects a nested compiled path back to its source', () => {
-  assert.equal(projectPath('/repo/out-nomaps/src/math.js', rules), '/repo/src/math.ts')
+  assert.equal(projectPath('/repo/out-nomaps/src/math.js', rules, 'linux'), '/repo/src/math.ts')
 })
 
 test('projects a deeply nested path without losing depth', () => {
-  assert.equal(projectPath('/repo/out-nomaps/src/a/b/c.js', rules), '/repo/src/a/b/c.ts')
+  assert.equal(projectPath('/repo/out-nomaps/src/a/b/c.js', rules, 'linux'), '/repo/src/a/b/c.ts')
 })
 
 test('returns null for a file outside the output directory', () => {
-  assert.equal(projectPath('/repo/src/math.ts', rules), null)
+  assert.equal(projectPath('/repo/src/math.ts', rules, 'linux'), null)
 })
 
 // The prefix trap: a plain startsWith would rewrite this to /repo-extra/...,
 // silently pointing the map at files that do not exist.
 test('does not match a sibling directory sharing the prefix', () => {
-  assert.equal(projectPath('/repo/out-nomaps-extra/src/math.js', rules), null)
+  assert.equal(projectPath('/repo/out-nomaps-extra/src/math.js', rules, 'linux'), null)
 })
 
 test('honours a custom extension map', () => {
   const custom = [{ from: '/repo/out', to: '/repo', extensions: { '.mjs': '.mts' } }]
-  assert.equal(projectPath('/repo/out/a/b.mjs', custom), '/repo/a/b.mts')
+  assert.equal(projectPath('/repo/out/a/b.mjs', custom, 'linux'), '/repo/a/b.mts')
 })
 
 test('leaves an extension it has no mapping for unchanged', () => {
-  assert.equal(projectPath('/repo/out-nomaps/src/theme.css', rules), '/repo/src/theme.css')
+  assert.equal(projectPath('/repo/out-nomaps/src/theme.css', rules, 'linux'), '/repo/src/theme.css')
 })
 
 test('tries rules in order, so a narrow rule can precede a broad one', () => {
@@ -42,13 +42,13 @@ test('tries rules in order, so a narrow rule can precede a broad one', () => {
     { from: '/repo/out-nomaps/generated', to: '/repo/gen' },
     { from: '/repo/out-nomaps', to: '/repo' },
   ]
-  assert.equal(projectPath('/repo/out-nomaps/generated/x.js', ordered), '/repo/gen/x.ts')
-  assert.equal(projectPath('/repo/out-nomaps/src/x.js', ordered), '/repo/src/x.ts')
+  assert.equal(projectPath('/repo/out-nomaps/generated/x.js', ordered, 'linux'), '/repo/gen/x.ts')
+  assert.equal(projectPath('/repo/out-nomaps/src/x.js', ordered, 'linux'), '/repo/src/x.ts')
 })
 
 test('tolerates a trailing slash on either prefix', () => {
   const trailing = [{ from: '/repo/out-nomaps/', to: '/repo/' }]
-  assert.equal(projectPath('/repo/out-nomaps/src/x.js', trailing), '/repo/src/x.ts')
+  assert.equal(projectPath('/repo/out-nomaps/src/x.js', trailing, 'linux'), '/repo/src/x.ts')
 })
 
 // ---------------------------------------------------------------------------
@@ -141,5 +141,5 @@ test('canonicalizes the from-prefix but leaves the to-prefix as written', () => 
 })
 
 test('the rule prefix itself projects without a trailing slash', () => {
-  assert.equal(projectPath('/repo/out-nomaps', rules), '/repo')
+  assert.equal(projectPath('/repo/out-nomaps', rules, 'linux'), '/repo')
 })

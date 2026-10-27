@@ -40,6 +40,10 @@ import type { ScriptInfo, Source, V8ScriptCoverage } from '../src/types.js'
 const coreRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 const fixtureRoot = resolve(coreRoot, '../../fixture')
 
+// These spell POSIX paths literally; the win32 rewrite is covered by `rebase` in windows.spec.ts.
+const onWindows = process.platform === 'win32'
+const POSIX_LITERALS = 'fixture paths are POSIX literals'
+
 const rules = [{ from: '/repo/.grizzly-dev/lane', to: '/repo' }]
 
 test('rewrites a nested path under the staging root back to the checkout', () => {
@@ -47,28 +51,28 @@ test('rewrites a nested path under the staging root back to the checkout', () =>
     relocatePath('/repo/.grizzly-dev/lane/api/key-server/src/handler.ts', rules),
     '/repo/api/key-server/src/handler.ts',
   )
-})
+}).skip(onWindows, POSIX_LITERALS)
 
 test('leaves a path no rule covers unchanged, byte for byte', () => {
   const file = '/repo/api/key-server/src/handler.ts'
   assert.equal(relocatePath(file, rules), file, 'a rule that matches nothing must change nothing')
-})
+}).skip(onWindows, POSIX_LITERALS)
 
 test('does not match a sibling directory sharing the prefix', () => {
   assert.equal(relocatePath('/repo/.grizzly-dev/lane-extra/src/x.ts', rules), '/repo/.grizzly-dev/lane-extra/src/x.ts')
-})
+}).skip(onWindows, POSIX_LITERALS)
 
 test('tolerates a trailing slash on either prefix', () => {
   const trailing = [{ from: '/repo/.grizzly-dev/lane/', to: '/repo/' }]
   assert.equal(relocatePath('/repo/.grizzly-dev/lane/src/x.ts', trailing), '/repo/src/x.ts')
-})
+}).skip(onWindows, POSIX_LITERALS)
 
 // The deliberate difference from `projectPath`. A copy of a tree has the same file
 // names as the tree, so relocating `helpers.js` to `helpers.ts` would name a file
 // that does not exist — and the map would hold a key no diff produces.
 test('never swaps extensions, unlike a projection', () => {
   assert.equal(relocatePath('/repo/stage/src/helpers.js', [{ from: '/repo/stage', to: '/repo' }]), '/repo/src/helpers.js')
-})
+}).skip(onWindows, POSIX_LITERALS)
 
 test('tries rules in order, so a narrow rule can precede a broad one', () => {
   const ordered = [
@@ -77,7 +81,7 @@ test('tries rules in order, so a narrow rule can precede a broad one', () => {
   ]
   assert.equal(relocatePath('/repo/stage/generated/x.ts', ordered), '/repo/gen/x.ts')
   assert.equal(relocatePath('/repo/stage/src/x.ts', ordered), '/repo/src/x.ts')
-})
+}).skip(onWindows, POSIX_LITERALS)
 
 // The alias trap, which `projectPath` has its own test for and relocation inherits.
 // Node reports realpaths, a prefix in a config is exactly as typed, and on macOS

@@ -15,8 +15,8 @@ concurrency:
 
 jobs:
   test:
-    name: Node ${{ matrix.node }}
-    runs-on: ubuntu-latest
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -24,7 +24,13 @@ jobs:
         # Vitest 5) and the adapters' real-app tests are exercised on the
         # supported LTS/current pair.
         node: [22, 24]
+        os: [ubuntu-latest, windows-latest]
     steps:
+      # Windows checks files out with CRLF by default, which would change what git
+      # diffs and what the tests compare.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4

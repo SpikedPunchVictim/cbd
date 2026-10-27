@@ -8,7 +8,7 @@
  * ~66% at a one-commit window to ~2.4% at ten.
  */
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import nodePath, { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { testId } from './contract.js'
 import type { HunkEdit } from './changes.js'
 import { projectPath } from './projection.js'
@@ -1205,15 +1205,19 @@ export function mapPath(
  * same commit. A path outside the root (a relocated dependency, a global cache)
  * has no stable relative form and stays absolute.
  */
-const storePath = (root: string, path: string): string => {
-  if (!isAbsolute(path)) return path
-  const rel = relative(root, path)
-  return rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? path : rel
+export const storePath = (root: string, path: string, pathModule: typeof nodePath = nodePath): string => {
+  if (!pathModule.isAbsolute(path)) return path
+  const rel = pathModule.relative(root, path)
+  if (rel === '' || rel === '..' || rel.startsWith(`..${pathModule.sep}`) || pathModule.isAbsolute(rel)) {
+    return path
+  }
+  // Always `/`: a map recorded on Windows must load on Linux and the reverse.
+  return rel.split(pathModule.sep).join('/')
 }
 
 /** The inverse of `storePath`: absolute paths are left alone (pre-relative maps). */
-const loadPath = (root: string, path: string): string =>
-  isAbsolute(path) ? path : resolve(root, path)
+export const loadPath = (root: string, path: string, pathModule: typeof nodePath = nodePath): string =>
+  pathModule.isAbsolute(path) ? path : pathModule.resolve(root, path)
 
 /**
  * The same canonical root `createCbd` uses: Node resolves module URLs through

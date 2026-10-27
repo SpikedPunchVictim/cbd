@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from '@japa/runner'
 import {
   existingPattern,
+  fitsCommandLine,
   fileOf,
   selectionPattern,
   shardPathFor,
@@ -55,4 +56,17 @@ test('one shard per test file, named from the file and stable', () => {
   assert.notEqual(one, shardPathFor(base, '/repo/tests/two.test.mjs'))
   assert.ok(one.startsWith('/tmp/cbd/run.one.test.mjs.'))
   assert.ok(one.endsWith('.ndjson'))
+})
+
+test('a selection that fits the command line is re-executed', () => {
+  assert.equal(fitsCommandLine('node', ['--test-name-pattern=^a$', 'x.test.js'], 'win32'), true)
+  assert.equal(fitsCommandLine('node', ['--test-name-pattern=^a$', 'x.test.js'], 'linux'), true)
+})
+
+test('a selection past the Windows command-line limit is not re-executed', () => {
+  assert.equal(fitsCommandLine('node', [`--test-name-pattern=${'a'.repeat(40_000)}`], 'win32'), false)
+})
+
+test('a single argument past the Linux limit is not re-executed', () => {
+  assert.equal(fitsCommandLine('node', ['a'.repeat(130_000)], 'linux'), false)
 })

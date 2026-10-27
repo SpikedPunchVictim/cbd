@@ -127,3 +127,25 @@ export function shardPathFor(base: string, file: string): string {
   const leaf = safe === '' ? hash : `${safe}.${hash}`
   return join(dirname(base), `${stem}.${leaf}${extension}`)
 }
+
+/**
+ * Whether a re-execution with `args` can be started at all.
+ *
+ * The selection travels in the command line. Windows refuses a command line over
+ * 32,767 characters, and Linux refuses a single argument over 128 KiB; a selection
+ * large enough to hit either cannot be applied by re-executing, and the caller runs
+ * the whole suite instead, which over-selects but never skips a selected test.
+ */
+export function fitsCommandLine(
+  execPath: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === 'win32') {
+    // Each argument is quoted, and a backslash before a quote doubles, so budget well
+    // under the limit rather than counting exactly.
+    const total = [execPath, ...args].reduce((sum, arg) => sum + arg.length + 3, 0)
+    return total <= 30_000
+  }
+  return args.every((arg) => Buffer.byteLength(arg) < 120_000)
+}
