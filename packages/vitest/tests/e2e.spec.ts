@@ -12,6 +12,7 @@ import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFile
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { stripVTControlCharacters } from 'node:util'
 import { test } from '@japa/runner'
 import { buildMap, testsForFunction } from '@spikedpunch/cbd'
 import { parseShard } from '@spikedpunch/cbd/adapter'
@@ -164,9 +165,11 @@ test('a selection without a shard narrows the run', () => {
     })
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
     // The reporter lists skipped tests too, so the count line is the answer: one
-    // test ran, the rest were filtered out by the selection.
-    assert.match(result.stdout, /Tests\s+1 passed \| 3 skipped/)
-    assert.match(result.stdout, /✓ .*math > adds/)
+    // test ran, the rest were filtered out by the selection. CI forces colour, and
+    // the escape codes sit between the words.
+    const stdout = stripVTControlCharacters(result.stdout)
+    assert.match(stdout, /Tests\s+1 passed \| 3 skipped/)
+    assert.match(stdout, /✓ .*math > adds/)
     assert.deepEqual(shardsIn(dir), [], 'a selection-only run records nothing')
   } finally {
     rmSync(dir, { recursive: true, force: true })
