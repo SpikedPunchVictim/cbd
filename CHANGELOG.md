@@ -3,7 +3,7 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
-## Unreleased
+## 0.0.6 — 2026-10-27
 
 - **Windows: three path spellings no longer break the default root, the binding-read proof and Vitest module-scope reads.**
   `cbd` compared git's `C:/…` top level against native `C:\…` paths while looking for a
@@ -48,6 +48,12 @@ until a tag is pushed and the publish workflow runs.
   between operating systems, and globs ignore case on Windows. `cbd collect -- npm test` runs the
   command through the shell on Windows so `.cmd` shims start, and the node:test adapter runs the
   whole suite (with a warning) instead of failing when the selection is too long for a command line.
+  Three places that compared a forward-slash path with a native one now agree on Windows: the CLI's
+  search for the repository root (git reports its top level with `/`), `emitCheck`'s TypeScript
+  host (which names files with `/`), and the Vitest adapter, which credited a spec's module-scope
+  reads to Vitest's spelling of the file instead of the path its tests are keyed by. The package
+  build scripts and e2e tests start `tsc`, `jest` and `vitest` through `node`, because the `.cmd`
+  shims cannot be started without a shell.
 - **A very large line from an instrumented process no longer stalls the collector.** The line
   splitter searched the whole buffered text again for every chunk, so one huge reply took time
   quadratic in its size (100 MB took 15 s, longer than the take timeout). Each chunk is now searched
