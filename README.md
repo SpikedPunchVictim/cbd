@@ -269,7 +269,8 @@ pnpm exec cbd select
 
 `@japa/runner` 5. A subset run imports only the selected spec files. If `bin/test.js` imports shared
 code before `configure`, add the `register` preload so that code is recorded too:
-`NODE_OPTIONS="--import @spikedpunch/cbd-japa/register"`. It supports `granularity: "group"` and
+`node --import @spikedpunch/cbd-japa/register bin/test.js`, on the runner's own command line rather
+than in `NODE_OPTIONS`. It supports `granularity: "group"` and
 services the suite drives (`CBD_SOCKET_DIR`). [Adapter README](packages/japa/README.md).
 
 ## The config file

@@ -125,7 +125,9 @@ until a tag is pushed and the publish workflow runs.
 - **A child spawned at import, or by a hook between tests, now leaves its opaque mark.** The process
   tracker's opaque note and a declared environment variable were kept only inside a test window, so
   a spec that spawned a server at import or in a `beforeAll` lost them and was not widened. They now
-  fall back to the spec's import scope, then to the between-tests scope (the whole shard).
+  fall back to the spec's import scope, then to the between-tests scope. Only Jest and Vitest, which
+  load each spec file in its own module registry, name the spec; japa, mocha and node:test share one
+  module cache across a shard's specs, so an import-time spawn there marks every test in the shard.
   `new Worker(...)` from `worker_threads` and `cluster.fork()` are marked opaque like a spawn.
 - **A relative `CBD_SOCKET_DIR` now names one directory for every process.** It was resolved against
   each process's own working directory, so a child with another cwd listened elsewhere and was never
