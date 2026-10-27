@@ -41,8 +41,7 @@ reason. It never silently skips a test.
 
 ## Requirements
 
-- Node.js **20.16 or newer** (the `node:test` adapter needs `TestContext.fullName`; the core runs on
-  Node 20).
+- Node.js **22 or newer** (the core uses the global `WebSocket`).
 - `git` on `PATH`.
 - One supported test runner: Vitest, Jest, mocha, `node:test`, or japa.
 
@@ -238,7 +237,7 @@ pnpm exec cbd collect -- pnpm test
 pnpm exec cbd select
 ```
 
-Node.js 20.16 or newer. Works with ESM and CommonJS test files. Each test file runs in its own child
+Node.js 22 or newer. Works with ESM and CommonJS test files. Each test file runs in its own child
 process and writes its own shard. [Adapter README](packages/node-test/README.md).
 
 ### japa

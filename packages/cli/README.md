@@ -154,5 +154,5 @@ See the [root README](https://github.com/SpikedPunchVictim/cbd#the-config-file) 
 
 ## Requirements
 
-Node.js 20.16+ and `git` on `PATH`. The CLI depends on `@spikedpunch/cbd`; the runner adapter is a
+Node.js 22+ and `git` on `PATH`. The CLI depends on `@spikedpunch/cbd`; the runner adapter is a
 separate package.

@@ -10,7 +10,7 @@ file and narrows the run to the tests a change reaches.
 pnpm add -D @spikedpunch/cbd-node-test @spikedpunch/cbd @spikedpunch/cbd-cli
 ```
 
-Requires **Node.js 20.16+** (`TestContext.fullName` / `filePath`).
+Requires **Node.js 22+**, the core's minimum (the adapter itself needs `TestContext.fullName` / `filePath`, from 20.16).
 
 ## Setup
 

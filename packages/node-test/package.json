@@ -10,7 +10,7 @@
     "./register": "./dist/src/register.js"
   },
   "engines": {
-    "node": ">=20.16"
+    "node": ">=22"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

@@ -20,9 +20,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The core engines field is >=20, but the toolchain (TypeScript 7,
+        # The core engines field is >=22 (global WebSocket); the toolchain (TypeScript 7,
         # Vitest 5) and the adapters' real-app tests are exercised on the
-        # supported LTS/current pair. Node 20 would need its own pin.
+        # supported LTS/current pair.
         node: [22, 24]
     steps:
       - uses: actions/checkout@v4
