@@ -9,14 +9,15 @@ until a tag is pushed and the publish workflow runs.
   one-process suite the module-scope rule named every test for an edit to an import, interface or
   type alias, although the compiler erases them. The opt-in config key `emitCheck` maps globs to a
   `{ tsconfig, typescript }` pair, where `typescript` is the exact compiler version the tests run
-  with (required: a bare tsconfig string is refused). For each modified matching file CBD transpiles the base and current version with the
-  project's own `typescript` and that tsconfig, hollows out function bodies, and when the rest is
-  identical the hunks outside every mapped function select nothing and the output says
-  `module-scope-unchanged` with the compiler version. A resolved version that differs from the pin
-  skips the check and adds a warning. Function hunks, the load rule, the unknown-file ladder and added,
-  deleted or renamed files are unchanged, and an unresolvable `typescript` (including 7.x, which has
-  no JavaScript transpile API), a transpile error or no matching glob keeps today's behaviour.
-  No new dependency.
+  with (required: a bare tsconfig string is refused). For each modified matching file CBD transpiles
+  the base and current version with the project's own `typescript` and that tsconfig, hollows out
+  function bodies, and when the rest is identical the hunks outside every mapped function select
+  nothing and the output says `module-scope-unchanged` with the compiler version. A resolved version
+  that differs from the pin skips the check and adds a warning. Function hunks, the load rule, the
+  unknown-file ladder and added, deleted or renamed files are unchanged, and an unresolvable
+  `typescript` (including 7.x, which has no JavaScript transpile API), a transpile error or no
+  matching glob keeps today's behaviour. The pin cannot vouch for a test runner that transpiles with
+  swc or esbuild instead. No new runtime dependency.
 - **Recording no longer breaks tests that `promisify` `exec` or `execFile`.** The process tracker
   replaced `child_process.exec` and `execFile` with plain wrappers, dropping the
   `util.promisify.custom` hook that makes `promisify(execFile)` resolve `{ stdout, stderr }`. Under
@@ -93,9 +94,10 @@ until a tag is pushed and the publish workflow runs.
   and read in the next. Coverage cannot see that dependency, so the new `select.sharedState` config
   key declares the files: when a change selects a test that touched a listed file, every test that
   touched it is added, with reason `shared-state`. The expansion repeats to a fixpoint, so a test
-  pulled in through one file also pulls in its neighbours on another, and it counts a listed file that only ran at import (the load
-  bucket) as touched by its load observers, and it runs after every other
-  rule, so tests added by a changed environment variable are expanded too. It is opt-in and deliberately not inferred; a
+  pulled in through one file also pulls in its neighbours on another. A listed file that only ran at
+  import (the load bucket) counts as touched by its load observers, and the rule runs after every
+  other rule, so tests added by a changed environment variable are expanded too. It is opt-in and
+  deliberately not inferred; a
   neighbour closure over every shared module collapses to the full suite, and `cbd verify` remains
   the measurement for what a subset missed.
 - **A rename or a deletion is judged by what the old file did.** A renamed file was processed only
@@ -337,7 +339,7 @@ until a tag is pushed and the publish workflow runs.
   it. It is now returned, absorbed and acknowledged; only a window with no match and no fallback
   reports a loss.
 
-## 0.0.4 — 2026-10-20
+## 0.0.4 — 2026-10-21
 
 - **Reads are recorded.** The adapters wrap the test process's public
   `node:fs` / `node:fs/promises` read, stat, existence and directory-listing calls
@@ -441,7 +443,7 @@ until a tag is pushed and the publish workflow runs.
   writes the v2 file adapters read and removes a stale one when the answer is all
   or empty.
 
-## 0.0.3 — 2026-10-21
+## 0.0.3 — 2026-10-20
 
 Round-2 feedback from grizzly-sv T-29-015.
 
