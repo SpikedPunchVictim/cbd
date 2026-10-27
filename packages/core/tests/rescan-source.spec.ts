@@ -30,7 +30,7 @@
  * the report buffered behind it.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -241,6 +241,88 @@ test.group('rescanningSocketSource', (group) => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+})
+
+// Windows reuses pids, so a socket path written off for a dead process can be bound
+// again by a new one. The write-off belongs to the file it judged, not to the name.
+test('a written-off socket path is attached again once a live service binds it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let late: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    const stale = join(dir, 'pid-777779.sock')
+    writeFileSync(stale, '')
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+    await source.take()
+    await source.take()
+
+    // The path is now written off. A live service takes the name over.
+    late = await started(dir)
+    await sleep(30)
+    unlinkSync(stale)
+    renameSync(late.socketPath, stale)
+    await source.take()
+
+    late.run('store')
+    await until(late, 'stored:')
+    const names = executedNames(await source.take())
+    assert.ok(names.has('persistKey'), `the service that took the path over was never read: ${[...names].join(', ')}`)
+  } finally {
+    source?.close()
+    lane?.stop()
+    late?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A boundary that finds a dead process through its stale socket gets the lifetime
+// from the connect failure's fallback read, which finishes after the boundary's
+// parts were gathered. The window that found it must still carry it.
+test('a lifetime recovered through a stale socket lands in the window that found it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-rescan-'))
+  let lane: RunningService | null = null
+  let source: QueuedSource | null = null
+  try {
+    lane = await started(dir)
+    source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 60_000 })
+    writeFileSync(join(dir, 'pid-777781.sock'), '')
+    const path = join(dir, 'pid-777781.coverage.json')
+    const snapshot = (extra: object): string =>
+      JSON.stringify({
+        protocol: INSTRUMENT_PROTOCOL,
+        pid: 777781,
+        startedAtUs: 1e15,
+        atUs: 1e15,
+        scripts: [],
+        windows: [],
+        ...extra,
+      })
+    // Another collector's file is a final verdict for the snapshot scan, which then
+    // skips the file for as long as its mtime stays the same.
+    writeFileSync(path, snapshot({ session: 'old' }))
+    await source.take()
+    const before = statSync(path)
+    writeFileSync(
+      path,
+      snapshot({
+        endedAtUs: 1e15,
+        untaken: [{ scriptId: '1', url: 'file:///x.js', functions: [] }],
+      }),
+    )
+    utimesSync(path, before.atimeMs / 1000, before.mtimeMs / 1000)
+
+    const payload = await source.take()
+    assert.ok(
+      payload.some((script) => script.scriptId === '777781:1'),
+      'the lifetime found through the socket was dropped from the window that found it',
+    )
+  } finally {
+    source?.close()
+    lane?.stop()
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // The swallow is deliberate — one dead target must not blank the others — but a

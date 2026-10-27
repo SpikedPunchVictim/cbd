@@ -209,6 +209,12 @@ export async function rescanningSocketSource(
   /** Paths with an attach in flight, so two lookers cannot start two of them. */
   const attaching = new Map<string, Promise<Target | null>>()
   const failures = new Map<string, number>()
+  /**
+   * The file each path's failures were counted against (inode and mtime). A path is
+   * only a name: once a different file sits under it, the process that earned the
+   * failures is gone and the verdict does not carry over to its successor.
+   */
+  const failedFile = new Map<string, string>()
   /** The last error each path produced, for the one warning when it is given up on. */
   const lastError = new Map<string, string>()
   /** Paths already reported as written off; the warning is said once. */
@@ -466,6 +472,9 @@ export async function rescanningSocketSource(
         return null
       }
       failures.set(path, (failures.get(path) ?? 0) + 1)
+      const identity = fileIdentity(path)
+      if (identity === undefined) failedFile.delete(path)
+      else failedFile.set(path, identity)
       lastError.set(path, error instanceof Error ? error.message : String(error))
       return null
     }
@@ -541,6 +550,15 @@ export async function rescanningSocketSource(
     }
   }
 
+  function fileIdentity(path: string): string | undefined {
+    try {
+      const stats = statSync(path)
+      return `${String(stats.ino)}:${String(stats.mtimeMs)}`
+    } catch {
+      return undefined
+    }
+  }
+
   function attachCandidates(boundary: boolean, parts: Array<Promise<TakeCapture>>): void {
     let candidates: string[] = []
     try {
@@ -560,6 +578,13 @@ export async function rescanningSocketSource(
     for (const path of candidates) {
       if (refused.has(path)) continue
       if (targets.some((target) => target.path === path)) continue
+      if (failures.has(path) && failedFile.get(path) !== fileIdentity(path)) {
+        // A new process reusing the pid bound the name again: it is a new target.
+        failures.delete(path)
+        failedFile.delete(path)
+        lastError.delete(path)
+        writtenOff.delete(path)
+      }
       if ((failures.get(path) ?? 0) >= ATTACH_ATTEMPTS) {
         // A written-off socket is coverage the map will not have. The docblock's
         // case is a leftover file, but a target whose loop is blocked past the
@@ -575,20 +600,24 @@ export async function rescanningSocketSource(
         continue
       }
 
+      // A harvest the attach recovers arrives after `dispatch` has gathered `parts`,
+      // so it cannot be pushed there: it is handed to this path's own part, which
+      // resolves only once the attach has finished.
+      let recovered: Harvest | undefined
       let opening = attaching.get(path)
       if (opening === undefined) {
-        opening = attach(
-          path,
-          boundary ? (harvest) => parts.push(Promise.resolve(captureOf(harvest))) : undefined,
-        )
+        opening = attach(path, boundary ? (harvest) => void (recovered = harvest) : undefined)
         attaching.set(path, opening)
         void opening.then(() => attaching.delete(path))
       }
       if (boundary) {
         parts.push(
-          opening.then((target) =>
-            target === null ? { coverage: [], ids: [], requests: [] } : takeFrom(target),
-          ),
+          opening.then((target) => {
+            if (target !== null) return takeFrom(target)
+            return recovered === undefined
+              ? { coverage: [], ids: [], requests: [] }
+              : captureOf(recovered)
+          }),
         )
       }
     }
