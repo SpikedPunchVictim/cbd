@@ -107,7 +107,8 @@ tests reach a line, and `cbd reaches <test> <file>` for the inverse.
 `--patch` and `--change` answer what a prospective edit would select without applying it — no
 checkout to restore, no `dist` to rebuild. Patch paths are read relative to `--root` (the coordinate
 `--since` prints), so a diff made at a nested `--root` is the one that resolves. `--emit-selection`
-writes the same v2 file adapters read, and removes a stale one when the answer is "all" or empty;
+writes the same v2 file adapters read, and removes a stale one when the answer is "all" or empty, or
+when `select` fails;
 write it outside the repository or under the state directory, or the next `select` will see it as an
 untracked change. `--format summary` prints the answer in a
 few lines for an agent. `reaches --batch` takes a JSON array of `{file, lines}` or `{file, find}` rows
@@ -138,7 +139,9 @@ Every adapter follows the same pattern:
    `CBD_SHARD` is set, so ordinary runs are unaffected.
 2. Run the suite through `cbd collect`. The first run has no map, so it records every test and builds
    one. Later runs narrow to the tests the working-tree change reaches, record them, and update the
-   map. Use `--no-select` to record the full suite on purpose, for example on `main` in CI.
+   map incrementally, so the tests that were skipped stay in it. A run whose test command fails
+   builds no map and leaves the existing one as it was. Use `--no-select` to record the full suite
+   on purpose, for example on `main` in CI.
 3. Ask `cbd select` what a change would run, without running anything.
 
 The runners are listed most widely used first. Each adapter's README covers manual recording,

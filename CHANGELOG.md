@@ -14,6 +14,16 @@ until a tag is pushed and the publish workflow runs.
   each process's own working directory, so a child with another cwd listened elsewhere and was never
   collected. The instrument, the socket and rescan sources and the japa and vitest adapters now
   resolve it to an absolute path on first read and write that back to the environment.
+- **A narrowed `cbd collect` no longer replaces the map with just the tests that ran.** A run that
+  selected a subset now builds incrementally from the map the selection read, so the skipped tests
+  stay in the map and later selections still see them. `--incremental` with `--base` naming the
+  commit being built carries from that commit's own map instead of ignoring `--base`.
+- **A failing test run no longer overwrites the map.** When the test command exits non-zero,
+  `collect` builds nothing, prints a warning and keeps the exit status; the failed tests are not
+  recorded as passing, so a map built from that run would stop selecting them.
+- **A failed `select` no longer leaves the previous `--emit-selection` or `--emit-selection-dir`
+  files in place.** The managed files are removed before the error is raised, so a runner that
+  ignores the exit code cannot run the previous run's subset.
 - **A file with a lone `\r`, U+2028 or U+2029 no longer gets a wrong binding-read narrowing.**
   TypeScript breaks lines on those characters while git and the map break on `\n` only, so a hunk
   after one landed on the wrong statement and a side-effecting module-scope edit could be proved a

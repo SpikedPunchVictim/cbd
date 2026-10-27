@@ -92,6 +92,8 @@ export function collectShardName(now = new Date(), pid = process.pid): string {
 interface SelectionPlan {
   /** Set only for a subset; `undefined` means run everything. */
   titles?: string[]
+  /** The map commit the selection read; a narrowed run carries the rest from it. */
+  base?: string
   changed: number
 }
 
@@ -118,7 +120,8 @@ function checkInspectTarget(target: string, allowRemote: boolean): void {
 function planSelection(options: CollectOptions, selectionPath: string): SelectionPlan {
   const stateDir = options.config.stateDir ?? '.cbd'
 
-  if (nearestMapCommit(options.root, stateDir, options.config.mapsDir) === undefined) {
+  const base = nearestMapCommit(options.root, stateDir, options.config.mapsDir)
+  if (base === undefined) {
     options.err(
       'cbd: warning: no map yet; running the full suite so the first map covers everything',
     )
@@ -140,7 +143,7 @@ function planSelection(options: CollectOptions, selectionPath: string): Selectio
     writeSelection(selectionPath, result.selected)
     options.out(`selected ${plural(titles.length, 'test')} for ${files}`)
   }
-  return { titles, changed: result.changes.length }
+  return { titles, base, changed: result.changes.length }
 }
 
 
@@ -184,9 +187,11 @@ function buildAfterRun(
   options: CollectOptions,
   stateDir: string,
   shards: string[],
+  plan: SelectionPlan,
   out: (line: string) => void,
   err: (line: string) => void,
 ): number | null {
+  const base = options.base ?? plan.base
   try {
     const built = options.cbd.build({
       commit: options.commit,
@@ -194,8 +199,11 @@ function buildAfterRun(
       // older run's shard is stale the moment the tree moved on, and merging it
       // would refuse a rebuild the current run can answer for.
       shards,
-      ...(options.incremental ? { incremental: true } : {}),
-      ...(options.base === undefined ? {} : { base: options.base }),
+      // A narrowed run recorded only the selected tests; a map of just those would
+      // make every later selection miss the rest. The map the selection read is
+      // the base the skipped tests are carried from.
+      ...(options.incremental || plan.titles !== undefined ? { incremental: true } : {}),
+      ...(base === undefined ? {} : { base }),
     })
     out(
       `map ${shown(options.root, built.path)}: ${plural(built.tests, 'test')}, ` +
@@ -353,12 +361,17 @@ export function collect(options: CollectOptions): number {
       return EXIT.error
     }
 
-    if (options.build && wroteShard) {
-      const failure = buildAfterRun(options, stateDir, written, out, err)
+    const status = result.status ?? EXIT.error
+    // A failed run is an incomplete recording: the tests that failed are not in
+    // the shard as passing, so a map built from it would stop selecting them. The
+    // previous map, if any, is the better answer.
+    if (status !== 0 && options.build && wroteShard) {
+      err('cbd: no map was built from the failed run; fix the failures and collect again')
+    } else if (options.build && wroteShard) {
+      const failure = buildAfterRun(options, stateDir, written, plan, out, err)
       if (failure !== null) return failure
     }
 
-    const status = result.status ?? EXIT.error
     if (status !== 0) err(`cbd: the test command exited ${status}`)
     return status
   } finally {

@@ -42,6 +42,12 @@ Select and build are on by default once collection is asked for; `--no-select` a
 each off. On a repository's first run there is no map, so the honest answer is a full recording, not
 an error. An interrupted child leaves a shard with no footer, which is refused rather than built.
 
+A run that selected a subset rebuilds the map incrementally from the map the selection read, so the
+tests it skipped stay in the map (the explicit `--incremental` and `--base` still work). A run whose
+test command exits non-zero builds no map and says so, leaving any existing map as it was: the
+failed tests are not recorded as passing, and a map without them would stop selecting them. `--no-select` records the full suite
+and builds from that alone.
+
 The adapters are inert unless `CBD_SHARD` is set, so the same `test` script works for ordinary runs
 and for `cbd collect`.
 

@@ -702,7 +702,10 @@ export function createCbd(config: CbdConfig): Cbd {
         const base =
           options.base ??
           nearestMapCommit(root, stateDir, mapsDir, commit)
-        if (base !== undefined && base !== commit) {
+        // `base === commit` is a narrowed re-record of a commit that already has a
+        // map: the earlier map is read before the save replaces it, and the diff
+        // against the worktree says which of its tests the edits invalidated.
+        if (base !== undefined) {
           const earlier = readMap(base)
           // The shards describe the worktree, so the worktree is the right side of
           // the comparison even when `commit` names a commit: an uncommitted edit is

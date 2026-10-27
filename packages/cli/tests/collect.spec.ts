@@ -19,9 +19,10 @@ import {
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from '@japa/runner'
+import { loadMap } from '@spikedpunch/cbd'
 import { inspectorLockPath, resolveInspectorTarget } from '@spikedpunch/cbd/adapter'
 import { EXIT } from '../src/cli.js'
-import { invoke, prepared } from './support/repo.js'
+import { invoke, prepared, shardText } from './support/repo.js'
 
 interface Logged {
   shard: string
@@ -194,7 +195,7 @@ test.group('cbd collect', () => {
     }
   })
 
-  test('exits with the test command’s status, but still builds', () => {
+  test('a failing run exits with the test command’s status and builds no map', () => {
     const { root, a, spec, runner, cleanup } = prepared()
     try {
       const log = join(root, 'log.ndjson')
@@ -213,7 +214,75 @@ test.group('cbd collect', () => {
 
       assert.equal(result.code, 2)
       assert.match(result.err.join('\n'), /the test command exited 2/)
-      assert.match(result.out.join('\n'), /^map /m, 'a failing suite still leaves a usable map')
+      assert.match(result.err.join('\n'), /no map was built/)
+      assert.doesNotMatch(result.out.join('\n'), /^map /m)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a failing run leaves the existing map untouched', () => {
+    const { repo, root, a, spec, runner, cleanup } = prepared()
+    try {
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      const map = join(mapDir(root), repo.head(), 'map.json')
+      const before = readFileSync(map, 'utf8')
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const result = invoke(
+        root,
+        'collect',
+        '--',
+        process.execPath,
+        runner,
+        join(root, 'log.ndjson'),
+        a,
+        spec,
+        '1',
+      )
+
+      assert.equal(result.code, 1)
+      assert.match(result.err.join('\n'), /no map was built/)
+      assert.equal(readFileSync(map, 'utf8'), before)
+    } finally {
+      cleanup()
+    }
+  })
+
+  test('a narrowed run keeps the tests it skipped in the rebuilt map', () => {
+    const { repo, root, a, spec, runner, cleanup } = prepared()
+    try {
+      const b = join(root, 'src', 'b.ts')
+      const bSpec = join(root, 'tests', 'b.spec.ts')
+      repo.write('src/b.ts', 'export function sub(a, b) {\n  return a - b;\n}\n')
+      repo.write('tests/b.spec.ts', "import { sub } from '../src/b.js'\n")
+      const head = repo.commit('add b')
+      writeFileSync(
+        join(root, '.cbd', 'shards', 'run.ndjson'),
+        shardText(head, [
+          { title: 'adds', file: spec, touches: [[a, 'add@0', 1, 3]] },
+          { title: 'reads', file: spec, touches: [[a, 'add@0', 1, 3]] },
+          { title: 'subtracts', file: bSpec, touches: [[b, 'sub@0', 1, 3]] },
+        ]),
+      )
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+
+      const result = invoke(
+        root,
+        'collect',
+        '--',
+        process.execPath,
+        runner,
+        join(root, 'log.ndjson'),
+        a,
+        spec,
+      )
+
+      assert.equal(result.code, EXIT.ok)
+      assert.match(result.out.join('\n'), /^selected 2 tests for 1 changed file$/m)
+      const titles = loadMap(root, head).map.tests.map((entry) => entry.title).sort()
+      assert.deepEqual(titles, ['adds', 'reads', 'subtracts'])
     } finally {
       cleanup()
     }
