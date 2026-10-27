@@ -104,6 +104,28 @@ test('line ranges are reported in original coordinates', () => {
   }
 })
 
+// V8 compiles an ES module without its leading BOM, so its offsets are one short of
+// the file's; the module body range (the script's whole length) shows it.
+test('an ES module with a BOM resolves offsets against the text V8 compiled', () => {
+  const tree = makeTree()
+  try {
+    writeFileSync(tree.file, `\uFEFF${MODULE}`)
+    const betaStart = span('function beta')
+    const payload = payloadFor(pathToFileURL(tree.file).href, [
+      { name: '', start: 0, end: MODULE.length, count: 1 },
+      { name: 'beta', start: betaStart, end: closeBrace(betaStart), count: 1 },
+    ])
+    const touched = normalize(payload, fakeSource(), {
+      projection: [{ from: tree.outDir, to: tree.root }],
+    })
+    const beta = touched.find((t) => t.key === 'beta@0')
+    assert.equal(beta?.startLine, 4)
+    assert.equal(beta?.endLine, 6)
+  } finally {
+    tree.cleanup()
+  }
+})
+
 // The property the whole key scheme rests on. Ordinals are assigned over every
 // function in the file, so a window that executes ONLY the middle `parse` still
 // reports it as `parse@1` — not `parse@0`, which is what counting the executed

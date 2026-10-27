@@ -337,6 +337,8 @@ function identitiesFor(
     script.generated === undefined
       ? undefined
       : { starts: script.generated.lineStarts, length: script.generated.length }
+  let maxEnd = 0
+  for (const fn of functions) if (fn.end > maxEnd) maxEnd = fn.end
   const resolver = createScriptResolver(
     stableUrl,
     {
@@ -346,6 +348,7 @@ function identitiesFor(
     {
       projection: canonicalProjectionRules(options.scan?.projection ?? []),
       cache,
+      scriptLength: maxEnd,
       ...(generatedIndex === undefined ? {} : { index: generatedIndex }),
     },
   )
@@ -353,9 +356,6 @@ function identitiesFor(
 
   const include = options.scan?.include
   const exclude = options.scan?.exclude
-
-  let maxEnd = 0
-  for (const fn of functions) if (fn.end > maxEnd) maxEnd = fn.end
 
   const located: Array<{
     fn: ShardFunction

@@ -10,6 +10,12 @@ until a tag is pushed and the publish workflow runs.
   test, so the run stopped and the file's shard was left incomplete. A subtest now opens no window:
   what it touches is attributed to its top-level test, which is the only map entry and selection
   unit. Selecting that test re-runs its subtests, so nothing is under-selected.
+- **An ES module with a leading BOM no longer has its functions placed one column early.** V8
+  compiles an ES module without its BOM, so its offsets are one short of the file's; converting
+  them against the file text put a function that starts at the beginning of a line on the previous
+  line, which selected tests for a neighbouring edit. When the file starts with U+FEFF and the
+  script's length (the end of its widest function range) is one less than the file's, offsets are
+  converted with the BOM removed.
 - **A Vitest run whose selection matches no test can now fail.** The setup file selects by skipping
   every other test, and Vitest exits 0 when everything is skipped, so a selection naming tests the
   suite no longer has passed having run nothing. `@spikedpunch/cbd-vitest/reporter`, added to the

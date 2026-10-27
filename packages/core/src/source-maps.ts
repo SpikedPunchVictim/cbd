@@ -24,7 +24,7 @@ import {
   originalPositionFor,
   type Bias,
 } from '@jridgewell/trace-mapping'
-import { columnAt, lineAt, type FileCache, type LineIndex } from './line-index.js'
+import { buildLineIndex, columnAt, lineAt, type FileCache, type LineIndex } from './line-index.js'
 import { canonicalPath, projectPath, type ProjectionRule } from './projection.js'
 import type { ScriptInfo } from './types.js'
 
@@ -255,7 +255,13 @@ function createProjectionResolver(
 export function createScriptResolver(
   scriptUrl: string,
   info: ScriptInfo | undefined,
-  options: { projection: ProjectionRule[]; cache: FileCache; index?: LineIndex },
+  options: {
+    projection: ProjectionRule[]
+    cache: FileCache
+    index?: LineIndex
+    /** The script's length as V8 measured it: the end of its widest function range. */
+    scriptLength?: number
+  },
 ): ScriptResolver | null {
   if (!scriptUrl.startsWith('file:')) return null
 
@@ -270,8 +276,17 @@ export function createScriptResolver(
   // file on disk. The shard records that text's line starts and passes the
   // resulting index here; the file is still the script URL (for relative maps and
   // staleness), but it must not be indexed as if V8 had compiled it (`cbd-x2j`).
-  const index = options.index ?? options.cache.index(generatedPath)
-  if (index === null) return null
+  const fileIndex = options.index ?? options.cache.index(generatedPath)
+  if (fileIndex === null) return null
+  let index: LineIndex = fileIndex
+  // V8 compiles an ES module without its leading BOM, so its offsets are one short
+  // of the file's. The module body spans the whole script, which tells the two
+  // apart; a file that is exactly one character longer than its script and starts
+  // with U+FEFF is indexed without it.
+  if (options.index === undefined && options.scriptLength === index.length - 1) {
+    const text = options.cache.text(generatedPath)
+    if (text?.charCodeAt(0) === 0xfeff) index = buildLineIndex(text.slice(1))
+  }
 
   if (info?.sourceMapURL) {
     // A declared map is a promise about how the build was made. If it cannot be

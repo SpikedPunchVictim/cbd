@@ -210,9 +210,15 @@ export function scan(
   for (const script of payload) {
     if (!prefilter(script.url)) continue
 
+    let scriptLength = 0
+    for (const fn of script.functions) {
+      const end = fn.ranges[0]?.endOffset ?? 0
+      if (end > scriptLength) scriptLength = end
+    }
     const resolver = createScriptResolver(script.url, scripts.get(script.scriptId), {
       projection,
       cache,
+      scriptLength,
     })
     if (resolver === null) continue
 
