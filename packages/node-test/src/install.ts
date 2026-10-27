@@ -11,7 +11,8 @@
  * file's import phase is `@load`. The file's `after` hook writes the footer.
  *
  * Events used:
- *   beforeEach -> a window opens (statically skipped tests never reach a hook)
+ *   beforeEach -> a window opens (statically skipped tests never reach a hook); a
+ *                 subtest, whose name extends the open window's, opens none
  *   afterEach  -> a window closes with `passed`
  *   after      -> the footer
  *
@@ -93,6 +94,8 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
 
   const opened = new WeakSet<object>()
   const skipped = new WeakSet<object>()
+  /** Subtests: they share their top-level test's window. */
+  const nested = new WeakSet<object>()
   let open = 0
   let refused = false
   let warnedNoFullName = false
@@ -120,6 +123,13 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
     closePendingSkip()
     const title = titleOf(context)
     if (title === null) return
+    // A subtest (`t.test(...)`) reaches this hook while its parent's window is open,
+    // and its full name extends the parent's. It opens no window: everything it
+    // touches belongs to the top-level test, and selecting that test re-runs it.
+    if (pending !== null && title.startsWith(`${pending.title} > `)) {
+      nested.add(context)
+      return
+    }
     if (!warnedNoFullName && (context.fullName === undefined || context.fullName === '')) {
       warnedNoFullName = true
       process.stderr.write(
@@ -156,6 +166,7 @@ export async function installNodeTest(hooks: NodeTestHooks): Promise<void> {
   })
 
   hooks.afterEach((context) => {
+    if (nested.has(context)) return
     if (!opened.has(context)) return
     opened.delete(context)
     if (pending?.context === context) pending = null

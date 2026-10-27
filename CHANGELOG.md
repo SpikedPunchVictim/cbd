@@ -5,6 +5,11 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **node:test subtests (`t.test(...)`) no longer make the recording unusable.** A subtest reached
+  the adapter's `beforeEach` while its parent's window was open and was treated as an overlapping
+  test, so the run stopped and the file's shard was left incomplete. A subtest now opens no window:
+  what it touches is attributed to its top-level test, which is the only map entry and selection
+  unit. Selecting that test re-runs its subtests, so nothing is under-selected.
 - **A test that reads a file through a descriptor, a copy or a link now depends on it.** The read
   tracker saw `readFile`, `stat` and directory listings but not `fs.open` / `openSync` /
   `fs.promises.open` (then `read` or `FileHandle.readFile`), `copyFile`, `cp`, `openAsBlob` or

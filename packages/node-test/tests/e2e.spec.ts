@@ -23,9 +23,10 @@ const register = pathToFileURL(join(packageRoot, 'dist', 'src', 'register.js')).
 const fixture = join(packageRoot, 'fixture')
 const aFile = join(fixture, 'tests', 'a.test.mjs')
 const bFile = join(fixture, 'tests', 'b.test.mjs')
+const subFile = join(fixture, 'subtests', 'sub.test.mjs')
 const mathFile = realpathSync(join(fixture, 'src', 'math.js'))
 
-function run(dir: string, shard: string, titles?: string[]): void {
+function run(dir: string, shard: string, titles?: string[], files: string[] = [aFile, bFile]): void {
   const env: NodeJS.ProcessEnv = { ...process.env, CBD_SHARD: shard, CBD_COMMIT: 'node-test-e2e' }
   // The package's own suite may itself be recorded; a child must not inherit that.
   delete env.CBD_SELECTION
@@ -38,7 +39,7 @@ function run(dir: string, shard: string, titles?: string[]): void {
     env.CBD_SELECTION = selection
   }
   // The fixture deliberately has a failing test; node exits 1 for it.
-  const result = spawnSync(process.execPath, ['--import', register, '--test', aFile, bFile], {
+  const result = spawnSync(process.execPath, ['--import', register, '--test', ...files], {
     cwd: fixture,
     env,
     encoding: 'utf8',
@@ -124,6 +125,47 @@ test('a nested test can be selected', () => {
   try {
     run(dir, join(dir, 'run.ndjson'), ['outer > inner > nested passes'])
     assert.deepEqual(selectedTitles(dir), ['outer > inner > nested passes'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// A subtest opens no window of its own: what it touches belongs to its top-level
+// test, and selecting that test re-runs its subtests.
+test('subtests are attributed to their top-level test', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-node-test-subtests-'))
+  try {
+    run(dir, join(dir, 'run.ndjson'), undefined, [subFile])
+    const shards = shardsIn(dir)
+    assert.equal(shards.length, 1)
+    const records = recordsIn(shards[0] as string)
+    assert.deepEqual(
+      records.filter((r) => r.type === 'test').map((r) => [r.title, r.status]).sort(),
+      [
+        ['parent', 'passed'],
+        ['sibling', 'passed'],
+      ],
+    )
+    const map = buildMap([{ name: shards[0] as string, records }], { commit: 'node-test-e2e' })
+    assert.deepEqual(
+      testsForFunction(map, mathFile, 'sub@0').map((entry) => entry.title),
+      ['parent'],
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('selecting a test with subtests still runs its subtests', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-node-test-subselect-'))
+  try {
+    run(dir, join(dir, 'run.ndjson'), ['parent'], [subFile])
+    assert.deepEqual(selectedTitles(dir), ['parent'])
+    const map = buildMap(
+      shardsIn(dir).map((shard) => ({ name: shard, records: recordsIn(shard) })),
+      { commit: 'node-test-e2e' },
+    )
+    assert.deepEqual(testsForFunction(map, mathFile, 'sub@0').map((entry) => entry.title), ['parent'])
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
