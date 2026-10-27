@@ -257,3 +257,102 @@ file-level selection that stops the runner importing the rest; neither is a sele
 {"metric":"replay_grizzly_r_count","value":[0.957,0.957,0.957,0.927,0.956]}
 {"metric":"replay_grizzly_s_time","value":0,"why":"subset run loads every spec file"}
 ```
+
+## Fourth pass — interleaved re-measure and cheaper takes (2026-10-26, cbd-owv)
+
+Same clone, same 629-file scope, mocha adapter via `NODE_OPTIONS="--import <worktree>/packages/mocha/dist/src/auto.js"`,
+`CBD_SHARD=<file> CBD_COMMIT=owv CBD_GRANULARITY=group`, `node test/unit/node/index.js --run <f>` once per file.
+CBD is addressed by absolute path, so nothing was linked into the clone and nothing needs restoring. Six
+baseline and six recorded runs, **interleaved** (b1, r1, b2, r2, ...), load average (1 min, `uptime`) noted
+before each run. The machine was shared; load ran 2.4-6.3.
+
+| run | wall (s) | load before | passing/failing |
+|---|---|---|---|
+| b1 | 90.7 | 2.74 | 16014 / 1 |
+| r1 | 136.8 | 2.44 | 16006 / 9 |
+| b2 | 98.8 | 3.56 | 16014 / 1 |
+| r2 | 138.2 | 4.83 | 16006 / 9 |
+| b3 | 103.6 | 4.41 | 16013 / 2 |
+| r3 | 141.4 | 6.34 | 16006 / 9 |
+| b4 | 91.1 | 3.90 | 16013 / 2 |
+| r4 | 136.5 | 3.50 | 16006 / 9 |
+| b5 | 90.2 | 2.96 | 16013 / 2 |
+| r5 | 134.1 | 2.96 | 16005 / 10 |
+| b6 | 91.5 | 5.87 | 16014 / 1 |
+| r6 | 137.7 | 5.33 | 16006 / 9 |
+
+| | baseline | recorded (group) |
+|---|---|---|
+| median | **91.3 s** | **137.3 s** |
+| min / max | 90.2 / 103.6 | 134.1 / 141.4 |
+| spread (max-min)/median | 14.7% | 5.3% |
+
+**Overhead: +46 s on medians = 50%.** Pairwise (adjacent b/r): +46.1, +39.4, +37.8, +45.4, +43.9, +46.2 s
+= 36.5%-50.8%; so the honest range is **+38 to +46 s, 36-51%**. Previous pass: +49.5 s, ~47% (60% vs the fastest
+baseline). The baseline in this session is faster and tighter than the third pass (90-104 vs 92-134); the
+recorded runs are tighter still (134-141), so recorded variance is not the problem, baseline variance was.
+
+**Inert-preload fix.** Direct micro-measurement, `node -e 0` with the preload in `NODE_OPTIONS` and no `CBD_SHARD`
+(median of 30, twice): bare 55.7/54.5 ms, preloaded 58.1/56.8 ms, so **~2.5 ms per child** against ~54 ms
+before. 140 spawns: ~0.35 s now against ~7.6 s. In the macro numbers the recorded absolute time moved
+154.5 -> 137.3 s (-17 s), but the baseline moved 105 -> 91.3 s (-14 s) in the same direction, so the
+end-to-end effect (~3 s of overhead, +49.5 -> +46) is inside run-to-run noise. The fix is real at the
+spawn level and invisible at the suite level, as predicted by its size.
+
+Failure set: recorded runs fail 9-10 tests against 1-2 baseline (was 8 vs 3; unchanged story, ambient-state tests).
+
+Side measurements from the same shard (r6, 16.6 MB, 64,463 lines): `cbd build` 10.8 s -> 225.3 MB map, 16,006
+tests, 1,686 files (third pass: 5.8 s / 71.1 MB, 1,683 files). **Not explained**: the map is 3x larger and
+the build 1.9x slower than the third pass for a same-size shard. The commit label `owv` is not a real git
+commit in the clone, which may change relocation; unverified. `cbd select --change` on this map: 1.33 s wall
+total (map parse included).
+
+### Experiment C: cheaper takes
+
+Probe `.cbd/owv/probe.mjs` (in-process `node:inspector` session, same `post` pattern as `in-process.ts`):
+run A twice in window 1, B in window 2, A again in window 3, nothing in window 4, C in window 5; compare each
+take against the window's actual work.
+
+| `startPreciseCoverage` | w2 excludes A | w3 reports A (re-run) | w4 empty | per-window delta? |
+|---|---|---|---|---|
+| `callCount:true, detailed:false` (today) | yes | **yes (1)** | yes | **yes**, counts exact |
+| `callCount:true, detailed:true` | yes | yes (1) | yes | yes |
+| `callCount:false, detailed:false` (binary) | yes | **NO, empty** | yes | **no** — first-seen only |
+| `callCount:false, detailed:true` | yes | **NO, empty** | yes | **no** |
+| binary + `stop`/`start` after every take | yes | yes | yes | yes, but see cost |
+
+Binary mode does not reset to "executed since last take": once a function has been reported it is never
+reported again, so a function a later window re-runs is missing from that window. That is the wrong shape
+for CBD (test 3 would not be recorded as reaching A). It cannot be repaired by diffing, because a diff of
+"nothing reported" carries no information about re-execution; the data is destroyed on the V8 side. The
+only way to re-arm it is `stopPreciseCoverage` + `startPreciseCoverage` after every take.
+
+Cost on a VS Code-sized heap (`bench.mjs`: imports 2,341 of 2,343 non-test modules under `out/vs/platform` and
+`out/vs/base`, then 300 takes each with ~20 random zero-arg exports called between takes; 35 scripts / 90
+functions reported per take in count mode):
+
+| mode | p50 ms | p95 ms | mean ms |
+|---|---|---|---|
+| `callCount:true, detailed:false` (today) | 2.19 | 2.70 | 2.27 |
+| `callCount:true, detailed:true` | 2.96 | 3.47 | 3.00 |
+| `callCount:false, detailed:false` (binary, **incorrect**) | 1.21 | 1.48 | 1.25 |
+| `callCount:false, detailed:true` (**incorrect**) | 2.14 | 2.87 | 2.21 |
+| binary + stop/start each take (correct) | 39.55 | 59.74 | 41.36 |
+| count + stop/start each take | 37.14 | 53.56 | 40.36 |
+
+Verdict: the only mode meaningfully cheaper than today is binary, at 1.8x, and it is wrong. The only
+binary mode that is right costs 18x more. Neither meets "proven correct AND >=2x cheaper", so **no product
+code changed**. Most of the 1.2 ms binary floor is fixed per-take cost that the response size does not
+change; the real run's ~14 ms per take is dominated by how many scripts a group window touches (hundreds),
+which no flag reduces. Window count (1,226) is the lever, not the per-take mode.
+
+```jsonl
+{"metric":"T_full_s","value":[90.7,98.8,103.6,91.1,90.2,91.5],"median":91.3,"pass":"fourth","interleaved":true}
+{"metric":"T_recorded_group_s","value":[136.8,138.2,141.4,136.5,134.1,137.7],"median":137.3}
+{"metric":"overhead_pct_group","value":[36.5,50.8],"median_basis":50.3,"abs_s":[37.8,46.2]}
+{"metric":"inert_preload_ms","bare":[55.7,54.5],"preloaded":[58.1,56.8],"per_child_extra_ms":2.5}
+{"metric":"build_group_s","value":10.8,"map_bytes":225300000,"map_files":1686,"note":"third pass 5.8s/71.1MB, unexplained"}
+{"metric":"select_s","value":1.33,"map":"owv group"}
+{"metric":"take_ms_p50","count":2.19,"count_detailed":2.96,"binary":1.21,"binary_detailed":2.14,"binary_restart":39.55,"count_restart":37.14}
+{"metric":"binary_rerun_reported","value":false,"consequence":"not per-window; rejected"}
+```
