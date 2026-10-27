@@ -459,8 +459,12 @@ toolchain consumes only those:
 
 Test code — or a helper it calls — can add what the recorder cannot observe:
 `recordRead(path)`, `recordDirRead(dir)`, `recordDependency(paths)` and `recordOpaque(reason)`,
-exported from `@spikedpunch/cbd`. They take no test id; the open window receives them, and a call
-outside every window is ignored, which leaves the file unknown and escalates to `all`. A read is
+exported from `@spikedpunch/cbd`. They take no test id; the open window receives them. A call
+made between two tests, or after the last one, belongs to no test, so the build files it against
+every test in the shard (the `@between`/`@teardown` reading: over-selection, never a dropped
+dependency); for `recordOpaque` that marks every test opaque. A call made while a spec file is
+importing, or after the run is closed, is ignored, which leaves the file unknown and escalates
+to `all`. A read is
 kept in the map only when it is under the project root and inside `include`, and never under
 `node_modules` — a change outside that scope could not select the test anyway. A read of a build output is also recorded at the source a
 sibling source map names, or at the path a projection rule produces, so a `tsc` test that reads

@@ -386,6 +386,18 @@ test('an unscoped import-phase read belongs to every test in the shard', () => {
   assert.deepEqual(map.reads, { '/repo/data.json': [0, 1] })
 })
 
+test('an opaque declaration made outside any window marks every test in the shard', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('a', []), testRecord('b', [])], {
+        loadReads: [{ file: null, reads: [], dirReads: [], opaque: ['hook spawns a tool'] }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.opaque, { 'hook spawns a tool': [0, 1] })
+})
+
 test('a scope that names no recorded test falls back to the whole shard', () => {
   const map = mergeShards(
     [

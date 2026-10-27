@@ -249,6 +249,11 @@ export interface ShardLoadReads {
   /** Environment variables declared during the import phase, by hash. */
   env?: Record<string, string>
   /**
+   * Reasons declared outside any test window (`recordOpaque` between tests or after
+   * the last one). The build marks every test the record reaches as opaque.
+   */
+  opaque?: string[]
+  /**
    * Set when the reads came from a service's out-of-window bucket rather than a
    * spec's import phase. A service's module loader reads the source of every module it
    * runs, so the build drops a bucket read of a file the shard has coverage for: that

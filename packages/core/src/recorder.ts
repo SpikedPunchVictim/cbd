@@ -660,6 +660,19 @@ export class Recorder {
     dirReads: Set<string>
     env: Set<string>
   } | null = null
+  /**
+   * Record-API declarations made after a test ended and before the next one
+   * started, or before the run closed: a hook between tests, a `beforeAll` of a
+   * later group, a global teardown. No test owns them, so they are filed like an
+   * unscoped import-phase record, against every test in the shard — the
+   * conservative reading of the `@between`/`@teardown` buckets they fall in.
+   */
+  #outside: {
+    reads: Set<string>
+    dirReads: Set<string>
+    env: Set<string>
+    opaque: Set<string>
+  } | null = null
   /** Reads noted while a test window is open; cleared at each boundary. */
   #reads = new Set<string>()
   #dirReads = new Set<string>()
@@ -811,6 +824,7 @@ export class Recorder {
     this.#pending = []
     this.#open = null
     this.#spec = null
+    this.#outside = null
     this.#reads.clear()
     this.#dirReads.clear()
     this.#opaque.clear()
@@ -875,7 +889,63 @@ export class Recorder {
     })
   }
 
+  /**
+   * Point the record API at the out-of-window scope once a test window closes.
+   *
+   * Only explicit `record*` calls land here. The read tracker's incidental reads
+   * between tests stay unattributed, as before: a recorder's own bookkeeping and a
+   * runner's housekeeping would otherwise tie every change to every test.
+   */
+  #openOutside(): void {
+    const scope = {
+      reads: new Set<string>(),
+      dirReads: new Set<string>(),
+      env: new Set<string>(),
+      opaque: new Set<string>(),
+    }
+    this.#outside = scope
+    this.#releaseSink?.()
+    this.#releaseSink = activateRecordSink({
+      noteRead: (path) => scope.reads.add(path),
+      noteReadDir: (dir) => scope.dirReads.add(dir),
+      noteOpaque: (reason) => scope.opaque.add(reason),
+      noteDependency: (paths) => {
+        for (const path of paths) scope.reads.add(path)
+      },
+      noteEnv: (keys) => {
+        for (const key of keys) scope.env.add(key)
+      },
+    })
+  }
+
+  #flushOutside(): void {
+    const scope = this.#outside
+    this.#outside = null
+    if (scope === null) return
+    this.#releaseSink?.()
+    this.#releaseSink = null
+    if (
+      scope.reads.size === 0 &&
+      scope.dirReads.size === 0 &&
+      scope.env.size === 0 &&
+      scope.opaque.size === 0
+    ) {
+      return
+    }
+    const env: Record<string, string> = {}
+    for (const key of [...scope.env].sort()) env[key] = hashEnvValue(process.env[key])
+    this.#windows.commit({
+      type: 'loadReads',
+      file: null,
+      ...(scope.reads.size === 0 ? {} : { reads: [...scope.reads].sort() }),
+      ...(scope.dirReads.size === 0 ? {} : { dirReads: [...scope.dirReads].sort() }),
+      ...(scope.env.size === 0 ? {} : { env }),
+      ...(scope.opaque.size === 0 ? {} : { opaque: [...scope.opaque].sort() }),
+    })
+  }
+
   testStart(title: string, file: string | null = null, detail: TestRefDetail = {}): void {
+    this.#flushOutside()
     // Imports are over, so the spec's import-phase reads are complete. Commit
     // them before the first window: they are a plain record, not a capture.
     this.#flushSpecReads()
@@ -951,6 +1021,7 @@ export class Recorder {
     // so a helper called during projection cannot be charged to the test.
     this.#releaseSink?.()
     this.#releaseSink = null
+    this.#openOutside()
     // Close the window *before* emitting. A queued source projects the captured
     // bytes inside the builder, and the projector reads the generated file — a
     // read by the recorder itself, not by the test. Leaving the window open made
@@ -1016,6 +1087,7 @@ export class Recorder {
     this.#env.clear()
     this.#releaseSink?.()
     this.#releaseSink = null
+    this.#openOutside()
     this.#open = null
   }
 
@@ -1091,6 +1163,7 @@ export class Recorder {
     // A file with no tests never reached `testStart`, so its import-phase reads
     // are still open.
     this.#flushSpecReads()
+    this.#flushOutside()
     // A test that never reported its end (a crash in the runner) must not leave
     // the record API pointed at a window that is about to be torn down.
     this.#releaseSink?.()

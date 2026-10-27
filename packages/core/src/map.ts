@@ -552,6 +552,14 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
           hashes.sort()
         }
       }
+      for (const reason of record.opaque ?? []) {
+        let set = opaque.get(reason)
+        if (set === undefined) {
+          set = new Set()
+          opaque.set(reason, set)
+        }
+        for (const index of targets) set.add(index)
+      }
       for (const path of record.reads) {
         for (const kept of readPaths(path)) {
           if (record.bucket === true && executedHere.has(kept)) continue

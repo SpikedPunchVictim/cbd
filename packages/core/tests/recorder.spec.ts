@@ -250,8 +250,9 @@ test('the record API reaches the open window, and nothing outside it', () => {
     recordDependency(['dep/one.ts', 'dep/two.ts'])
     recordOpaque('spawns a tool')
     recorder.testEnd('declares', 'passed')
-    // The sink is released with the window: a helper running between tests must
-    // not charge its work to the test that just ended.
+    // The window's sink is released with it: a helper running between tests must
+    // not charge its work to the test that just ended (it goes to the shard-wide
+    // out-of-window scope instead).
     recordRead('after-the-window.txt')
     recordOpaque('after')
     recorder.runEnd()
@@ -266,6 +267,51 @@ test('the record API reaches the open window, and nothing outside it', () => {
     assert.equal(testRecord?.reads?.some(endsWith('dep/two.ts')), true)
     assert.equal(testRecord?.dirReads?.some(endsWith('relative/dir')), true)
     assert.deepEqual(testRecord?.opaque, ['spawns a tool'])
+  } finally {
+    tree.cleanup()
+  }
+})
+
+test('record calls between tests and after the last test reach the whole shard', () => {
+  const tree = makeTree()
+  try {
+    const sink = new StringSink()
+    const recorder = new Recorder({
+      source: scriptedSource([payload(tree.url, {})]),
+      sink,
+      commit: 'c0ffee',
+    })
+    recorder.runStart()
+    recorder.testStart('first', null)
+    recorder.testEnd('first', 'passed')
+    // A hook between tests: no window is open, but the declaration is real.
+    recordRead('between/read.txt')
+    recordDirRead('between/dir')
+    recordEnv('BETWEEN_FLAG')
+    recordOpaque('between opaque')
+    recorder.testStart('second', null)
+    recorder.testEnd('second', 'passed')
+    // A hook after the last test, before the run is closed.
+    recordDependency(['after/dep.ts'])
+    recordEnv('AFTER_FLAG')
+    recorder.runEnd()
+
+    const records = parseShard(sink.text, 'outside')
+    const loads = records.filter((record) => record.type === 'loadReads')
+    assert.equal(loads.length, 2, 'one record per out-of-window scope')
+    const [between, after] = loads
+    assert.equal(between?.file, null, 'no test to name: the whole shard')
+    assert.equal(between?.reads?.some((p) => p.endsWith('between/read.txt')), true)
+    assert.equal(between?.dirReads?.some((p) => p.endsWith('between/dir')), true)
+    assert.deepEqual(Object.keys(between?.env ?? {}), ['BETWEEN_FLAG'])
+    assert.deepEqual(between?.opaque, ['between opaque'])
+    assert.equal(after?.reads?.some((p) => p.endsWith('after/dep.ts')), true)
+    assert.deepEqual(Object.keys(after?.env ?? {}), ['AFTER_FLAG'])
+    // Not charged to the test windows either side.
+    for (const entry of summarizeShard(records).tests) {
+      assert.equal(entry.reads, undefined)
+      assert.equal(entry.opaque, undefined)
+    }
   } finally {
     tree.cleanup()
   }

@@ -21,12 +21,12 @@ import { canonicalPath } from './paths.js'
  * opt-in `concurrent` API; a runner that overlaps by default would need an
  * adapter-side guarantee, which is recorded in the contract ADR.
  *
- * **Outside a window, a call is ignored, not guessed.** A read during spec import
- * has no test to charge and no spec identity the core can see; attributing it to
- * every test in the file would require the adapter to open a context around the
- * import, which is exactly what it cannot do. Ignoring it leaves the change
- * unknown to the map, which escalates to `all` — the safe direction, and the
- * documented reason `alwaysSelect` still exists.
+ * **Outside a window, a call is shard-wide, not guessed.** A call between two tests,
+ * or after the last one, has no test to charge, so the recorder files it against
+ * every test in the shard: over-selection, never a dropped dependency. A call made
+ * while a spec file is importing, or after the run is closed, is still ignored — the
+ * change stays unknown to the map, which escalates to `all`, and `alwaysSelect`
+ * remains the documented backstop.
  */
 
 /** What the open recorder offers. Implemented by `Recorder`; no other implementation is expected. */
@@ -66,7 +66,7 @@ export function activateRecordSink(sink: RecordSink): () => void {
   }
 }
 
-/** The sink currently receiving calls, if a test window is open. */
+/** The sink currently receiving calls, if a recorder is open. */
 export function recordSink(): RecordSink | null {
   return active
 }
