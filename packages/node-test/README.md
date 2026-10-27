@@ -54,6 +54,16 @@ expects TAP. The cost is one extra process per test file during a subset run.
 - `--test-isolation=none` cannot produce a shard per file or re-execute a child, so the adapter warns
   and records nothing (the existing map stands; a changed file escalates).
 
+A selection that matches no test filters out every test, and `node --test` exits 0 for that. To make it
+fail, add the reporter; it does nothing unless `CBD_SELECTION` is set. A custom reporter replaces the
+default one, so keep the normal output with `spec`:
+
+```sh
+node --import @spikedpunch/cbd-node-test/register --test \
+  --test-reporter=spec --test-reporter-destination=stdout \
+  --test-reporter=@spikedpunch/cbd-node-test/reporter --test-reporter-destination=stderr
+```
+
 ## Notes
 
 - Statically skipped tests reach no hook and open no window.

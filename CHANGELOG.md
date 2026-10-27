@@ -5,6 +5,12 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A node:test run whose selection matches no test can now fail.** The adapter selects with the
+  runner's name pattern, and `node --test` exits 0 when every test is filtered out, so a selection
+  naming tests the suite no longer has passed having run nothing. `@spikedpunch/cbd-node-test/reporter`,
+  passed as an extra `--test-reporter` (alongside `spec` to keep the normal output), fails such a run
+  (non-zero exit, with a message) when `CBD_SELECTION` is set and no test passed or failed; without a
+  selection it does nothing.
 - **node:test subtests (`t.test(...)`) no longer make the recording unusable.** A subtest reached
   the adapter's `beforeEach` while its parent's window was open and was treated as an overlapping
   test, so the run stopped and the file's shard was left incomplete. A subtest now opens no window:

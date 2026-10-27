@@ -607,6 +607,19 @@ already set is left alone, with a warning: running more tests than selected is t
 `--test-isolation=none` cannot re-execute a child or record per file, so the adapter warns and
 records nothing (the old map stands; a changed file escalates).
 
+A selection that matches no test filters out every test and `node --test` exits 0, so the run should
+also use the reporter `@spikedpunch/cbd-node-test/reporter`. The parent runner never loads the
+preload, so the check is a reporter, which does run there: with `CBD_SELECTION` set and no test passed
+or failed (suites, skipped tests and the runner's per-file entries do not count), it writes a message
+to stderr and sets a failing exit code. A custom reporter replaces the default one, so keep the normal
+output with `spec`:
+
+```sh
+node --import @spikedpunch/cbd-node-test/register --test \
+  --test-reporter=spec --test-reporter-destination=stdout \
+  --test-reporter=@spikedpunch/cbd-node-test/reporter --test-reporter-destination=stderr
+```
+
 ### 7.3 Vitest (`@spikedpunch/cbd-vitest`)
 
 **Implemented.** One line in the config:

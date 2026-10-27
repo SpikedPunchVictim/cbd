@@ -170,3 +170,56 @@ test('selecting a test with subtests still runs its subtests', () => {
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+const reporter = join(packageRoot, 'dist', 'src', 'reporter.js')
+
+function runGuarded(titles?: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-node-test-guard-'))
+  try {
+    const env: NodeJS.ProcessEnv = { ...process.env, CBD_COMMIT: 'node-test-e2e' }
+    delete env.CBD_SHARD
+    delete env.CBD_SELECTION
+    delete env.CBD_SOCKET_DIR
+    delete env.NODE_OPTIONS
+    delete env.NODE_TEST_CONTEXT
+    if (titles !== undefined) {
+      const selection = join(dir, 'selection.json')
+      writeFileSync(selection, JSON.stringify({ titles }))
+      env.CBD_SELECTION = selection
+    }
+    // The documented command: the spec reporter keeps the normal output.
+    return spawnSync(
+      process.execPath,
+      [
+        '--import', register,
+        '--test',
+        '--test-reporter=spec', '--test-reporter-destination=stdout',
+        `--test-reporter=${reporter}`, '--test-reporter-destination=stderr',
+        bFile, subFile,
+      ],
+      { cwd: fixture, env, encoding: 'utf8' },
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// A selection of titles the suite no longer has filters out every test; node:test
+// exits 0 for a run of no tests, which would read as "these tests passed".
+test('a selection that matches no test fails the run', () => {
+  const result = runGuarded(['no such test'])
+  assert.notEqual(result.status, 0, `node --test passed having run nothing:\n${result.stderr}`)
+  assert.match(result.stderr, /no test ran/)
+})
+
+test('a selection that matches a test passes the guard', () => {
+  const result = runGuarded(['sibling'])
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.doesNotMatch(result.stderr, /no test ran/)
+})
+
+test('a run without a selection passes the guard', () => {
+  const result = runGuarded()
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.doesNotMatch(result.stderr, /no test ran/)
+})
