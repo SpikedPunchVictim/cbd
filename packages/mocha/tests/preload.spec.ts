@@ -10,12 +10,12 @@ import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 
 const PACKAGE_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 // Compiled, this spec lives in `dist/tests`, so `../src` is `dist/src`.
-const AUTO = fileURLToPath(new URL('../src/auto.js', import.meta.url))
+const AUTO = new URL('../src/auto.js', import.meta.url).href
 
 /**
  * A runner-shaped process that starts a child and reports its own pid.
@@ -85,7 +85,7 @@ test('an inert process loads neither the core nor the mocha adapter', () => {
   const env: NodeJS.ProcessEnv = { ...process.env }
   delete env.CBD_SHARD
   delete env.CBD_SELECTION
-  env.NODE_OPTIONS = `--import ${guard} --import ${AUTO}`
+  env.NODE_OPTIONS = `--import ${pathToFileURL(guard).href} --import ${AUTO}`
   try {
     const inert = spawnSync(process.execPath, ['-e', '0'], { env, encoding: 'utf8' })
     assert.equal(inert.status, 0, inert.stderr)

@@ -240,7 +240,7 @@ test('the record API reaches the open window, and nothing outside it', () => {
       sink,
       commit: 'c0ffee',
     })
-    const endsWith = (suffix: string) => (path: string): boolean => path.endsWith(suffix)
+    const endsWith = (suffix: string) => (path: string): boolean => path.replaceAll('\\', '/').endsWith(suffix)
 
     recorder.runStart()
     recordRead('before-the-window.txt')
@@ -301,11 +301,11 @@ test('record calls between tests and after the last test reach the whole shard',
     assert.equal(loads.length, 2, 'one record per out-of-window scope')
     const [between, after] = loads
     assert.equal(between?.file, null, 'no test to name: the whole shard')
-    assert.equal(between?.reads?.some((p) => p.endsWith('between/read.txt')), true)
-    assert.equal(between?.dirReads?.some((p) => p.endsWith('between/dir')), true)
+    assert.equal(between?.reads?.some((p) => p.replaceAll('\\', '/').endsWith('between/read.txt')), true)
+    assert.equal(between?.dirReads?.some((p) => p.replaceAll('\\', '/').endsWith('between/dir')), true)
     assert.deepEqual(Object.keys(between?.env ?? {}), ['BETWEEN_FLAG'])
     assert.deepEqual(between?.opaque, ['between opaque'])
-    assert.equal(after?.reads?.some((p) => p.endsWith('after/dep.ts')), true)
+    assert.equal(after?.reads?.some((p) => p.replaceAll('\\', '/').endsWith('after/dep.ts')), true)
     assert.deepEqual(Object.keys(after?.env ?? {}), ['AFTER_FLAG'])
     // Not charged to the test windows either side.
     for (const entry of summarizeShard(records).tests) {
@@ -342,9 +342,9 @@ test('every record call made while a spec file is importing lands in that spec\'
     assert.equal(loads.length, 1)
     const [load] = loads
     assert.equal(load?.file, spec)
-    assert.equal(load?.reads?.some((p) => p.endsWith('import/read.txt')), true)
-    assert.equal(load?.reads?.some((p) => p.endsWith('import/dep.ts')), true)
-    assert.equal(load?.dirReads?.some((p) => p.endsWith('import/dir')), true)
+    assert.equal(load?.reads?.some((p) => p.replaceAll('\\', '/').endsWith('import/read.txt')), true)
+    assert.equal(load?.reads?.some((p) => p.replaceAll('\\', '/').endsWith('import/dep.ts')), true)
+    assert.equal(load?.dirReads?.some((p) => p.replaceAll('\\', '/').endsWith('import/dir')), true)
     assert.deepEqual(Object.keys(load?.env ?? {}), ['IMPORT_FLAG'])
     assert.deepEqual(load?.opaque, ['import opaque'])
     // A declared dependency must survive the build's bucket filter.

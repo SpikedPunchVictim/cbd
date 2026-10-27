@@ -6,13 +6,15 @@
  * only add the recorder's concerns to the assertions.
  */
 import assert from 'node:assert/strict'
+import { join, resolve } from 'node:path'
 import { test } from '@japa/runner'
 import { MAP_VERSION, type CoverageMap, type FunctionEntry, type TestEntry } from '../src/map.js'
 import { mutantTests } from '../src/mutate.js'
 import type { TouchRef } from '../src/shard.js'
 
-const ROOT = '/repo'
-const FILE = '/repo/src/a.ts'
+// `resolve` gives a root that is absolute on the host: a bare '/repo' gains a drive letter on Windows.
+const ROOT = resolve('/repo')
+const FILE = join(ROOT, 'src', 'a.ts')
 const TESTS: TestEntry[] = [
   { title: 'alpha one', file: '/repo/tests/a.spec.ts' },
   { title: 'alpha two', file: '/repo/tests/a.spec.ts' },

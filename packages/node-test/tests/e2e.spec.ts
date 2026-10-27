@@ -171,7 +171,7 @@ test('selecting a test with subtests still runs its subtests', () => {
   }
 })
 
-const reporter = join(packageRoot, 'dist', 'src', 'reporter.js')
+const reporter = pathToFileURL(join(packageRoot, 'dist', 'src', 'reporter.js')).href
 
 function runGuarded(titles?: string[]) {
   const dir = mkdtempSync(join(tmpdir(), 'cbd-node-test-guard-'))

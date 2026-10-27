@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { test } from '@japa/runner'
 import { fileOf, shardPathFor, statusOf, titleOf } from '../src/identity.js'
 
@@ -30,13 +31,13 @@ test('an outcome the adapter cannot read is failed, never passed', () => {
 })
 
 test('one shard per test file, named from the file and stable', () => {
-  const base = '/tmp/cbd/run.ndjson'
+  const base = join('/tmp/cbd', 'run.ndjson')
   const one = shardPathFor(base, '/repo/tests/one.spec.ts')
   const again = shardPathFor(base, '/repo/tests/one.spec.ts')
   const two = shardPathFor(base, '/repo/tests/two.spec.ts')
   assert.equal(one, again)
   assert.notEqual(one, two)
-  assert.ok(one.startsWith('/tmp/cbd/run.one.spec.ts.'))
+  assert.ok(one.startsWith(join('/tmp/cbd', 'run.one.spec.ts.')))
   assert.ok(one.endsWith('.ndjson'))
   // Same basename, different directory: the hash keeps them apart.
   const sameName = shardPathFor(base, '/repo/a/one.spec.ts')

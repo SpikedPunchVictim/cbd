@@ -329,24 +329,26 @@ test('reads and directory reads merge per file', () => {
 })
 
 test('reads under node_modules are dropped; a caller can narrow further', () => {
+  const NOTES = join('/repo', 'src', 'my-node_modules-notes.md')
+  const SPECS = join('/repo', 'specs')
   const entries = [
     {
       ...testRecord('reads', []),
-      reads: [A, '/repo/node_modules/pkg/index.js', '/repo/src/my-node_modules-notes.md'],
-      dirReads: ['/repo/specs', '/repo/node_modules/pkg'],
+      reads: [A, join('/repo', 'node_modules', 'pkg', 'index.js'), NOTES],
+      dirReads: [SPECS, join('/repo', 'node_modules', 'pkg')],
     },
   ]
 
   // A segment match: a source file whose name merely contains node_modules stays.
   const map = mergeShards([shard('s1', entries)], { commit: 'c0ffee' })
-  assert.deepEqual(map.reads, { [A]: [0], '/repo/src/my-node_modules-notes.md': [0] })
-  assert.deepEqual(map.dirReads, { '/repo/specs': [0] })
+  assert.deepEqual(map.reads, { [A]: [0], [NOTES]: [0] })
+  assert.deepEqual(map.dirReads, { [SPECS]: [0] })
 
   const narrowed = mergeShards([shard('s1', entries)], {
     commit: 'c0ffee',
     keepRead: (path) => path !== A,
   })
-  assert.deepEqual(narrowed.reads, { '/repo/src/my-node_modules-notes.md': [0] })
+  assert.deepEqual(narrowed.reads, { [NOTES]: [0] })
 })
 
 test('a read of a build output is also recorded at the source its map names', () => {
@@ -377,17 +379,17 @@ test('projection rules map a read of build output back to its source', () => {
   const map = mergeShards(
     [
       shard('s1', [
-        { ...testRecord('reads', []), reads: ['/repo/out/a.js'], dirReads: ['/repo/out'] },
+        { ...testRecord('reads', []), reads: [join('/repo', 'out', 'a.js')], dirReads: [join('/repo', 'out')] },
       ]),
     ],
     {
       commit: 'c0ffee',
-      scan: { projection: [{ from: '/repo/out', to: '/repo/src' }] },
-      keepRead: (path) => path.startsWith('/repo/src'),
+      scan: { projection: [{ from: join('/repo', 'out'), to: join('/repo', 'src') }] },
+      keepRead: (path) => path.startsWith(join('/repo', 'src')),
     },
   )
-  assert.deepEqual(map.reads, { '/repo/src/a.ts': [0] })
-  assert.deepEqual(map.dirReads, { '/repo/src': [0] })
+  assert.deepEqual(map.reads, { [join('/repo', 'src', 'a.ts')]: [0] })
+  assert.deepEqual(map.dirReads, { [join('/repo', 'src')]: [0] })
 })
 
 test('import-phase reads are attributed to the spec the adapter named', () => {

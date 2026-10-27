@@ -49,7 +49,7 @@ function readShard(path: string): ShardRecord[] {
 // plugin can start recording. The `register` preload starts it earlier, so those files
 // reach the map instead of being unknown to it.
 test.group('japa preload e2e', () => {
-  const REGISTER = fileURLToPath(new URL('../src/register.js', import.meta.url))
+  const REGISTER = new URL('../src/register.js', import.meta.url).href
 
   function shardWith(preload: boolean): ShardRecord[] {
     const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-e2e-'))
@@ -67,7 +67,7 @@ test.group('japa preload e2e', () => {
   const hasHelper = (records: ShardRecord[]): boolean =>
     records.some(
       (record) =>
-        record.type === 'script' && String(record.url).endsWith('/fixture/early/helper.js'),
+        record.type === 'script' && String(record.url).replaceAll('\\', '/').endsWith('/fixture/early/helper.js'),
     )
 
   test('a module imported before the plugin installs is recorded with the preload', () => {
@@ -82,7 +82,7 @@ test.group('japa preload e2e', () => {
     const records = shardWith(true)
     const script = records.find(
       (record) =>
-        record.type === 'script' && String(record.url).endsWith('/fixture/early/helper.js'),
+        record.type === 'script' && String(record.url).replaceAll('\\', '/').endsWith('/fixture/early/helper.js'),
     )
     assert.ok(script !== undefined, 'the helper has no script record')
     const id = String(script.scriptId)

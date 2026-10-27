@@ -476,7 +476,7 @@ test('a live process whose snapshot has no exit yet is harvested after it exits'
     child?.stop()
     rmSync(dir, { recursive: true, force: true })
   }
-})
+}).skip(process.platform === 'win32', 'SIGSTOP has no Windows equivalent, so the service cannot be made unresponsive while alive')
 
 // The socket path and the snapshot path both lead to the same exit write. Delivering
 // it through both credits one lifetime twice.

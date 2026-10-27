@@ -16,5 +16,5 @@ test('truncate output matches the golden file', () => {
 })
 
 test('the golden file lives beside the spec that owns it', () => {
-  expectEqual(snapshotPath().endsWith('__snapshots__/golden.spec.ts.snap'), true, 'snapshotPath')
+  expectEqual(snapshotPath().replaceAll('\\', '/').endsWith('__snapshots__/golden.spec.ts.snap'), true, 'snapshotPath')
 })

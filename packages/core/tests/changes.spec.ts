@@ -557,14 +557,16 @@ test('an added or removed body line that looks like a header is not read as one'
 
 test('a quoted path with an astral character is decoded whole', () => {
   const repo = tempRepo()
+  // A double quote cannot appear in a Windows file name; the emoji alone still makes git quote the path.
+  const name = process.platform === 'win32' ? 'q😀.ts' : 'q"😀.ts'
   try {
     repo.write('keep.ts', 'k\n')
     const base = repo.commit('base')
-    repo.write('q"😀.ts', 'x\n')
+    repo.write(name, 'x\n')
     repo.commit('add')
 
     const change = changesSince({ root: repo.root, since: base }).find((c) => c.status === 'A')
-    assert.equal(change?.path, 'q"😀.ts')
+    assert.equal(change?.path, name)
   } finally {
     repo.cleanup()
   }

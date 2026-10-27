@@ -119,7 +119,7 @@ test.group('cbd build', () => {
     try {
       const result = invoke(root, 'build')
       assert.equal(result.code, EXIT.ok)
-      assert.match(result.out.join('\n'), /^map \.cbd\/maps\/[0-9a-f]{40}\/map\.json: 2 tests, 1 file from 1 shard/)
+      assert.match(result.out.join('\n'), /^map \.cbd[\\/]maps[\\/][0-9a-f]{40}[\\/]map\.json: 2 tests, 1 file from 1 shard/)
       assert.deepEqual(result.err, [])
     } finally {
       cleanup()
@@ -133,7 +133,7 @@ test.group('cbd build', () => {
       assert.equal(result.code, EXIT.ok)
       const parsed = JSON.parse(result.out.join('\n')) as { tests: number; shards: string[] }
       assert.equal(parsed.tests, 2)
-      assert.deepEqual(parsed.shards, ['.cbd/shards/run.ndjson'])
+      assert.deepEqual(parsed.shards, [join('.cbd', 'shards', 'run.ndjson')])
     } finally {
       cleanup()
     }
@@ -220,7 +220,7 @@ test.group('cbd select', () => {
         ),
       )
       assert.ok(
-        !parsed.selection.ignored.some((path) => path.endsWith('/cbd.config.json')),
+        !parsed.selection.ignored.some((path) => path.replaceAll('\\', '/').endsWith('/cbd.config.json')),
         'the config is claimed by its own rule, not silently ignored',
       )
     } finally {
@@ -639,7 +639,7 @@ test.group('cbd select', () => {
 
       const result = invoke(root, 'select')
       assert.equal(result.code, EXIT.all)
-      assert.match(result.out.join('\n'), /all tests: unknown-file \(src\/other\.ts\)/)
+      assert.match(result.out.join('\n'), /all tests: unknown-file \(src[\\/]other\.ts\)/)
       assert.match(result.out.at(-1)!, /^all tests for 1 changed file/)
     } finally {
       cleanup()
@@ -748,7 +748,7 @@ test.group('cbd select', () => {
         selection: { mode: string; ignored: string[]; warnings: string[] }
       }
       assert.equal(parsed.selection.mode, 'subset')
-      assert.ok(parsed.selection.ignored.some((path) => path.endsWith('/tools/new.ts')))
+      assert.ok(parsed.selection.ignored.some((path) => path.replaceAll('\\', '/').endsWith('/tools/new.ts')))
       assert.ok(
         parsed.selection.warnings.some((warning) =>
           /unknownPolicyFor\[0\].*tools\/\*\*/.test(warning),
@@ -815,7 +815,7 @@ test.group('cbd select', () => {
         changes: Array<{ path: string }>
       }
       assert.equal(parsed.selection.mode, 'all')
-      assert.ok(parsed.changes.some((change) => change.path.endsWith('/src/untracked.ts')))
+      assert.ok(parsed.changes.some((change) => change.path.replaceAll('\\', '/').endsWith('/src/untracked.ts')))
     } finally {
       cleanup()
     }
@@ -837,7 +837,7 @@ test.group('cbd select', () => {
         selection: { ignored: string[] }
       }
       assert.ok(
-        parsed.selection.ignored.some((path) => path.endsWith('/docs/readme.md')),
+        parsed.selection.ignored.some((path) => path.replaceAll('\\', '/').endsWith('/docs/readme.md')),
         `expected docs/readme.md in ignored, got ${JSON.stringify(parsed.selection.ignored)}`,
       )
 
@@ -935,7 +935,7 @@ test.group('cbd explain and stats', () => {
       assert.equal(invoke(root, 'build').code, EXIT.ok)
       const result = invoke(root, 'explain', 'src/a.ts:2')
       assert.equal(result.code, EXIT.ok)
-      assert.equal(result.out[0], 'src/a.ts:2 — 2 tests')
+      assert.equal(result.out[0]?.replaceAll('\\', '/'), 'src/a.ts:2 — 2 tests')
       assert.match(result.out.join('\n'), /functions: add@0/)
       assert.deepEqual(result.out.slice(-2), ['  adds', '  reads'])
     } finally {
@@ -977,9 +977,9 @@ test.group('cbd explain and stats', () => {
       assert.equal(count, 3)
 
       const module = invoke(root, 'explain', 'src/a.ts:4')
-      assert.equal(module.out[0], 'src/a.ts:4 — 1 test')
+      assert.equal(module.out[0]?.replaceAll('\\', '/'), 'src/a.ts:4 — 1 test')
       assert.ok(module.out.includes('  select would run 3 tests:'), module.out.join('\n'))
-      assert.ok(module.out.includes('    src/a.ts (loaded by 2 shards: 3 tests)'), module.out.join('\n'))
+      assert.ok(module.out.map((line) => line.replaceAll('\\', '/')).includes('    src/a.ts (loaded by 2 shards: 3 tests)'), module.out.join('\n'))
 
       const json = invoke(root, 'explain', 'src/a.ts:4', '--format', 'json')
       const parsed = JSON.parse(json.out.join('\n')) as { selection: { tests: number } }
@@ -987,7 +987,7 @@ test.group('cbd explain and stats', () => {
 
       // A function line keeps its old shape: nothing extra to say.
       const fn = invoke(root, 'explain', 'src/a.ts:2')
-      assert.equal(fn.out[0], 'src/a.ts:2 — 1 test')
+      assert.equal(fn.out[0]?.replaceAll('\\', '/'), 'src/a.ts:2 — 1 test')
       assert.equal(fn.out.some((line) => line.includes('select would run')), false)
     } finally {
       cleanup()
@@ -1202,11 +1202,11 @@ test.group('cbd explain and stats', () => {
       assert.equal(invoke(root, 'build').code, EXIT.ok)
 
       const file = invoke(root, 'explain', 'src/seen-only.ts')
-      assert.equal(file.out[0], 'src/seen-only.ts — 0 tests (seen, no test reaches it)')
+      assert.equal(file.out[0]?.replaceAll('\\', '/'), 'src/seen-only.ts — 0 tests (seen, no test reaches it)')
       assert.equal(file.out[1], '  reached at load')
 
       const line = invoke(root, 'explain', 'src/seen-only.ts:2')
-      assert.equal(line.out[0], 'src/seen-only.ts:2 — 0 tests (seen, no test reaches it)')
+      assert.equal(line.out[0]?.replaceAll('\\', '/'), 'src/seen-only.ts:2 — 0 tests (seen, no test reaches it)')
       assert.equal(line.out[1], '  reached at load')
       assert.ok(line.out.includes('  nothing in the file was executed'))
       assert.doesNotMatch(line.out.join('\n'), /outside every function/)

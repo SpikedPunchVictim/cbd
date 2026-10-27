@@ -295,7 +295,8 @@ test('a transformed script resolves through its generated line starts', () => {
     // VLQ: AAGA = [0,0,+3,0], AAFA = [0,0,-2,0] from the previous source line.
     const map = {
       version: 3,
-      sources: [realpathSync(file)],
+      // A file: URL, since a bare absolute Windows path is not a source a map can name.
+      sources: [pathToFileURL(realpathSync(file)).href],
       names: [],
       mappings: ';;;;AAGA;;;;;;AAFA',
     }

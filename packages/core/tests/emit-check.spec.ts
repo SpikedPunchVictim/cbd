@@ -428,7 +428,7 @@ test.group('moduleScopeUnchangedFiles', () => {
     })
     assert.equal(result.files.size, 0)
     assert.equal(result.warnings.length, 1)
-    assert.match(result.warnings[0]!, /emitCheck skipped for .*src\/\*\*: resolved typescript .*, pinned 0\.0\.1/)
+    assert.match(result.warnings[0]!, /emitCheck skipped for .*src[\\/]\*\*: resolved typescript .*, pinned 0\.0\.1/)
   })
 
   test('an entry list of one unused project is harmless', () => {

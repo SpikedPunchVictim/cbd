@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { test } from '@japa/runner'
 import { loadMap } from '@spikedpunch/cbd'
 import { inspectorLockPath, resolveInspectorTarget } from '@spikedpunch/cbd/adapter'
@@ -62,13 +62,13 @@ test.group('cbd collect', () => {
 
       assert.equal(result.code, EXIT.ok)
       assert.match(result.out.join('\n'), /^selected 2 tests for 1 changed file$/m)
-      assert.match(result.out.join('\n'), /^map \.cbd\/maps\/[0-9a-f]{40}\/map\.json: 2 tests/m)
+      assert.match(result.out.join('\n'), /^map \.cbd[\\/]maps[\\/][0-9a-f]{40}[\\/]map\.json: 2 tests/m)
 
       const logged = logOf(log)
       assert.equal(logged.commit, repo.head())
       assert.equal(typeof logged.selection, 'string')
-      assert.match(logged.selection!, /\.cbd\/selection-collect-[^/]+\.json$/)
-      assert.equal(logged.shard.startsWith(`${join(root, '.cbd', 'shards')}/`), true)
+      assert.match(logged.selection!, /\.cbd[\\/]selection-collect-[^\\/]+\.json$/)
+      assert.equal(logged.shard.startsWith(join(root, '.cbd', 'shards') + sep), true)
       const selection = JSON.parse(logged.selectionContent!) as {
         version: number
         tests: Array<{ id: string; file: string | null; title: string }>
@@ -147,7 +147,7 @@ test.group('cbd collect', () => {
       assert.equal(result.code, EXIT.ok)
       assert.match(result.err.join('\n'), /no map yet; running the full suite/)
       assert.equal(logOf(log).selection, null)
-      assert.match(result.out.join('\n'), /^map \.cbd\/maps\/[0-9a-f]{40}\/map\.json: 2 tests/m)
+      assert.match(result.out.join('\n'), /^map \.cbd[\\/]maps[\\/][0-9a-f]{40}[\\/]map\.json: 2 tests/m)
     } finally {
       cleanup()
     }
@@ -356,7 +356,7 @@ test.group('cbd collect', () => {
     } finally {
       cleanup()
     }
-  })
+  }).skip(process.platform === 'win32', 'Windows reports a killed process as an exit code, never as a signal')
 
   test('--no-build writes the shard and no map', () => {
     const { root, a, spec, runner, cleanup } = prepared()

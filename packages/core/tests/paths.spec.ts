@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { test } from '@japa/runner'
 import { canonicalPath } from '../src/paths.js'
 
@@ -45,6 +45,6 @@ test.group('canonicalPath', () => {
   })
 
   test('a path outside any existing directory still answers', () => {
-    assert.equal(canonicalPath('/definitely/not/here/file.ts'), '/definitely/not/here/file.ts')
+    assert.equal(canonicalPath('/definitely/not/here/file.ts'), resolve('/definitely/not/here/file.ts'))
   })
 })

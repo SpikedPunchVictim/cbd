@@ -31,6 +31,16 @@ jobs:
       - name: Keep LF line endings
         run: git config --global core.autocrlf false
 
+      # The runner's profile directory has an 8.3 short name (RUNNER~1), and git and
+      # Node spell the same temp directory differently. Tests compare paths textually,
+      # so point them at a directory that has only one spelling.
+      - name: Use the runner's temp directory without a short name
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4

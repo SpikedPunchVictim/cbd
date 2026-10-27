@@ -20,5 +20,5 @@ test('hasFeature reports membership', () => {
 
 test('settingsPath points at the data directory', () => {
   const path = settingsPath()
-  expectDeepEqual(path.endsWith('data/settings.json'), true, 'settingsPath suffix')
+  expectDeepEqual(path.replaceAll('\\', '/').endsWith('data/settings.json'), true, 'settingsPath suffix')
 })

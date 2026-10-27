@@ -280,7 +280,8 @@ function gitRoot(cwd: string): string | undefined {
     // Strip the line ending, not whitespace: a repository path may legally end
     // in a space, and trimming it produced a path that does not exist.
     const root = out.replace(/\r?\n$/, '')
-    return root === '' ? undefined : root
+    // git spells paths with `/` on Windows; the walk compares them against native ones.
+    return root === '' ? undefined : canonical(root)
   } catch {
     return undefined
   }

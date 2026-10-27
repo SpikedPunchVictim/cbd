@@ -16,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from '@japa/runner'
 import { createCbd } from '../src/factory.js'
@@ -187,7 +187,7 @@ test.group('createCbd', () => {
       assert.equal(result.tests, 2)
       assert.equal(result.files, 1)
       assert.equal(result.path, join(realpathSync(repo.root), '.cbd/maps', commit, 'map.json'))
-      assert.deepEqual(result.shards, ['.cbd/shards/run.ndjson'])
+      assert.deepEqual(result.shards, [join('.cbd', 'shards', 'run.ndjson')])
 
       const loaded = loadMap(repo.root, commit)
       assert.deepEqual(Object.keys(loaded.map.files), [a])
@@ -229,7 +229,7 @@ test.group('createCbd', () => {
 
       const result = cbd.build()
       assert.equal(result.tests, 2)
-      assert.deepEqual(result.shards, ['.cbd/shards/run.ndjson'])
+      assert.deepEqual(result.shards, [join('.cbd', 'shards', 'run.ndjson')])
 
       // The same file at this commit is still refused: it is evidence this map
       // would otherwise be built from.
@@ -260,7 +260,7 @@ test.group('createCbd', () => {
 
       const map = loadMap(repo.root, renamed).map
       assert.equal(map.tests.length, 0)
-      assert.ok(map.partial?.some((path) => path.endsWith('/src/a.ts')))
+      assert.ok(map.partial?.some((path) => path.replaceAll('\\', '/').endsWith('/src/a.ts')))
     } finally {
       cleanup()
     }
@@ -438,7 +438,7 @@ test.group('createCbd', () => {
       assert.deepEqual(
         stats
           .topFiles
-          .map((file) => [file.file.replace(`${realpathSync(repo.root)}/`, ''), file.tests, file.functions]),
+          .map((file) => [relative(realpathSync(repo.root), file.file).replaceAll('\\', '/'), file.tests, file.functions]),
         [['src/a.ts', 2, 1]],
       )
       assert.deepEqual(stats.suites, [{ dir: 'tests', tests: 2 }])
@@ -458,7 +458,7 @@ test.group('createCbd', () => {
 
       const stats = cbd.stats()
       assert.equal(stats.changed.files, 2)
-      assert.deepEqual(stats.changed.unknown, ['src/new.ts'])
+      assert.deepEqual(stats.changed.unknown, [join('src', 'new.ts')])
     } finally {
       cleanup()
     }
