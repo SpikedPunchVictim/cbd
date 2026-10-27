@@ -330,6 +330,28 @@ test.group('socketSource close', (group) => {
   })
 })
 
+test.group('socketSource after the service is gone', (group) => {
+  group.each.timeout(30_000)
+
+  // Writing to a destroyed socket produces no reply, so a take sent then would wait out
+  // its whole timeout to say what is already known.
+  test('a take after the service exited settles at once, not after the timeout', async () => {
+    await withService({}, async (running) => {
+      await waitForSocket(running.socketPath)
+      const source = await socketSource({ dir: running.dir, timeoutMs: 8_000 })
+      const exited = new Promise<void>((resolve) => running.proc.once('exit', () => resolve()))
+      running.run('quit')
+      await exited
+      await new Promise((resolve) => setTimeout(resolve, 250))
+
+      const started = Date.now()
+      await source.take().catch(() => undefined)
+      assert.ok(Date.now() - started < 2_000, 'the take waited out the timeout on a dead socket')
+      source.close()
+    })
+  })
+})
+
 test.group('socketSource dispatch', (group) => {
   group.each.timeout(30_000)
 

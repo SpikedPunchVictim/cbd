@@ -287,6 +287,9 @@ class SocketClient {
     session?: string,
   ): Promise<InstrumentResponse> {
     if (this.#closed) return Promise.reject(new SocketSourceError('the socket is closed'))
+    // A write to a socket that has errored or closed is never answered; failing now says
+    // what the timeout would say, ten seconds later.
+    if (this.#gone) return Promise.reject(new SocketSourceError('the instrument socket closed'))
 
     return new Promise<InstrumentResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
