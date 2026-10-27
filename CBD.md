@@ -950,9 +950,10 @@ The rules (all must hold; a failure names its reason internally and keeps today'
 A function body that a module-scope call runs at load (an IIFE, a callback) is still a function: the
 map's load bucket records it, and the reader rule applies the load bucket's rule to it. The pin and
 fallbacks are `emitCheck`'s: a compiler that is missing, TypeScript 7, or not the pinned version
-skips the entry with the usual warning. A `--change`/`--patch` what-if edits no file, so `emitCheck`'s
-unchanged verdict applies to it before this rule is reached; use a real edit with `--since` to see
-`binding-read`.
+skips the entry with the usual warning. A `--change`/`--patch` what-if (and `explain <file>:<line>`,
+which asks select the same question) edits no file, so there is no new text to compare: `emitCheck` gives no verdict for it, neither
+`module-scope-unchanged` nor `binding-read`, and selection escalates exactly as it does without the
+opt-in. Use a real edit with `--since` to see either verdict.
 
 `alwaysAll` is checked **before** `include`, because it is a statement that a change there is beyond
 the map's ability to answer, not a filter. The example config above lists `**/migrations/**` there

@@ -625,3 +625,76 @@ test.group('mod', () => {
     cleanup()
   }
 })
+
+test('emitCheck gives no verdict on a --change or explain what-if: nothing was edited to compare', () => {
+  const TYPESCRIPT = realpathSync(
+    fileURLToPath(new URL('../../../core/node_modules/typescript5', import.meta.url)),
+  )
+  const TS_VERSION = (JSON.parse(readFileSync(join(TYPESCRIPT, 'package.json'), 'utf8')) as { version: string }).version
+  const files = {
+    'src/mod.ts': `const factor = 2
+
+export function double(n: number): number {
+  return n * factor
+}
+`,
+    'tsconfig.json': JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }),
+    'tests/mod.spec.js': `import assert from 'node:assert/strict'
+import { test } from '@japa/runner'
+import { double } from '../src/mod.ts'
+
+test.group('mod', () => {
+  test('doubles', () => {
+    assert.equal(double(2), 4)
+  })
+  test('does not call it', () => {
+    assert.ok(true)
+  })
+})
+`,
+  }
+  const plain = scenario('whatif-plain', {
+    ...files,
+    'cbd.config.json': JSON.stringify({ include: ['src/**', 'tests/**'] }),
+  })
+  const checked = scenario('whatif-emit', {
+    ...files,
+    'cbd.config.json': JSON.stringify({
+      include: ['src/**', 'tests/**'],
+      emitCheck: { 'src/**': { tsconfig: 'tsconfig.json', typescript: TS_VERSION } },
+    }),
+  })
+  try {
+    for (const { root } of [plain, checked]) {
+      mkdirSync(join(root, 'node_modules'))
+      symlinkSync(TYPESCRIPT, join(root, 'node_modules/typescript'), 'dir')
+      record(root, baseEnv(root))
+    }
+    const run = (root: string, ...args: string[]): SelectionJson => {
+      const result = runCli(root, baseEnv(root), ...args, '--format', 'json')
+      assert.ok(result.stdout.trim() !== '', `printed nothing.\nstderr:\n${result.stderr}`)
+      return JSON.parse(result.stdout) as SelectionJson
+    }
+    const kinds = (result: SelectionJson): string[] => result.selection.reasons.map((reason) => reason.kind)
+
+    // Line 1 is module scope; the file is untouched, so base and head are identical.
+    const expected = run(plain.root, 'select', '--change', 'src/mod.ts:1')
+    const got = run(checked.root, 'select', '--change', 'src/mod.ts:1')
+    assert.ok(!kinds(got).includes('module-scope-unchanged'), JSON.stringify(kinds(got)))
+    assert.deepEqual(kinds(got), kinds(expected))
+    assert.deepEqual(got.selected.map((entry) => entry.title).sort(), expected.selected.map((entry) => entry.title).sort())
+
+    const explained = JSON.parse(
+      runCli(checked.root, baseEnv(checked.root), 'explain', 'src/mod.ts:1', '--format', 'json').stdout,
+    ) as { selection: { tests: number; reasons: Array<{ kind: string }> } }
+    const explainedPlain = JSON.parse(
+      runCli(plain.root, baseEnv(plain.root), 'explain', 'src/mod.ts:1', '--format', 'json').stdout,
+    ) as { selection: { tests: number; reasons: Array<{ kind: string }> } }
+    assert.ok(!explained.selection.reasons.some((reason) => reason.kind === 'module-scope-unchanged'))
+    assert.equal(explained.selection.tests, explainedPlain.selection.tests)
+  } finally {
+    plain.cleanup()
+    checked.cleanup()
+  }
+})
+

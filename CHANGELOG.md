@@ -5,6 +5,14 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **`select --change` and `explain` no longer let `emitCheck` drop tests for a what-if.** A `--change`
+  or `--patch` edits no file, so `emitCheck` compared a file with itself, found its module scope
+  unchanged, and the `module-scope-unchanged` verdict suppressed the load-observer escalation: on the
+  originating project `select --change driver.ts:99` chose 195 tests and left out the one that kills
+  the mutant, against 2,630 without `emitCheck`. A caller-supplied change has no new text, so
+  `emitCheck` now gives it no verdict (neither `module-scope-unchanged` nor `binding-read`) and selection
+  escalates as it would without the opt-in.
+
 - **`cbd explain <file>:<line>` reports what `select --change` would run for that line.** On a
   module-scope line explain listed only the tests that touched the file ("123 tests, outside every
   function: the whole file's tests") while select added every test of every shard that loaded the

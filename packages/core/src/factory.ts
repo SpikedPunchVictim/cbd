@@ -851,10 +851,15 @@ export function createCbd(config: CbdConfig): Cbd {
       // Opt-in: the project's own TypeScript says which modified files kept their
       // module scope. Both the range's base and the map's commit must agree, since
       // the map recorded the module as it was at its own commit.
+      //
+      // Caller-supplied `changes` are a what-if: no file was edited, so the file's
+      // text at base and head is identical and "unchanged" would be true of any
+      // line asked about. There is no new text to compare, so no verdict is given
+      // and selection escalates exactly as it does without the opt-in.
       const emitChecked = moduleScopeUnchangedFiles({
         root,
         changes,
-        entries: config.select?.emitCheck ?? [],
+        entries: options.changes !== undefined ? [] : (config.select?.emitCheck ?? []),
         refs: [...new Set([since, loaded.map.commit])],
         worktree: options.worktree !== false,
       })

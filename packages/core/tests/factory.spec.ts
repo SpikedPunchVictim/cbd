@@ -547,6 +547,54 @@ test.group('createCbd', () => {
     }
   })
 
+  test('emitCheck gives no verdict on a what-if change, which has no new text to compare', () => {
+    const repo = tempRepo()
+    const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-whatif-')))
+    try {
+      mkdirSync(join(toolchain, 'node_modules'))
+      symlinkSync(
+        realpathSync(fileURLToPath(new URL('../../node_modules/typescript5', import.meta.url))),
+        join(toolchain, 'node_modules', 'typescript'),
+        'dir',
+      )
+      const tsconfig = join(toolchain, 'tsconfig.json')
+      writeFileSync(tsconfig, JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+      const pin = (JSON.parse(readFileSync(join(toolchain, 'node_modules/typescript/package.json'), 'utf8')) as { version: string }).version
+      const root = realpathSync(repo.root)
+      const a = join(root, 'src/a.ts')
+      const spec = join(root, 'tests/a.spec.ts')
+      repo.write('src/a.ts', 'const limit = 3\nexport function add(a, b) {\n  return a + b + limit\n}\n')
+      repo.write('tests/a.spec.ts', "import { add } from '../src/a.js'\n")
+      const commit = repo.commit('base')
+      writeShard(
+        repo.root,
+        'run.ndjson',
+        shardText(commit, [
+          { title: 'adds', file: spec, touches: [ref(a, 'add@0', 2, 4)] },
+          { title: 'loads', file: spec, touches: [] },
+        ]),
+      )
+      const emitCheck = [{ glob: join(dirname(a), '**'), tsconfig, typescript: pin }]
+      createCbd({ root: repo.root }).build()
+
+      // Line 1 is module scope. Nothing is edited, so the file's text is identical
+      // at base and head, and "identical" proves nothing about a change not yet made.
+      const line = { start: 1, end: 1 }
+      const changes = [{ path: a, status: 'M' as const, hunks: [line], newHunks: [line], insertions: [] }]
+      const without = createCbd({ root: repo.root }).select({ commit, changes }).selection
+      const withCheck = createCbd({ root: repo.root, select: { emitCheck } }).select({ commit, changes }).selection
+
+      assert.ok(!withCheck.reasons.some((reason) => reason.kind === 'module-scope-unchanged'))
+      assert.ok(!withCheck.reasons.some((reason) => reason.kind === 'binding-read'))
+      assert.deepEqual(withCheck.reasons, without.reasons)
+      assert.deepEqual(withCheck.tests, without.tests)
+      assert.deepEqual(withCheck.warnings, without.warnings)
+    } finally {
+      rmSync(toolchain, { recursive: true, force: true })
+      repo.cleanup()
+    }
+  })
+
   test('emitCheck escalates an enum edit end to end', () => {
     const repo = tempRepo()
     const toolchain = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-emit-enum-')))
