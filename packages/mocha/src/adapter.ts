@@ -31,6 +31,7 @@ import {
   type Source,
   type TestStatus,
 } from '@spikedpunch/cbd/adapter'
+import { realpathSync } from 'node:fs'
 import type Mocha from 'mocha'
 import { withSelfRoot } from './self.js'
 
@@ -125,7 +126,7 @@ export function mochaWindowHooks(recorder: Recorder): {
     beforeEach(this: Mocha.Context): void {
       const test = this.currentTest
       if (test === undefined) return
-      recorder.testStart(test.fullTitle(), test.file ?? null)
+      recorder.testStart(test.fullTitle(), absolute(test.file ?? null))
     },
     afterEach(this: Mocha.Context): void {
       const test = this.currentTest
@@ -187,4 +188,14 @@ export function attachGroupEnd(
       )
     }
   })
+}
+
+/** The map keys are realpaths, and the runner reports the path it was given. */
+function absolute(file: string | null): string | null {
+  if (file === null) return null
+  try {
+    return realpathSync(file)
+  } catch {
+    return file
+  }
 }

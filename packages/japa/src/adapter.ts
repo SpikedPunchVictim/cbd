@@ -37,6 +37,7 @@
  * filter matches the bare one (A0 F10). Recording anything else would have made
  * every emitted filter match zero tests, which is a miss.
  */
+import { realpathSync } from 'node:fs'
 import type { CoverageMap, Selection } from '@spikedpunch/cbd'
 import {
   Recorder,
@@ -181,7 +182,7 @@ export function japaWindowHooks(recorder: Recorder): {
     onTestStart(node: JapaTestStartNode): void {
       // `original`, not `expanded` — A0 F10. They are equal today, but the map's
       // identity has to match what japa filters on, and that is the bare title.
-      recorder.testStart(node.title.original, node.meta.fileName ?? null)
+      recorder.testStart(node.title.original, absolute(node.meta.fileName ?? null))
     },
     onTestEnd(node: JapaTestEndNode): void {
       recorder.testEnd(node.title.original, statusOf(node), node.duration)
@@ -249,7 +250,7 @@ export function installJapaAdapter(
    * last boundary, so a request started in the test's final tick still does.
    */
   const onTestStart = (node: JapaTestStartNode): void => {
-    options.correlation?.begin(node.title.original, node.meta.fileName ?? null)
+    options.correlation?.begin(node.title.original, absolute(node.meta.fileName ?? null))
     guarded(() => {
       for (const hook of hooks) hook.onTestStart(node)
     })
@@ -375,4 +376,14 @@ export function applyTests(config: JapaConfigLike, titles: string[]): void {
     )
   }
   config.filters.tests = [...titles]
+}
+
+/** The map keys are realpaths, and the runner reports the path it was given. */
+function absolute(file: string | null): string | null {
+  if (file === null) return null
+  try {
+    return realpathSync(file)
+  } catch {
+    return file
+  }
 }

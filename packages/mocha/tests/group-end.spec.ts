@@ -5,10 +5,13 @@
  */
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from '@japa/runner'
 import Mocha from 'mocha'
 import type { Recorder } from '@spikedpunch/cbd/adapter'
-import { attachGroupEnd, installMochaAdapter } from '../src/adapter.js'
+import { attachGroupEnd, installMochaAdapter, mochaWindowHooks } from '../src/adapter.js'
 
 function fakeRecorder(onGroupEnd: () => void): Recorder {
   return {
@@ -53,4 +56,25 @@ test('a recorder that throws at a suite end does not take the run down', () => {
     process.stderr.write = realWrite
   }
   assert.match(written.join(''), /a recorder step failed \(ENOSPC\)/)
+})
+
+test('a window opens on the realpath of a spec reached through a symlink', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cbd-mocha-link-'))
+  try {
+    const real = join(dir, 'real.spec.js')
+    writeFileSync(real, '')
+    const link = join(dir, 'link.spec.js')
+    symlinkSync(real, link)
+    const starts: Array<string | null> = []
+    const recorder = {
+      testStart: (_title: string, file: string | null) => starts.push(file),
+    } as unknown as Recorder
+    const current = new Mocha.Test('passes', () => {})
+    current.parent = new Mocha.Suite('a group')
+    current.file = link
+    mochaWindowHooks(recorder).beforeEach.call({ currentTest: current } as Mocha.Context)
+    assert.deepEqual(starts, [realpathSync(real)])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

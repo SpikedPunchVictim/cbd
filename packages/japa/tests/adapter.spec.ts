@@ -16,7 +16,7 @@
  *     match nothing, and a filter matching nothing is a miss.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -154,6 +154,24 @@ test.group('japaWindowHooks', () => {
       meta: { fileName: '/repo/tests/gamma.spec.js' },
     })
     assert.deepEqual(calls, [['testStart', 'delta', '/repo/tests/gamma.spec.js']])
+  })
+
+  test('a window opens on the realpath of a spec reached through a symlink', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cbd-japa-link-'))
+    try {
+      const real = join(dir, 'real.spec.js')
+      writeFileSync(real, '')
+      const link = join(dir, 'link.spec.js')
+      symlinkSync(real, link)
+      const { recorder, calls } = stubRecorder()
+      japaWindowHooks(recorder).onTestStart({
+        title: { original: 'x', expanded: 'x' },
+        meta: { fileName: link },
+      })
+      assert.deepEqual(calls, [['testStart', 'x', realpathSync(real)]])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test('a node with no fileName opens a window with a null file', () => {
