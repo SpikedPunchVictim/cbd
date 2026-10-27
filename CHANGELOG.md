@@ -5,6 +5,15 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A read shared by a whole shard is stored once in the map.** An import-phase read that a
+  one-process suite cannot pin to a spec belongs to every test in the shard, and the map listed every
+  test under every such file: on VS Code's `vs/platform` with no `include` that was 158 MB of a
+  225 MB map. The map now holds one `readGroups` entry per shard (`tests`, `reads`, `dirReads`) and
+  selection unions it with `reads`/`dirReads`, so selections are unchanged: the same build is 67 MB,
+  builds in 6.8 s instead of 10.9 s, and selects in 0.5 s instead of 1.4 s. Carrying a map across
+  builds renumbers a group and still poisons its files when a member is dropped. The map version is
+  now 2: this build reads version 1 maps, and an older build refuses a version 2 map instead of
+  under-selecting.
 - **`recordRead`, `recordDirRead`, `recordDependency`, `recordEnv` and `recordOpaque` no longer drop
   a call made between tests.** Once the first test had started, a record call from a `beforeAll`,
   `afterEach` or other hook outside a test window reached no recorder and vanished without a word, so

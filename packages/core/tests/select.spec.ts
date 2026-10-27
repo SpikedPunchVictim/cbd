@@ -1464,3 +1464,16 @@ test('module-scope-unchanged: a file reached only at load still escalates', () =
   })
   assert.deepEqual(reasonKinds(result), ['all:load'])
 })
+
+test('a change to a file in a shared read group selects the group\'s tests, and unions with per-test reads', () => {
+  const map = makeMap({
+    reads: { [DATA]: [1] },
+    readGroups: [{ tests: [0, 2], reads: [DATA], dirReads: [LISTED] }],
+  })
+  const data = select(map, [change(DATA, [{ start: 1, end: 1 }])])
+  assert.deepEqual(data.tests, [0, 1, 2])
+  assert.deepEqual(data.reasons, [{ kind: 'read', file: DATA, tests: [0, 1, 2] }])
+  const listed = select(map, [change(`${LISTED}/new.ts`, [{ start: 1, end: 1 }])])
+  const read = listed.reasons.find((reason) => reason.kind === 'read')
+  assert.deepEqual(read?.kind === 'read' ? read.tests : [], [0, 2])
+})

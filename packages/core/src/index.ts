@@ -58,11 +58,14 @@ export {
   saveMap,
   testsForFunction,
   testsForLine,
+  testsListing,
+  testsReading,
   type CoverageMap,
   type FunctionEntry,
   type LoadedMap,
   type MapBuildOptions,
   type ReachedFunction,
+  type ReadGroup,
   type TestEntry,
 } from './map.js'
 

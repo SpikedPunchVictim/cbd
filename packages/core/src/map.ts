@@ -17,7 +17,13 @@ import { resolveShard, type ResolvedShard, type ResolvedTest } from './resolve.j
 import type { ScanOptions } from './normalize.js'
 import type { ShardInput, TouchRef } from './shard.js'
 
-export const MAP_VERSION = 1
+/**
+ * 2 added `readGroups`. A reader that predates it would treat a group's files as
+ * unread and under-select, so the version is bumped and an older CBD refuses the
+ * map instead. This build still reads version 1, which is a subset of 2.
+ */
+export const MAP_VERSION = 2
+const OLDEST_READABLE_VERSION = 1
 
 export interface FunctionEntry {
   startLine: number
@@ -68,6 +74,13 @@ export interface TestEntry {
   env?: Record<string, string[]>
 }
 
+export interface ReadGroup {
+  /** Indices into `CoverageMap.tests`, ascending. */
+  tests: number[]
+  reads: string[]
+  dirReads: string[]
+}
+
 export interface CoverageMap {
   version: number
   commit: string
@@ -85,6 +98,17 @@ export interface CoverageMap {
   reads?: Record<string, number[]>
   /** Directories listed by tests; a change to any file under one selects the lister. */
   dirReads?: Record<string, number[]>
+  /**
+   * Reads shared by a set of tests, stored once.
+   *
+   * An import-phase read that the adapter could not pin to a spec (a one-process
+   * suite) belongs to every test in the shard. Writing it into `reads` listed every
+   * test under every such file, which grew with files x tests. A group is the same
+   * statement in one place: each test in `tests` read each file in `reads` and listed
+   * each directory in `dirReads`. It adds to `reads`/`dirReads` and never replaces
+   * them; use `testsReading` / `testsListing` instead of indexing those directly.
+   */
+  readGroups?: ReadGroup[]
   /**
    * Tests that declared an invisible dependency, by the reason they gave.
    *
@@ -353,6 +377,7 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
   const shardObserverIndices: Array<Set<number> | null> = []
   const reads = new Map<string, Set<number>>()
   const dirReads = new Map<string, Set<number>>()
+  const readGroups: ReadGroup[] = []
   const opaque = new Map<string, Set<number>>()
   const included: string[] = []
   const partial = new Set<string>()
@@ -536,11 +561,18 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     }
     for (const test of resolved.tests) for (const ref of test.touches) executedHere.add(ref[0])
 
+    // Reads that fall to the whole shard are one fact about the shard, not one per test.
+    const shardReads = new Set<string>()
+    const shardDirReads = new Set<string>()
     for (const record of resolved.loadReads) {
       let targets = allTests
+      let wholeShard = true
       if (record.file !== null) {
         const matched = allTests.filter((index) => tests[index]?.file === record.file)
-        if (matched.length > 0) targets = matched
+        if (matched.length > 0) {
+          targets = matched
+          wholeShard = false
+        }
       }
       if (targets.length === 0) continue
       for (const [key, hash] of Object.entries(record.env ?? {})) {
@@ -563,6 +595,10 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
       for (const path of record.reads) {
         for (const kept of readPaths(path)) {
           if (record.bucket === true && executedHere.has(kept)) continue
+          if (wholeShard) {
+            shardReads.add(kept)
+            continue
+          }
           let set = reads.get(kept)
           if (set === undefined) {
             set = new Set()
@@ -573,6 +609,10 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
       }
       for (const dir of record.dirReads) {
         for (const kept of dirPaths(dir)) {
+          if (wholeShard) {
+            shardDirReads.add(kept)
+            continue
+          }
           let set = dirReads.get(kept)
           if (set === undefined) {
             set = new Set()
@@ -581,6 +621,13 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
           for (const index of targets) set.add(index)
         }
       }
+    }
+    if (shardReads.size > 0 || shardDirReads.size > 0) {
+      readGroups.push({
+        tests: [...new Set(allTests)].sort((a, b) => a - b),
+        reads: [...shardReads].sort(),
+        dirReads: [...shardDirReads].sort(),
+      })
     }
 
     // Every test in this process shared the module instance that the load or
@@ -667,6 +714,7 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     shardTests,
     reads: indexed(reads),
     dirReads: indexed(dirReads),
+    ...(readGroups.length === 0 ? {} : { readGroups }),
     ...(opaque.size === 0 ? {} : { opaque: indexed(opaque) }),
     seen: [...seen].sort(),
     shards: included,
@@ -853,6 +901,19 @@ export function carryMap(
     if (opaqueByTest.has(index)) opaqueKept.push(index)
   }
 
+  // A group is path-level evidence for every member, so one dropped member poisons the
+  // group's files exactly as it would have per test. Checked per group, not per test,
+  // which is what keeps a shard-wide read from being expanded here.
+  const carriedSet = new Set(carried)
+  for (const group of base.readGroups ?? []) {
+    const lost = group.tests.some(
+      (index) => !carriedSet.has(index) && !nextKeys.has(keyOf(base.tests[index]!)),
+    )
+    if (!lost) continue
+    for (const file of group.reads) partial.add(file)
+    for (const dir of group.dirReads) partial.add(dir)
+  }
+
   // A file the base knew only through a load/teardown/between bucket has no
   // per-test evidence to carry. The buckets are not carried, so leaving it in
   // `seen` would answer a later change as "untested" (nothing runs) instead of
@@ -977,6 +1038,22 @@ export function carryMap(
     return out
   }
 
+  // Next's groups keep their indices (its tests come first); base's follow its carried
+  // tests. A member that was not carried has no entry in `newIndex` and drops out.
+  const readGroups: ReadGroup[] = (next.readGroups ?? []).map((group) => ({
+    tests: [...group.tests],
+    reads: [...group.reads],
+    dirReads: [...group.dirReads],
+  }))
+  for (const group of base.readGroups ?? []) {
+    const members = group.tests
+      .map((index) => newIndex.get(index))
+      .filter((at): at is number => at !== undefined)
+      .sort((a, b) => a - b)
+    if (members.length === 0) continue
+    readGroups.push({ tests: members, reads: [...group.reads], dirReads: [...group.dirReads] })
+  }
+
   const opaque: Record<string, number[]> = {}
   for (const [reason, indices] of Object.entries(next.opaque ?? {})) opaque[reason] = [...indices]
   for (const [reason, indices] of Object.entries(base.opaque ?? {})) {
@@ -991,7 +1068,7 @@ export function carryMap(
   }
 
   return {
-    version: next.version,
+    version: MAP_VERSION,
     commit: next.commit,
     builtAt: next.builtAt,
     ...((next.dirty === true || base.dirty === true) ? { dirty: true } : {}),
@@ -1000,6 +1077,7 @@ export function carryMap(
     ...(Object.keys(opaque).length === 0 ? {} : { opaque }),
     reads: merge(next.reads, readByTest),
     dirReads: merge(next.dirReads, dirByTest),
+    ...(readGroups.length === 0 ? {} : { readGroups }),
     load: next.load,
     between: next.between,
     teardown: next.teardown,
@@ -1142,6 +1220,15 @@ function mapPaths(
             Object.entries(map.dirReads).map(([dir, tests]) => [to(root, dir), tests]),
           ),
         }),
+    ...(map.readGroups === undefined
+      ? {}
+      : {
+          readGroups: map.readGroups.map((group) => ({
+            tests: group.tests,
+            reads: group.reads.map((file) => to(root, file)),
+            dirReads: group.dirReads.map((dir) => to(root, dir)),
+          })),
+        }),
     seen: map.seen.map((file) => to(root, file)),
   }
 }
@@ -1183,7 +1270,11 @@ export function loadMap(
   const started = performance.now()
   const stored = JSON.parse(raw) as CoverageMap
   const parseMs = performance.now() - started
-  if (stored.version !== MAP_VERSION) {
+  if (
+    typeof stored.version !== 'number' ||
+    stored.version < OLDEST_READABLE_VERSION ||
+    stored.version > MAP_VERSION
+  ) {
     throw new Error(`map at ${path} is version ${stored.version}, expected ${MAP_VERSION}`)
   }
   return {
@@ -1276,4 +1367,38 @@ export function testsForLine(map: CoverageMap, file: string, line: number): Test
     .sort((a, b) => a - b)
     .map((index) => map.tests[index]!)
     .filter(Boolean)
+}
+
+/**
+ * Tests that read `file`: its per-test entry and every group that lists it.
+ * Ascending, no duplicates.
+ */
+export function testsReading(map: CoverageMap, file: string): number[] {
+  const found = new Set<number>(map.reads?.[file] ?? [])
+  for (const group of map.readGroups ?? []) {
+    if (!group.reads.includes(file)) continue
+    for (const index of group.tests) found.add(index)
+  }
+  return [...found].sort((a, b) => a - b)
+}
+
+/**
+ * Tests that listed a directory `path` is under, per the caller's `isUnder`.
+ * Ascending, no duplicates.
+ */
+export function testsListing(
+  map: CoverageMap,
+  path: string,
+  isUnder: (path: string, dir: string) => boolean,
+): number[] {
+  const found = new Set<number>()
+  for (const [dir, tests] of Object.entries(map.dirReads ?? {})) {
+    if (!isUnder(path, dir)) continue
+    for (const index of tests) found.add(index)
+  }
+  for (const group of map.readGroups ?? []) {
+    if (!group.dirReads.some((dir) => isUnder(path, dir))) continue
+    for (const index of group.tests) found.add(index)
+  }
+  return [...found].sort((a, b) => a - b)
 }

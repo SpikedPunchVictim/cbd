@@ -29,7 +29,7 @@
  */
 import { realpathSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
-import type { CoverageMap, FunctionEntry, TestEntry } from './map.js'
+import { testsListing, testsReading, type CoverageMap, type FunctionEntry, type TestEntry } from './map.js'
 
 export interface MutantTarget {
   /**
@@ -208,11 +208,8 @@ function observersOf(map: CoverageMap, file: string): TestEntry[] {
   for (const tests of Object.values(map.opaque ?? {})) {
     for (const index of tests ?? []) indices.add(index)
   }
-  for (const index of map.reads?.[file] ?? []) indices.add(index)
-  for (const [dir, tests] of Object.entries(map.dirReads ?? {})) {
-    if (!isUnder(file, dir)) continue
-    for (const index of tests ?? []) indices.add(index)
-  }
+  for (const index of testsReading(map, file)) indices.add(index)
+  for (const index of testsListing(map, file, isUnder)) indices.add(index)
   return [...indices]
     .sort((a, b) => a - b)
     .map((index) => map.tests[index])

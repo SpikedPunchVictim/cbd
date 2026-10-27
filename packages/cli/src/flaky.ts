@@ -82,6 +82,16 @@ function readByTest(map: CoverageMap, kind: 'reads' | 'dirReads'): Map<number, S
       out.set(index, set)
     }
   }
+  // A group's members share one set instead of each getting a copy; a member that
+  // also has its own entries (or is in another group) gets a union.
+  for (const group of map.readGroups ?? []) {
+    const shared = new Set(group[kind])
+    if (shared.size === 0) continue
+    for (const index of group.tests) {
+      const own = out.get(index)
+      out.set(index, own === undefined ? shared : new Set([...own, ...shared]))
+    }
+  }
   return out
 }
 

@@ -784,6 +784,13 @@ map carry `reads` (file) and `dirReads` (directory); a change to a read file, or
 listed directory, selects the readers. Directories are kept even when they do not match `include`,
 because a file under them might.
 
+A read the adapter could not pin to a spec (a one-process suite's import phase) belongs to every
+test in its shard. The map stores it once, as a `readGroups` entry `{ tests, reads, dirReads }`
+meaning each listed test read each listed file and listed each listed directory, rather than
+repeating every test under every file; selection unions the groups with `reads`/`dirReads`, so the
+answer is the same. Environment hashes and `recordOpaque` reasons attributed to the whole shard stay
+per test (their size is variables or reasons times tests, not files times tests).
+
 The boundary is stated rather than implied: a reference captured before install, a native addon,
 reads during test-file import or between tests, and any process the instrument never loaded in.
 A **service or child process the collector holds** is no longer in that list: the instrument
@@ -987,8 +994,10 @@ export type Reason =
 `cbd`'s verbs and the exported API answer the map's two directions. The map on disk is
 `<stateDir>/maps/<commit>/map.json` (or `<mapsDir>/<commit>/map.json` when `mapsDir` is set); its
 shape (`CoverageMap`: `tests`, `files`, buckets, `seen`, `shardTests`, `loadShards`, `reads`,
-`dirReads`, `opaque`, `partial` and `carried`) is the supported export for another tool, and every
+`dirReads`, `readGroups`, `opaque`, `partial` and `carried`) is the supported export for another tool, and every
 query below is derived from it.
+The map carries `version: 2`; this build also reads version 1, and an older build refuses a
+version 2 map rather than ignore `readGroups` and under-select.
 Paths are stored relative to the map's root and resolved when it is loaded, so a map recorded in one
 worktree answers the same in another checkout of the same commit.
 `mapsDir` exists for the case where the worktrees should not even carry their own copy: point it at

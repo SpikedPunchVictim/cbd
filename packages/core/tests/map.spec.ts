@@ -28,6 +28,8 @@ import {
   saveMap,
   testsForFunction,
   testsForLine,
+  testsListing,
+  testsReading,
   relocateRange,
   type CoverageMap,
 } from '../src/map.js'
@@ -35,6 +37,8 @@ import type { ResolvedShard, ResolvedTest } from '../src/resolve.js'
 import type { ShardHeader, ShardRecord, TouchRef } from '../src/shard.js'
 import { select } from '../src/select.js'
 import { resolveShard } from '../src/resolve.js'
+
+const isUnderDir = (path: string, dir: string): boolean => path === dir || path.startsWith(`${dir}/`)
 
 const A = '/repo/src/a.ts'
 const B = '/repo/src/b.ts'
@@ -383,7 +387,7 @@ test('an unscoped import-phase read belongs to every test in the shard', () => {
     ],
     { commit: 'c0ffee' },
   )
-  assert.deepEqual(map.reads, { '/repo/data.json': [0, 1] })
+  assert.deepEqual(testsReading(map, '/repo/data.json'), [0, 1])
 })
 
 test('an opaque declaration made outside any window marks every test in the shard', () => {
@@ -407,7 +411,7 @@ test('a scope that names no recorded test falls back to the whole shard', () => 
     ],
     { commit: 'c0ffee' },
   )
-  assert.deepEqual(map.reads, { '/repo/data.json': [0] })
+  assert.deepEqual(testsReading(map, '/repo/data.json'), [0])
 })
 
 test('relocateRange shifts a range only when no edit overlaps it', () => {
@@ -478,7 +482,7 @@ test('carryMap keeps a read dependency when the read file changed', () => {
 test('the map records which shards produced it', () => {
   const map = mergeShards([shard('one.jsonl', [])], { commit: 'c0ffee' })
   assert.deepEqual(map.shards, ['one.jsonl'])
-  assert.equal(map.version, 1)
+  assert.equal(map.version, 2)
   assert.equal(map.commit, 'c0ffee')
 })
 
@@ -1190,5 +1194,173 @@ test('a service\'s loader read of a module it also executed is not a read edge',
     ],
     { commit: 'c0ffee' },
   )
-  assert.deepEqual(map.reads, { '/repo/routing.json': [0, 1] })
+  assert.deepEqual(testsReading(map, '/repo/routing.json'), [0, 1])
+  assert.deepEqual(testsReading(map, A), [])
+})
+
+// --- shard-wide reads are stored once -------------------------------------
+
+const MANY = 50
+const manyTests = (): ResolvedTest[] =>
+  Array.from({ length: MANY }, (_, i) => testRecord(`t${String(i)}`, []))
+const everyIndex = Array.from({ length: MANY }, (_, i) => i)
+
+test('an unscoped import-phase read over N tests is serialized once, not N times', () => {
+  const map = mergeShards(
+    [
+      shard('s1', manyTests(), {
+        loadReads: [{ file: null, reads: ['/repo/data.json'], dirReads: ['/repo/specs'] }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(map.reads, {})
+  assert.deepEqual(map.dirReads, {})
+  assert.equal(map.readGroups?.length, 1)
+  assert.equal(JSON.stringify(map).split('/repo/data.json').length - 1, 1)
+  assert.deepEqual(testsReading(map, '/repo/data.json'), everyIndex)
+  assert.deepEqual(testsListing(map, '/repo/specs/x.json', isUnderDir), everyIndex)
+})
+
+test('selection for a change to a shard-wide read equals the per-test expansion', () => {
+  const grouped = mergeShards(
+    [
+      shard('s1', manyTests(), {
+        loadReads: [{ file: null, reads: ['/repo/data.json'], dirReads: [] }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  const expanded: CoverageMap = {
+    ...grouped,
+    reads: { '/repo/data.json': everyIndex },
+    readGroups: undefined,
+  }
+  const changes = [{ path: '/repo/data.json', status: 'M' as const, hunks: [{ start: 1, end: 1 }] }]
+  assert.deepEqual(select(grouped, changes), select(expanded, changes))
+  assert.deepEqual(select(grouped, changes).tests, everyIndex)
+})
+
+test('a group covers only its own shard\'s tests', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('a', [])], {
+        loadReads: [{ file: null, reads: ['/repo/one.json'], dirReads: [] }],
+      }),
+      shard('s2', [testRecord('b', [])], {
+        loadReads: [{ file: null, reads: ['/repo/two.json'], dirReads: [] }],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(testsReading(map, '/repo/one.json'), [0])
+  assert.deepEqual(testsReading(map, '/repo/two.json'), [1])
+})
+
+test('a per-test read and a group read of one file are unioned', () => {
+  const map = mergeShards(
+    [
+      shard('s1', [testRecord('a', []), testRecord('b', [])], {
+        loadReads: [
+          { file: null, reads: ['/repo/data.json'], dirReads: [] },
+          { file: '/repo/tests/none.spec.ts', reads: ['/repo/data.json'], dirReads: [] },
+        ],
+      }),
+    ],
+    { commit: 'c0ffee' },
+  )
+  assert.deepEqual(testsReading(map, '/repo/data.json'), [0, 1])
+})
+
+test('carryMap keeps a group over the tests it carries, renumbered', () => {
+  const base = mergeShards(
+    [
+      shard('s1', [testRecord('old1', []), testRecord('old2', [])], {
+        loadReads: [{ file: null, reads: ['/repo/data.json'], dirReads: [] }],
+      }),
+    ],
+    { commit: 'b', builtAt: 'T1' },
+  )
+  const next = mergeShards([shard('s2', [testRecord('fresh', [])])], {
+    commit: 'n',
+    builtAt: 'T2',
+  })
+  const carried = carryMap(base, next, new Set())
+  assert.deepEqual(carried.tests.map((t) => t.title), ['fresh', 'old1', 'old2'])
+  assert.deepEqual(carried.reads, {})
+  assert.deepEqual(testsReading(carried, '/repo/data.json'), [1, 2])
+  assert.equal(carried.partial, undefined)
+})
+
+test('carryMap: a dropped group member poisons the group\'s files and leaves the others', () => {
+  const S = '/repo/tests/gone.spec.ts'
+  const base = mergeShards(
+    [
+      shard('s1', [testRecord('stays', []), { ...testRecord('goes', []), file: S }], {
+        loadReads: [{ file: null, reads: ['/repo/data.json'], dirReads: ['/repo/specs'] }],
+      }),
+    ],
+    { commit: 'b', builtAt: 'T1' },
+  )
+  const next = mergeShards([shard('s2', [])], { commit: 'n', builtAt: 'T2' })
+  const carried = carryMap(base, next, new Set([S]))
+  assert.deepEqual(carried.tests.map((t) => t.title), ['stays'])
+  assert.deepEqual(testsReading(carried, '/repo/data.json'), [0])
+  assert.ok(carried.partial?.includes('/repo/data.json'))
+  assert.ok(carried.partial?.includes('/repo/specs'))
+})
+
+test('carryMap: a group member re-recorded by the new build is not poison', () => {
+  const base = mergeShards(
+    [
+      shard('s1', [testRecord('same', []), testRecord('other', [])], {
+        loadReads: [{ file: null, reads: ['/repo/data.json'], dirReads: [] }],
+      }),
+    ],
+    { commit: 'b', builtAt: 'T1' },
+  )
+  const next = mergeShards([shard('s2', [testRecord('same', [])])], { commit: 'n', builtAt: 'T2' })
+  const carried = carryMap(base, next, new Set())
+  assert.equal(carried.partial, undefined)
+  assert.deepEqual(testsReading(carried, '/repo/data.json'), [1])
+})
+
+test('group paths are stored relative and resolved on load; the version is 2', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-groups-')))
+  try {
+    const data = join(root, 'data.json')
+    const built = mergeShards(
+      [
+        shard('s1', [testRecord('a', []), testRecord('b', [])], {
+          loadReads: [{ file: null, reads: [data], dirReads: [join(root, 'specs')] }],
+        }),
+      ],
+      { commit: 'c0ffee' },
+    )
+    saveMap(root, built)
+    const stored = JSON.parse(readFileSync(join(mapDir(root, 'c0ffee'), 'map.json'), 'utf8')) as {
+      version: number
+      readGroups: Array<{ tests: number[]; reads: string[]; dirReads: string[] }>
+    }
+    assert.equal(stored.version, 2)
+    assert.deepEqual(stored.readGroups, [{ tests: [0, 1], reads: ['data.json'], dirReads: ['specs'] }])
+    const loaded = loadMap(root, 'c0ffee')
+    assert.deepEqual(testsReading(loaded.map, data), [0, 1])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('loadMap still reads a version 1 map and refuses a newer one', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'cbd-map-version-')))
+  try {
+    const built = mergeShards([shard('s1', [testRecord('a', [])])], { commit: 'c0ffee' })
+    for (const [version, ok] of [[1, true], [3, false]] as const) {
+      saveMap(root, { ...built, version })
+      if (ok) loadMap(root, 'c0ffee')
+      else assert.throws(() => loadMap(root, 'c0ffee'), /version 3/)
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

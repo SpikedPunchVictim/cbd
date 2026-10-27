@@ -24,7 +24,7 @@ import { intersects, type Change, type LineRange } from './changes.js'
 import { testId } from './contract.js'
 import { hashEnvValue } from './env.js'
 import { matchesAnyGlob } from './glob.js'
-import type { CoverageMap, FunctionEntry } from './map.js'
+import { testsListing, testsReading, type CoverageMap, type FunctionEntry } from './map.js'
 import type { TouchRef } from './shard.js'
 
 export type AllWhy =
@@ -679,10 +679,8 @@ export function select(
     // and it composes with the function and test-file rules rather than replacing
     // them. Any change to the file reaches a reader; a file under a
     // listed directory reaches the lister.
-    const readTests = map.reads?.[path] ?? []
-    const dirTests = Object.entries(map.dirReads ?? {})
-      .filter(([dir]) => isUnder(path, dir))
-      .flatMap(([, tests]) => tests)
+    const readTests = testsReading(map, path)
+    const dirTests = testsListing(map, path, isUnder)
     const answeredByRead = readTests.length > 0 || dirTests.length > 0
     if (answeredByRead) {
       const tests = uniqueSorted([...readTests, ...dirTests])
