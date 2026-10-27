@@ -215,7 +215,7 @@ test.group('inspectorSource', (group) => {
         role: 'service',
         scan: {
           prefilter: (url: string) => url.includes('/tests/service/'),
-          include: (file: string) => file.endsWith('/tests/service/main.js'),
+          include: (file: string) => file.replaceAll('\\', '/').endsWith('/tests/service/main.js'),
         },
       })
 

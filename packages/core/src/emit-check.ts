@@ -343,6 +343,7 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
     )
     if (verdict.unchanged) files.set(change.path, verdict.typescript!)
     else if (verdict.why === 'module scope differs') {
+      console.error('DEBUGSCOPE', change.path, input.refs.length, singleCommit(input.root, input.refs), JSON.stringify(change).slice(0, 300))
       // The hunks are in one version's lines and the map is in another's, so only a
       // single commit (the map's) and a change carrying both sides can be placed.
       const project = loadProject(entry.tsconfig)
@@ -356,6 +357,7 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
         (change.newInsertions ?? []).length === 0
       ) {
         const proof = proveBindingRead(project.ts, project.options, change.path, base, head, change.hunks, change.newHunks)
+        console.error('DEBUGPROOF', change.path, JSON.stringify(proof))
         if (proof.ok) bindingReads.set(change.path, { ...proof.read, typescript: project.version })
       }
     } else if (verdict.skipped === true && !warned.has(entry.glob)) {

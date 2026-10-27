@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
 import { test } from '@japa/runner'
 import {
   existingPattern,
@@ -50,11 +51,11 @@ test('the file is reported from the context', () => {
 })
 
 test('one shard per test file, named from the file and stable', () => {
-  const base = '/tmp/cbd/run.ndjson'
+  const base = join('/tmp/cbd', 'run.ndjson')
   const one = shardPathFor(base, '/repo/tests/one.test.mjs')
   assert.equal(one, shardPathFor(base, '/repo/tests/one.test.mjs'))
   assert.notEqual(one, shardPathFor(base, '/repo/tests/two.test.mjs'))
-  assert.ok(one.startsWith('/tmp/cbd/run.one.test.mjs.'))
+  assert.ok(one.startsWith(join('/tmp/cbd', 'run.one.test.mjs.')))
   assert.ok(one.endsWith('.ndjson'))
 })
 

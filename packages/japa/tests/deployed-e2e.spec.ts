@@ -196,7 +196,7 @@ test.group('a service running from a copy of its build', (group) => {
 
     assert.deepEqual(
       Object.keys(map.files)
-        .filter((file) => file.endsWith('/handler.ts'))
+        .filter((file) => file.replaceAll('\\', '/').endsWith('/handler.ts'))
         .sort(),
       [HANDLER, staged].sort(),
       'one logical file, two map entries — this is the defect, and it is what the rule removes',
@@ -252,7 +252,7 @@ test.group('a service running from a copy of its build', (group) => {
     const { map, stage } = await lane(true)
 
     assert.deepEqual(
-      Object.keys(map.files).filter((file) => file.endsWith('/handler.ts')),
+      Object.keys(map.files).filter((file) => file.replaceAll('\\', '/').endsWith('/handler.ts')),
       [HANDLER],
       "the copy's path and the checkout's path are one entry, not two",
     )

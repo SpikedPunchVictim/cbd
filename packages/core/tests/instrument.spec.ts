@@ -420,7 +420,7 @@ test.group('instrument module', () => {
             'the compiled script never reached the table, so the look for its map did not run',
           )
           assert.deepEqual(
-            (result.reads ?? []).filter((path) => path.endsWith('/compiled.js')),
+            (result.reads ?? []).filter((path) => path.replaceAll('\\', '/').endsWith('/compiled.js')),
             [],
             'the instrument reading a script to look for its map was reported as a service read',
           )

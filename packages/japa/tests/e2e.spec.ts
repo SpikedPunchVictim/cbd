@@ -136,10 +136,10 @@ test.group('japa adapter e2e', () => {
       const fileOf = (title: string): unknown =>
         tests.find((t) => t.title === title)?.file
       for (const title of ['alpha-lone', 'alpha-grouped']) {
-        assert.match(String(fileOf(title)), /fixture\/tests\/a\.spec\.js$/, title)
+        assert.match(String(fileOf(title)), /fixture[\\/]tests[\\/]a\.spec\.js$/, title)
       }
       for (const title of ['beta-lone', 'beta-grouped']) {
-        assert.match(String(fileOf(title)), /fixture\/tests\/b\.spec\.js$/, title)
+        assert.match(String(fileOf(title)), /fixture[\\/]tests[\\/]b\.spec\.js$/, title)
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })

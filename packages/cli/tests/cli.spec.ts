@@ -236,8 +236,8 @@ test.group('cbd select', () => {
 
       const result = invoke(root, 'select')
       assert.equal(result.code, EXIT.ok)
-      assert.ok(result.out.includes('tests/a.spec.ts > adds'))
-      assert.ok(result.out.includes('tests/a.spec.ts > reads'))
+      assert.ok(result.out.includes(`${join('tests', 'a.spec.ts')} > adds`))
+      assert.ok(result.out.includes(`${join('tests', 'a.spec.ts')} > reads`))
       assert.match(
         result.out.at(-1)!,
         /^2 tests for 1 changed file \(map [0-9a-f]{7}, up to date\)(; ~\d+ ms of \d+ ms recorded)?$/,
@@ -256,7 +256,7 @@ test.group('cbd select', () => {
       const result = invoke(root, 'select', '--change', 'src/a.ts:2')
       assert.equal(result.code, EXIT.ok)
       assert.match(result.out.at(-1)!, /^2 tests for 1 changed file/)
-      assert.ok(result.out.includes('tests/a.spec.ts > adds'))
+      assert.ok(result.out.includes(`${join('tests', 'a.spec.ts')} > adds`))
       // A what-if is read-only: the file it asks about was never applied.
       assert.equal(readFileSync(join(root, 'src/a.ts'), 'utf8'), before)
     } finally {
@@ -285,7 +285,7 @@ test.group('cbd select', () => {
       const result = invoke(root, 'select', '--patch', patch)
       assert.equal(result.code, EXIT.ok)
       assert.match(result.out.at(-1)!, /^2 tests for 1 changed file/)
-      assert.ok(result.out.includes('tests/a.spec.ts > reads'))
+      assert.ok(result.out.includes(`${join('tests', 'a.spec.ts')} > reads`))
     } finally {
       cleanup()
     }
@@ -394,7 +394,7 @@ test.group('cbd select', () => {
       }
       assert.equal(selection.version, 2)
       assert.deepEqual(selection.tests.map((test) => test.title), ['adds', 'reads'])
-      assert.match(selection.tests[0]!.id, /tests\/a\.spec\.ts::adds$/)
+      assert.match(selection.tests[0]!.id, /tests[\\/]a\.spec\.ts::adds$/)
 
       // An unanswerable selection leaves no file behind: a runner handed the
       // previous run's subset would silently run a fraction of the suite.
@@ -751,7 +751,7 @@ test.group('cbd select', () => {
       assert.ok(parsed.selection.ignored.some((path) => path.replaceAll('\\', '/').endsWith('/tools/new.ts')))
       assert.ok(
         parsed.selection.warnings.some((warning) =>
-          /unknownPolicyFor\[0\].*tools\/\*\*/.test(warning),
+          /unknownPolicyFor\[0\].*tools[\\/]\*\*/.test(warning),
         ),
       )
       assert.ok(
@@ -843,7 +843,7 @@ test.group('cbd select', () => {
 
       const text = invoke(root, 'select', '--config', configPath)
       assert.equal(text.code, EXIT.ok)
-      assert.match(text.out.join('\n'), /ignored 1 changed file: docs\/readme\.md/)
+      assert.match(text.out.join('\n'), /ignored 1 changed file: docs[\\/]readme\.md/)
     } finally {
       rmSync(configDir, { recursive: true, force: true })
       cleanup()
@@ -1013,7 +1013,7 @@ test.group('cbd explain and stats', () => {
 
       const yes = invoke(root, 'reaches', 'adds', 'src/a.ts:2')
       assert.equal(yes.code, EXIT.ok)
-      assert.match(yes.out[0]!, /^adds \(tests\/a\.spec\.ts\) reaches src\/a\.ts:2$/)
+      assert.match(yes.out[0]!, /^adds \(tests[\\/]a\.spec\.ts\) reaches src[\\/]a\.ts:2$/)
       assert.ok(yes.out.some((line) => line.includes('add@0')))
 
       const unknown = invoke(root, 'reaches', 'adds', 'src/nope.ts')
@@ -1120,7 +1120,7 @@ test.group('cbd explain and stats', () => {
       assert.equal(result.out[5], 'suites: tests (2)')
       assert.equal(result.out[6], 'since the map: no in-scope changes')
       assert.equal(result.out[7], 'most-tested files:')
-      assert.equal(result.out[8], '  src/a.ts: 2 tests, 1 function')
+      assert.equal(result.out[8], `  ${join('src', 'a.ts')}: 2 tests, 1 function`)
       assert.equal(result.out.length, 9, 'no untested section when there is nothing to name')
     } finally {
       cleanup()
@@ -1140,7 +1140,7 @@ test.group('cbd explain and stats', () => {
       assert.ok(line !== undefined, `expected a change line, got:\n${result.out.join('\n')}`)
       assert.match(line, /2 in-scope files changed/)
       assert.match(line, /1 file unknown to the map/)
-      assert.match(line, /src\/new\.ts/)
+      assert.match(line, /src[\\/]new\.ts/)
     } finally {
       cleanup()
     }
@@ -1159,7 +1159,7 @@ test.group('cbd explain and stats', () => {
       assert.equal(result.out[1], '2 tests, 1 file reached, 2 files seen, 1 file untested')
       assert.deepEqual(result.out.slice(9), [
         'untested (seen, no test reaches):',
-        '  src/seen-only.ts',
+        `  ${join('src', 'seen-only.ts')}`,
         '  a file no run loaded is unknown, not untested: select runs all for it',
       ])
     } finally {
@@ -1541,7 +1541,7 @@ test.group('cbd flaky', () => {
       const text = invoke(root, 'flaky')
       assert.equal(text.code, EXIT.ok)
       assert.match(text.out[0]!, /^flaky: 1 test changed outcome with no relevant change across 3 maps$/)
-      assert.match(text.out[1]!, /tests\/a\.spec\.ts > t: passed at [0-9a-f]{7} -> failed at [0-9a-f]{7}/)
+      assert.match(text.out[1]!, /tests[\\/]a\.spec\.ts > t: passed at [0-9a-f]{7} -> failed at [0-9a-f]{7}/)
     } finally {
       repo.cleanup()
     }

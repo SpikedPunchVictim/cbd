@@ -75,6 +75,7 @@ test('a run writes one complete shard per test file, and the map answers', () =>
     assert.deepEqual(
       (map.reads?.[mathFile] ?? []).map((index) => map.tests[index]?.title).sort(),
       ['math > adds', 'math > subtracts'],
+      `DEBUG ${mathFile} in ${JSON.stringify(Object.keys(map.reads ?? {}))} shards ${JSON.stringify(shards.map((sh) => readFileSync(sh, 'utf8').split('\n').filter((l) => l.includes('math.mjs')).map((l) => l.slice(0, 300)).slice(0, 6)))}`,
     )
     // `cbd-x2j`: Vitest compiles in memory, so V8's offsets are into generated
     // text. The build must use the shard's generated line starts, not the source

@@ -36,7 +36,8 @@ import { test } from '@japa/runner'
 import { loadMap, testsForFunction } from '@spikedpunch/cbd'
 
 const CLI_BIN = fileURLToPath(new URL('../../bin/cbd.js', import.meta.url))
-const INSTRUMENT = fileURLToPath(new URL('../../../core/dist/src/instrument.js', import.meta.url))
+// A URL, because `--import` takes a module specifier and a bare Windows path is not one.
+const INSTRUMENT = new URL('../../../core/dist/src/instrument.js', import.meta.url).href
 const JAPA_RUNNER = import.meta.resolve('@japa/runner')
 const JAPA_PLUGIN = new URL('../../../japa/dist/src/index.js', import.meta.url).href
 const TMP = fileURLToPath(new URL('../../.scenario-tmp/', import.meta.url))
