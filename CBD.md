@@ -789,7 +789,8 @@ relative diff cannot see it.
 **Reads are a dependency without execution.** A test that greps a source file, lists a directory or
 runs `tsc` over a declaration executes none of it, so coverage has no edge to draw. The adapters
 install a read tracker in the test process: the public `node:fs` and `node:fs/promises` read, stat,
-existence and directory-listing calls are wrapped, `syncBuiltinESMExports()` makes named ESM imports
+existence and directory-listing calls are wrapped (so are `open` for reading, `copyFile` / `cp` sources
+and `readlink`; a descriptor read is charged at open time), `syncBuiltinESMExports()` makes named ESM imports
 see the wrappers, and each path is charged to the test window open at **call time**. The shard and
 map carry `reads` (file) and `dirReads` (directory); a change to a read file, or to any file under a
 listed directory, selects the readers. Directories are kept even when they do not match `include`,

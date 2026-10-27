@@ -30,7 +30,7 @@
 import fs from 'node:fs'
 import promises from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
-import { resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { canonicalPath } from './paths.js'
 
@@ -40,6 +40,8 @@ export interface ReadSink {
   noteReadDir(path: string): void
 }
 
+/** `source` is a copy origin: a file or, for a recursive `cp`, a directory tree. */
+type Kind = 'file' | 'dir' | 'link' | 'source'
 type AnyFn = (...args: unknown[]) => unknown
 type Target = Record<string, unknown>
 
@@ -83,6 +85,14 @@ const FILE_FS = [
   'accessSync',
   'access',
 ] as const
+const OPEN_FS = ['openSync', 'open'] as const
+const OPEN_PROMISES = ['open'] as const
+// The first argument is the file read: the source of a copy.
+const SOURCE_FS = ['copyFileSync', 'copyFile', 'cpSync', 'cp', 'openAsBlob'] as const
+const SOURCE_PROMISES = ['copyFile', 'cp'] as const
+// A link's own path, not what it points at: `canonicalPath` would follow it to the target.
+const LINK_FS = ['readlinkSync', 'readlink'] as const
+const LINK_PROMISES = ['readlink'] as const
 const DIR_FS = ['readdirSync', 'readdir', 'opendirSync', 'opendir'] as const
 const FILE_PROMISES = ['readFile', 'stat', 'lstat', 'access'] as const
 const DIR_PROMISES = ['readdir', 'opendir'] as const
@@ -96,6 +106,11 @@ const DIR_PROMISES = ['readdir', 'opendir'] as const
  * even through a symlinked checkout.
  */
 function pathOf(value: unknown): string | undefined {
+  const resolved = absolutePathOf(value)
+  return resolved === undefined ? undefined : canonicalPath(resolved)
+}
+
+function absolutePathOf(value: unknown): string | undefined {
   let path: string
   if (typeof value === 'string') path = value
   else if (Buffer.isBuffer(value)) path = value.toString()
@@ -106,47 +121,92 @@ function pathOf(value: unknown): string | undefined {
       return undefined
     }
   } else return undefined
-  const resolved = resolve(path)
-  return canonicalPath(resolved)
+  return resolve(path)
 }
 
-function note(kind: 'file' | 'dir', value: unknown): void {
+/** A symlink's own path: only its directory is canonicalized, never the link. */
+function linkPathOf(value: unknown): string | undefined {
+  const resolved = absolutePathOf(value)
+  if (resolved === undefined) return undefined
+  return join(canonicalPath(dirname(resolved)), basename(resolved))
+}
+
+function note(kind: Kind, value: unknown): void {
   if (suppressed > 0) return
-  const path = pathOf(value)
+  const path = kind === 'link' ? linkPathOf(value) : pathOf(value)
   const sink = stack[stack.length - 1]?.sink
   if (path === undefined || sink === undefined) return
   try {
-    if (kind === 'file') sink.noteRead(path)
-    else sink.noteReadDir(path)
+    if (kind === 'dir' || kind === 'source') sink.noteReadDir(path)
+    if (kind !== 'dir') sink.noteRead(path)
   } catch {
     // A tracker never breaks the read it is observing.
   }
 }
 
-function wrap(original: AnyFn, kind: 'file' | 'dir'): AnyFn {
+function wrap(original: AnyFn, kind: Kind): AnyFn {
   return function (this: unknown, ...args: unknown[]) {
     note(kind, args[0])
     return original.apply(this, args)
   }
 }
 
+/**
+ * Whether `open` flags permit reading. Opening for read is the dependency: a
+ * later `read` or `FileHandle.readFile` goes through a descriptor with no path, so
+ * the open is the one place the path is known. Only a write-only mode (`w`, `a`,
+ * `wx`, `as`, `O_WRONLY`) is not a read; anything unrecognised counts as one, so
+ * a surprising flag over-selects rather than hides a dependency.
+ */
+function opensForRead(flags: unknown): boolean {
+  if (flags === undefined || flags === null) return true
+  // The low two bits are the access mode (O_RDONLY 0, O_WRONLY 1, O_RDWR 2).
+  if (typeof flags === 'number') return (flags & 3) !== fs.constants.O_WRONLY
+  if (typeof flags === 'string') return flags.includes('+') || !/^[wa]/.test(flags)
+  return true
+}
+
+/** `open` wrapper: the path is a read only when the flags allow reading. */
+function wrapOpen(original: AnyFn): AnyFn {
+  return function (this: unknown, ...args: unknown[]) {
+    // `open(path, cb)` and `open(path, flags, cb)`: a function is not flags.
+    const flags = typeof args[1] === 'function' ? undefined : args[1]
+    if (opensForRead(flags)) note('file', args[0])
+    return original.apply(this, args)
+  }
+}
+
 function patch(): Array<{ target: Target; name: string; original: AnyFn }> {
   const originals: Array<{ target: Target; name: string; original: AnyFn }> = []
+  const wrapOpens = (target: Target, names: readonly string[]): void => {
+    for (const name of names) {
+      const original = target[name]
+      if (typeof original !== 'function') continue
+      originals.push({ target, name, original: original as AnyFn })
+      target[name] = wrapOpen(original as AnyFn)
+    }
+  }
   const fsPromises = (fs as unknown as { promises: Target }).promises
   // `node:fs/promises` can be a distinct object from `fs.promises` on some Node
   // versions; patch the namespace the adapter imported as well, but never the
   // same object twice (a double wrap restores a wrapper and leaks it).
-  const targets: Array<[Target, readonly string[], 'file' | 'dir']> = [
+  const targets: Array<[Target, readonly string[], Kind]> = [
     [fs as unknown as Target, FILE_FS, 'file'],
+    [fs as unknown as Target, SOURCE_FS, 'source'],
+    [fs as unknown as Target, LINK_FS, 'link'],
     [fs as unknown as Target, DIR_FS, 'dir'],
+    [promises as unknown as Target, SOURCE_PROMISES, 'source'],
     [promises as unknown as Target, FILE_PROMISES, 'file'],
+    [promises as unknown as Target, LINK_PROMISES, 'link'],
     [promises as unknown as Target, DIR_PROMISES, 'dir'],
     ...(fsPromises === (promises as unknown as Target)
       ? []
       : ([
           [fsPromises, FILE_PROMISES, 'file'],
+          [fsPromises, SOURCE_PROMISES, 'source'],
+          [fsPromises, LINK_PROMISES, 'link'],
           [fsPromises, DIR_PROMISES, 'dir'],
-        ] as Array<[Target, readonly string[], 'file' | 'dir']>)),
+        ] as Array<[Target, readonly string[], Kind]>)),
   ]
   for (const [target, names, kind] of targets) {
     for (const name of names) {
@@ -156,6 +216,9 @@ function patch(): Array<{ target: Target; name: string; original: AnyFn }> {
       target[name] = wrap(original as AnyFn, kind)
     }
   }
+  wrapOpens(fs as unknown as Target, OPEN_FS)
+  wrapOpens(promises as unknown as Target, OPEN_PROMISES)
+  if (fsPromises !== (promises as unknown as Target)) wrapOpens(fsPromises, OPEN_PROMISES)
   return originals
 }
 

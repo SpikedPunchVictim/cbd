@@ -5,6 +5,13 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A test that reads a file through a descriptor, a copy or a link now depends on it.** The read
+  tracker saw `readFile`, `stat` and directory listings but not `fs.open` / `openSync` /
+  `fs.promises.open` (then `read` or `FileHandle.readFile`), `copyFile`, `cp`, `openAsBlob` or
+  `readlink`, so changing such a file did not select the test. An open counts as a read when its
+  flags allow reading (`r`, `r+`, `a+`, `w+`, numeric `O_RDONLY` / `O_RDWR`, no flags); write-only
+  opens (`w`, `a`, `wx`, `O_WRONLY`) do not. A copy records its source (and, for `cp`, the
+  directory), and `readlink` records the link itself rather than its target.
 - **A very large line from an instrumented process no longer stalls the collector.** The line
   splitter searched the whole buffered text again for every chunk, so one huge reply took time
   quadratic in its size (100 MB took 15 s, longer than the take timeout). Each chunk is now searched
