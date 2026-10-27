@@ -212,9 +212,12 @@ function unquoteGitPath(raw: string): string {
   const body = raw.slice(1, -1)
   const bytes: number[] = []
   for (let index = 0; index < body.length; index += 1) {
-    const char = body[index]!
+    // By code point: a character outside the BMP is two UTF-16 units, and
+    // encoding each lone surrogate separately writes U+FFFD twice.
+    const char = String.fromCodePoint(body.codePointAt(index)!)
     if (char !== '\\') {
       bytes.push(...Buffer.from(char, 'utf8'))
+      index += char.length - 1
       continue
     }
     const next = body[index + 1]
@@ -334,8 +337,12 @@ export function parseUnifiedDiff(diff: string): Change[] {
     current = null
   }
 
+  // `---`/`+++` are headers only before a file's first `@@`. Under `-U0` an added
+  // `++ x` is printed `+++ x` and a removed `-- x` is printed `--- x`.
+  let inHunks = false
   for (const line of diff.split('\n')) {
     if (line.startsWith('diff --git ')) {
+      inHunks = false
       finish()
       const { oldPath, path } = pathsFromHeader(line)
       current = {
@@ -366,17 +373,20 @@ export function parseUnifiedDiff(diff: string): Change[] {
       current.status = 'C'
     } else if (line.startsWith('copy to ')) {
       current.path = unquoteGitPath(line.slice('copy to '.length))
-    } else if (line.startsWith('--- ')) {
+    } else if (!inHunks && line.startsWith('--- ')) {
       const path = unquoteGitPath(headerPath(line.slice(4)))
       if (current.path === '' && path !== '/dev/null') {
         current.path = path.replace(/^a\//, '')
       }
-    } else if (line.startsWith('+++ ')) {
+    } else if (!inHunks && line.startsWith('+++ ')) {
       const path = unquoteGitPath(headerPath(line.slice(4)))
       if (path !== '/dev/null') current.path = path.replace(/^b\//, '')
     } else {
       const hunk = HUNK.exec(line)
-      if (hunk !== null) applyHunk(current, hunk)
+      if (hunk !== null) {
+        inHunks = true
+        applyHunk(current, hunk)
+      }
     }
   }
   finish()
@@ -439,6 +449,12 @@ export function changesSince(options: ChangesOptions): Change[] {
     '-c',
     'core.quotePath=false',
     'diff',
+    // The parser strips exactly `a/` and `b/`, and reads hunk lines as committed;
+    // the user's `diff.mnemonicPrefix`, `diff.noprefix`, `diff.srcPrefix`,
+    // `diff.dstPrefix` and `diff.<driver>.textconv` would change both.
+    '--src-prefix=a/',
+    '--dst-prefix=b/',
+    '--no-textconv',
     '--unified=0',
     '--find-renames',
     '--no-color',

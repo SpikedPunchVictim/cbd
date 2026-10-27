@@ -478,3 +478,94 @@ test('an untracked name keeps significant whitespace', () => {
     repo.cleanup()
   }
 })
+
+// The parser strips `a/` and `b/` from every header. A user's own git config can
+// rename or remove those prefixes, and a path that keeps one matches no include
+// glob and no map entry, so the change was silently dropped.
+for (const [name, config] of [
+  ['diff.mnemonicPrefix', [['diff.mnemonicPrefix', 'true']]],
+  ['diff.noprefix', [['diff.noprefix', 'true']]],
+  [
+    'diff.srcPrefix and diff.dstPrefix',
+    [
+      ['diff.srcPrefix', 'old/'],
+      ['diff.dstPrefix', 'new/'],
+    ],
+  ],
+] as const) {
+  test(`${name} in the user's git config does not change the reported paths`, () => {
+    const repo = tempRepo()
+    try {
+      repo.write('src/a.ts', 'one\ntwo\n')
+      repo.write('src/gone.ts', 'x\n')
+      const base = repo.commit('base')
+      repo.write('src/a.ts', 'one\nTWO\n')
+      repo.git(['mv', 'src/gone.ts', 'src/moved.ts'])
+      for (const [key, value] of config) repo.git(['config', key, value])
+
+      const changes = changesSince({ root: repo.root, since: base })
+      assert.deepEqual(
+        changes.map((c) => [c.path, c.from, c.status]),
+        [
+          ['src/a.ts', undefined, 'M'],
+          ['src/moved.ts', 'src/gone.ts', 'R'],
+        ],
+      )
+    } finally {
+      repo.cleanup()
+    }
+  })
+}
+
+// A textconv driver rewrites what the hunks are computed from, so the line numbers
+// no longer describe the committed file.
+test('a configured textconv driver does not change the reported hunks', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('.gitattributes', '*.ts diff=cbdtest\n')
+    repo.write('a.ts', 'one\ntwo\nthree\n')
+    const base = repo.commit('base')
+    repo.write('a.ts', 'one\ntwo\nTHREE\n')
+    repo.git(['config', 'diff.cbdtest.textconv', 'head -n 1'])
+
+    const [change] = changesSince({ root: repo.root, since: base })
+    assert.deepEqual(change?.hunks, [{ start: 3, end: 3 }])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+// Under `-U0` an added `++ x` is printed `+++ x`, and a removed `-- x` is printed
+// `--- x`; both are body lines, not file headers.
+test('an added or removed body line that looks like a header is not read as one', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('a.ts', 'one\n-- gone\ntwo\n')
+    const base = repo.commit('base')
+    repo.write('a.ts', 'one\ntwo\n++ x\n')
+
+    const changes = changesSince({ root: repo.root, since: base })
+    assert.deepEqual(
+      changes.map((c) => [c.path, c.status]),
+      [['a.ts', 'M']],
+    )
+    assert.deepEqual(changes[0]?.hunks, [{ start: 2, end: 2 }])
+  } finally {
+    repo.cleanup()
+  }
+})
+
+test('a quoted path with an astral character is decoded whole', () => {
+  const repo = tempRepo()
+  try {
+    repo.write('keep.ts', 'k\n')
+    const base = repo.commit('base')
+    repo.write('q"😀.ts', 'x\n')
+    repo.commit('add')
+
+    const change = changesSince({ root: repo.root, since: base }).find((c) => c.status === 'A')
+    assert.equal(change?.path, 'q"😀.ts')
+  } finally {
+    repo.cleanup()
+  }
+})
