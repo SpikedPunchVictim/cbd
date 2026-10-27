@@ -898,6 +898,64 @@ test('carryMap poisons a base load-only file instead of calling it untested', ()
   assert.equal(result.mode, 'all')
 })
 
+function dirtyCarryFixture(dirtyFiles?: string[]): { base: CoverageMap; next: CoverageMap } {
+  const X = '/repo/src/x.ts'
+  const Y = '/repo/src/y.ts'
+  const spec = '/repo/t.spec.ts'
+  const base: CoverageMap = {
+    version: 1,
+    commit: 'a',
+    builtAt: 'T0',
+    tests: [
+      { title: 'x', file: spec },
+      { title: 'y', file: spec },
+    ],
+    files: {
+      [X]: { 'x@0': { startLine: 1, endLine: 3, tests: [0] } },
+      [Y]: { 'y@0': { startLine: 1, endLine: 3, tests: [1] } },
+    },
+    load: [],
+    between: [],
+    teardown: [],
+    seen: [spec, X, Y],
+    shards: ['s'],
+    dirty: true,
+    ...(dirtyFiles === undefined ? {} : { dirtyFiles }),
+  }
+  const next: CoverageMap = {
+    version: 1,
+    commit: 'b',
+    builtAt: 'T1',
+    tests: [{ title: 'y', file: spec }],
+    files: { [Y]: { 'y@0': { startLine: 1, endLine: 3, tests: [0] } } },
+    load: [],
+    between: [],
+    teardown: [],
+    seen: [spec, Y],
+    shards: ['t'],
+  }
+  return { base, next }
+}
+
+test('carryMap poisons a file the dirty base edited and the new run did not re-record', () => {
+  const { base, next } = dirtyCarryFixture(['/repo/src/x.ts', '/repo/README.md'])
+  const carried = carryMap(base, next, new Set())
+  assert.deepEqual(carried.tests.map((test) => test.title).sort(), ['x', 'y'])
+  assert.deepEqual(carried.partial, ['/repo/src/x.ts'])
+  assert.deepEqual(carried.dirtyFiles, ['/repo/README.md', '/repo/src/x.ts'])
+  const result = select(carried, [
+    { path: '/repo/src/x.ts', status: 'M', hunks: [{ start: 1, end: 1 }] },
+  ])
+  assert.equal(result.mode, 'all')
+})
+
+test('carryMap poisons every un-re-recorded seen file of a dirty base with no dirtyFiles', () => {
+  const { base, next } = dirtyCarryFixture()
+  const carried = carryMap(base, next, new Set())
+  assert.deepEqual(carried.tests.map((test) => test.title).sort(), ['x', 'y'])
+  assert.deepEqual(carried.partial, ['/repo/src/x.ts'])
+})
+
 test('a listed directory survives a file include that rejects it', () => {
   const resolved: ResolvedShard = {
     name: 's',

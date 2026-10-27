@@ -186,6 +186,13 @@ export interface CoverageMap {
    * behaviour. `select` warns when it is true.
    */
   dirty?: boolean
+  /**
+   * With `dirty`, the absolute paths that differed from the commit when the shards
+   * were recorded. An incremental build uses it to tell which carried evidence
+   * describes bytes the current tree may no longer have. Optional: older maps do not
+   * carry it, and readers that do not know it ignore it.
+   */
+  dirtyFiles?: string[]
 }
 
 export interface MapBuildOptions {
@@ -193,6 +200,8 @@ export interface MapBuildOptions {
   builtAt?: string
   /** See `CoverageMap.dirty`. */
   dirty?: boolean
+  /** See `CoverageMap.dirtyFiles`. */
+  dirtyFiles?: string[]
   /**
    * How to read the shards' byte ranges: projection and relocation rules, and the
    * include/exclude filters. A v2 shard carries no paths, so the build is where
@@ -719,6 +728,9 @@ export function mergeShards(rawShards: ResolvedShard[], options: MapBuildOptions
     seen: [...seen].sort(),
     shards: included,
     dirty: options.dirty === true,
+    ...(options.dirty === true && options.dirtyFiles !== undefined && options.dirtyFiles.length > 0
+      ? { dirtyFiles: [...new Set(options.dirtyFiles)].sort() }
+      : {}),
     ...(partial.size === 0 ? {} : { partial: [...partial].sort() }),
     ...(unhealthy.length === 0 ? {} : { unhealthy }),
   }
@@ -787,6 +799,11 @@ export function relocateRange(
     if (oldEnd < range.start) delta += edit.newCount - edit.oldCount
   }
   return { start: range.start + delta, end: range.end + delta }
+}
+
+/** The union of both maps' dirty files, for a merged map that is dirty. */
+function dirtyFilesOf(next: CoverageMap, base: CoverageMap): string[] {
+  return [...new Set([...(next.dirtyFiles ?? []), ...(base.dirtyFiles ?? [])])].sort()
 }
 
 export function carryMap(
@@ -929,6 +946,16 @@ export function carryMap(
     if (baseBucketFiles.has(file)) partial.add(file)
   }
   if (base.dirty === true) {
+    // A file edited when the base was recorded and not re-recorded now may have
+    // been reverted or changed since; it is in no HEAD diff, so `changed` cannot
+    // say. Its carried evidence describes the dirty bytes: keep the tests, but make
+    // a later change to the file escalate. A base without the list (an older map)
+    // is treated as if every file it saw was dirty.
+    const recorded = new Set([...next.seen, ...Object.keys(next.files)])
+    const known = new Set([...base.seen, ...Object.keys(base.files)])
+    for (const file of base.dirtyFiles ?? known) {
+      if (known.has(file) && !recorded.has(file)) partial.add(file)
+    }
     // Relocation compares base.commit with the worktree, but a dirty base's
     // ranges describe the dirty tree at that commit; a carried range can be
     // shifted twice. Poison the files rather than claim clean evidence.
@@ -1072,6 +1099,7 @@ export function carryMap(
     commit: next.commit,
     builtAt: next.builtAt,
     ...((next.dirty === true || base.dirty === true) ? { dirty: true } : {}),
+    ...(dirtyFilesOf(next, base).length === 0 ? {} : { dirtyFiles: dirtyFilesOf(next, base) }),
     tests,
     files,
     ...(Object.keys(opaque).length === 0 ? {} : { opaque }),
@@ -1196,6 +1224,9 @@ function mapPaths(
       Object.entries(map.files).map(([file, functions]) => [to(root, file), functions]),
     ),
     ...(map.partial === undefined ? {} : { partial: map.partial.map((path) => to(root, path)) }),
+    ...(map.dirtyFiles === undefined
+      ? {}
+      : { dirtyFiles: map.dirtyFiles.map((path) => to(root, path)) }),
     load: map.load.map((ref) => mapRef(root, ref, to)),
     between: map.between.map((ref) => mapRef(root, ref, to)),
     teardown: map.teardown.map((ref) => mapRef(root, ref, to)),

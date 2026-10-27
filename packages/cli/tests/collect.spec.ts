@@ -288,6 +288,50 @@ test.group('cbd collect', () => {
     }
   })
 
+  test('a file edited in the dirty base and since reverted is partial after a narrowed run', () => {
+    const { repo, root, a, spec, runner, cleanup } = prepared()
+    try {
+      const b = join(root, 'src', 'b.ts')
+      const bSpec = join(root, 'tests', 'b.spec.ts')
+      repo.write('src/b.ts', 'export function sub(a, b) {\n  return a - b;\n}\n')
+      repo.write('tests/b.spec.ts', "import { sub } from '../src/b.js'\n")
+      const head = repo.commit('add b')
+      // The base recording sees b with an edit that is never committed.
+      repo.write('src/b.ts', 'export function sub(a, b) {\n  return a - b - 0;\n}\n')
+      writeFileSync(
+        join(root, '.cbd', 'shards', 'run.ndjson'),
+        shardText(head, [
+          { title: 'adds', file: spec, touches: [[a, 'add@0', 1, 3]] },
+          { title: 'subtracts', file: bSpec, touches: [[b, 'sub@0', 1, 3]] },
+        ]),
+      )
+      assert.equal(invoke(root, 'build').code, EXIT.ok)
+      assert.deepEqual(loadMap(root, head).map.dirtyFiles, [b])
+
+      repo.git(['checkout', '--', 'src/b.ts'])
+      repo.write('src/a.ts', 'export function add(a, b) {\n  return b + a;\n}\n')
+      const result = invoke(
+        root,
+        'collect',
+        '--',
+        process.execPath,
+        runner,
+        join(root, 'log.ndjson'),
+        a,
+        spec,
+      )
+
+      assert.equal(result.code, EXIT.ok)
+      const map = loadMap(root, head).map
+      assert.deepEqual(map.tests.map((entry) => entry.title).sort(), ['adds', 'subtracts'])
+      assert.deepEqual(map.partial, [b])
+      const later = invoke(root, 'select', '--change', 'src/b.ts:1')
+      assert.equal(later.code, EXIT.all)
+    } finally {
+      cleanup()
+    }
+  })
+
   test('a killed test command leaves no footer, so no map is built', () => {
     const { root, a, spec, runner, cleanup } = prepared()
     try {

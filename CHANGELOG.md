@@ -14,6 +14,12 @@ until a tag is pushed and the publish workflow runs.
   each process's own working directory, so a child with another cwd listened elsewhere and was never
   collected. The instrument, the socket and rescan sources and the japa and vitest adapters now
   resolve it to an absolute path on first read and write that back to the environment.
+- **An incremental build from a map recorded on a dirty tree no longer trusts evidence for files
+  that were dirty then.** The map now records which files differed from the commit (`dirtyFiles`).
+  A file that was edited at that recording, is not re-recorded by the new run, and has since been
+  reverted or changed is marked partial, so a later change to it runs everything instead of
+  selecting tests by line ranges from the old edit. A dirty map without the list is treated as if
+  every file it saw was dirty. The carried tests are kept.
 - **A narrowed `cbd collect` no longer replaces the map with just the tests that ran.** A run that
   selected a subset now builds incrementally from the map the selection read, so the skipped tests
   stay in the map and later selections still see them. `--incremental` with `--base` naming the

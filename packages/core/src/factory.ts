@@ -437,6 +437,42 @@ function dirtyTree(root: string, stateDir: string): boolean {
   }
 }
 
+/**
+ * The files that differ from HEAD under this root, absolute, untracked ones
+ * included and the state and maps directories excluded.
+ *
+ * A rename lists both paths: the old one is gone and the new one is not in the
+ * commit, and either may have evidence recorded against it.
+ */
+function dirtyFiles(root: string, stateDir: string, mapsDir: string | undefined): string[] {
+  try {
+    const out = git(root, ['status', '--porcelain', '-z', '--untracked-files=all', '--', '.'])
+    const top = git(root, ['rev-parse', '--show-toplevel']).replace(/\r?\n$/, '')
+    const stateRoot = resolve(root, stateDir)
+    const mapsRoot = mapsDir === undefined ? stateRoot : resolve(root, mapsDir)
+    const entries = out.split('\0')
+    const files = new Set<string>()
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i]!
+      if (entry.length < 4) continue
+      const paths = [entry.slice(3)]
+      // A rename or copy is followed by its source path in the next field.
+      if (entry[0] === 'R' || entry[0] === 'C' || entry[1] === 'R' || entry[1] === 'C') {
+        i += 1
+        if (entries[i] !== undefined && entries[i] !== '') paths.push(entries[i]!)
+      }
+      for (const path of paths) {
+        const absolute = resolve(top, path)
+        if (inside(absolute, stateRoot) || inside(absolute, mapsRoot)) continue
+        files.add(absolute)
+      }
+    }
+    return [...files].sort()
+  } catch {
+    return []
+  }
+}
+
 /** Whether `path` is `dir` or under it, both absolute. */
 function inside(path: string, dir: string): boolean {
   const rel = relative(dir, path)
@@ -684,6 +720,7 @@ export function createCbd(config: CbdConfig): Cbd {
       const map = buildMap(inputs, {
         commit,
         dirty: dirtyTree(root, stateDir),
+        dirtyFiles: dirtyFiles(root, stateDir, mapsDir),
         includeNonGreen: options.includeNonGreen === true,
         scan: options.scan ?? scanFromEnv(),
         // Reads are dependencies only when a change to them is in this project's
