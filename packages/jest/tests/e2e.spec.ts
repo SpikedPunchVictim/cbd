@@ -18,7 +18,8 @@ import { buildMap, testsForFunction } from '@spikedpunch/cbd'
 import { parseShard } from '@spikedpunch/cbd/adapter'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const jest = join(packageRoot, 'node_modules', '.bin', 'jest')
+// The CLI's own script, run with node: the `.bin` shim is a `.cmd` on Windows.
+const jest = join(packageRoot, 'node_modules', 'jest', 'bin', 'jest.js')
 const config = join(packageRoot, 'fixture', 'jest.cbd.config.cjs')
 const concurrentConfig = join(packageRoot, 'fixture', 'jest.concurrent.config.cjs')
 const mathFile = realpathSync(join(packageRoot, 'fixture', 'src', 'math.js'))
@@ -34,7 +35,7 @@ function run(dir: string, shard: string, titles?: string[]): void {
     env.CBD_SELECTION = selection
   }
   // The fixture deliberately has a failing test; Jest exits 1 for it.
-  const result = spawnSync(jest, ['--config', config, '--runInBand'], {
+  const result = spawnSync(process.execPath, [jest, '--config', config, '--runInBand'], {
     cwd: packageRoot,
     env,
     encoding: 'utf8',
@@ -119,7 +120,7 @@ test('a concurrent run is refused and leaves no complete shard', () => {
     delete env.CBD_SOCKET_DIR
     delete env.NODE_OPTIONS
 
-    const result = spawnSync(jest, ['--config', concurrentConfig, '--runInBand'], {
+    const result = spawnSync(process.execPath, [jest, '--config', concurrentConfig, '--runInBand'], {
       cwd: packageRoot,
       env,
       encoding: 'utf8',
@@ -168,7 +169,7 @@ test('a selection that matches no test fails the run', () => {
     const selection = join(dir, 'selection.json')
     writeFileSync(selection, JSON.stringify({ titles: ['no such test'] }))
     env.CBD_SELECTION = selection
-    const result = spawnSync(jest, ['--config', config, '--runInBand'], {
+    const result = spawnSync(process.execPath, [jest, '--config', config, '--runInBand'], {
       cwd: packageRoot,
       env,
       encoding: 'utf8',
@@ -190,7 +191,7 @@ test('a selection that matches a test passes the guard', () => {
     const selection = join(dir, 'selection.json')
     writeFileSync(selection, JSON.stringify({ titles: ['outer > passes'] }))
     env.CBD_SELECTION = selection
-    const result = spawnSync(jest, ['--config', config, '--runInBand'], {
+    const result = spawnSync(process.execPath, [jest, '--config', config, '--runInBand'], {
       cwd: packageRoot,
       env,
       encoding: 'utf8',

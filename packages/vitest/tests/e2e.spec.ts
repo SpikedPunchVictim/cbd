@@ -18,7 +18,8 @@ import { buildMap, testsForFunction } from '@spikedpunch/cbd'
 import { parseShard } from '@spikedpunch/cbd/adapter'
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
-const vitest = join(packageRoot, 'node_modules', '.bin', 'vitest')
+// The CLI's own script, run with node: the `.bin` shim is a `.cmd` on Windows.
+const vitest = join(packageRoot, 'node_modules', 'vitest', 'vitest.mjs')
 const config = join(packageRoot, 'fixture', 'vitest.e2e.config.mjs')
 const concurrentConfig = join(packageRoot, 'fixture', 'vitest.concurrent.config.mjs')
 const mathFile = realpathSync(join(packageRoot, 'fixture', 'src', 'math.mjs'))
@@ -34,7 +35,7 @@ function run(dir: string, shard: string, titles?: string[]): void {
     writeFileSync(selection, JSON.stringify({ titles }))
     env.CBD_SELECTION = selection
   }
-  execFileSync(vitest, ['run', '--config', config], { cwd: packageRoot, env, stdio: 'pipe' })
+  execFileSync(process.execPath, [vitest, 'run', '--config', config], { cwd: packageRoot, env, stdio: 'pipe' })
 }
 
 const shardsIn = (dir: string): string[] =>
@@ -109,7 +110,7 @@ test('a concurrent run is refused and leaves no complete shard', () => {
     delete env.CBD_SOCKET_DIR
     delete env.NODE_OPTIONS
 
-    const result = spawnSync(vitest, ['run', '--config', concurrentConfig], {
+    const result = spawnSync(process.execPath, [vitest, 'run', '--config', concurrentConfig], {
       cwd: packageRoot,
       env,
       encoding: 'utf8',
@@ -158,7 +159,7 @@ test('a selection without a shard narrows the run', () => {
     writeFileSync(selection, JSON.stringify({ titles: ['math > adds'] }))
     env.CBD_SELECTION = selection
 
-    const result = spawnSync(vitest, ['run', '--config', config, '--reporter=verbose'], {
+    const result = spawnSync(process.execPath, [vitest, 'run', '--config', config, '--reporter=verbose'], {
       cwd: packageRoot,
       env,
       encoding: 'utf8',
@@ -191,7 +192,7 @@ function runGuarded(titles?: string[]) {
       writeFileSync(selection, JSON.stringify({ titles }))
       env.CBD_SELECTION = selection
     }
-    return spawnSync(vitest, ['run', '--config', guardConfig], { cwd: packageRoot, env, encoding: 'utf8' })
+    return spawnSync(process.execPath, [vitest, 'run', '--config', guardConfig], { cwd: packageRoot, env, encoding: 'utf8' })
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

@@ -30,7 +30,7 @@
  * the report buffered behind it.
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from '@japa/runner'
@@ -301,9 +301,11 @@ test('a lifetime recovered through a stale socket lands in the window that found
       })
     // Another collector's file is a final verdict for the snapshot scan, which then
     // skips the file for as long as its mtime stays the same.
+    // One whole-second mtime for both writes (see the unparseable-snapshot test).
+    const pinned = Math.floor(Date.now() / 1000) + 1
     writeFileSync(path, snapshot({ session: 'old' }))
+    utimesSync(path, pinned, pinned)
     await source.take()
-    const before = statSync(path)
     writeFileSync(
       path,
       snapshot({
@@ -311,7 +313,7 @@ test('a lifetime recovered through a stale socket lands in the window that found
         untaken: [{ scriptId: '1', url: 'file:///x.js', functions: [] }],
       }),
     )
-    utimesSync(path, before.atimeMs / 1000, before.mtimeMs / 1000)
+    utimesSync(path, pinned, pinned)
 
     const payload = await source.take()
     assert.ok(
@@ -693,11 +695,14 @@ test('an unparseable snapshot is not read again until its mtime changes', async 
     lane = await started(dir)
     source = await rescanningSocketSource({ dir, timeoutMs: 5_000, discoveryIntervalMs: 20 })
     const path = join(dir, 'pid-777782.coverage.json')
+    // Both writes carry one whole-second mtime: copying a stat's fractional mtime
+    // back through utimes is not exact on every Node, and a drift reads as a change.
+    const pinned = Math.floor(Date.now() / 1000) + 1
     writeFileSync(path, '{not json')
+    utimesSync(path, pinned, pinned)
     await sleep(200)
-    const before = statSync(path)
     writeFileSync(path, exitSnapshot(777782))
-    utimesSync(path, before.atimeMs / 1000, before.mtimeMs / 1000)
+    utimesSync(path, pinned, pinned)
     await sleep(200)
 
     const payload = await source.take()

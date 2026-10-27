@@ -48,4 +48,4 @@ jobs:
       # `pnpm -r test` builds every package and adapter first, in dependency
       # order, then runs the core, adapter, CLI, probe and fixture suites.
       - name: Test
-        run: pnpm -r test
+        run: pnpm -r --no-bail test
