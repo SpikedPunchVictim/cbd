@@ -50,7 +50,7 @@ import {
   CORRELATION_HEADER_ENV,
   INSTRUMENT_PROTOCOL,
   LineSplitter,
-  SOCKET_DIR_ENV,
+  socketDirFromEnv,
   encodeMessage,
   nowUs,
   resolveRole,
@@ -111,7 +111,7 @@ function snapshotInterval(raw: string | undefined): number {
   return Math.min(Math.floor(value), MAX_TIMER_DELAY_MS)
 }
 
-const socketDir = process.env[SOCKET_DIR_ENV]
+const socketDir = socketDirFromEnv()
 
 if (socketDir !== undefined && socketDir !== '' && scope.__cbdInstrumented !== true) {
   scope.__cbdInstrumented = true

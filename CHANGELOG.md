@@ -5,6 +5,15 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
+- **A child spawned at import, or by a hook between tests, now leaves its opaque mark.** The process
+  tracker's opaque note and a declared environment variable were kept only inside a test window, so
+  a spec that spawned a server at import or in a `beforeAll` lost them and was not widened. They now
+  fall back to the spec's import scope, then to the between-tests scope (the whole shard).
+  `new Worker(...)` from `worker_threads` and `cluster.fork()` are marked opaque like a spawn.
+- **A relative `CBD_SOCKET_DIR` now names one directory for every process.** It was resolved against
+  each process's own working directory, so a child with another cwd listened elsewhere and was never
+  collected. The instrument, the socket and rescan sources and the japa and vitest adapters now
+  resolve it to an absolute path on first read and write that back to the environment.
 - **A file with a lone `\r`, U+2028 or U+2029 no longer gets a wrong binding-read narrowing.**
   TypeScript breaks lines on those characters while git and the map break on `\n` only, so a hunk
   after one landed on the wrong statement and a side-effecting module-scope edit could be proved a

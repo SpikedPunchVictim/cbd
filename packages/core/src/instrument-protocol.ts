@@ -31,7 +31,7 @@
  * of kilobytes per take at the target suite's scale — 1555 tests, 1555 takes —
  * for data that never changes after the first time.
  */
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { GeneratedScript, V8ScriptCoverage } from './types.js'
 
 /**
@@ -419,6 +419,23 @@ export class LineSplitter {
 
 /** The env var that turns the injected module on. Unset means fully inert. */
 export const SOCKET_DIR_ENV = 'CBD_SOCKET_DIR'
+
+/**
+ * The socket directory from `env`, as an absolute path.
+ *
+ * A relative value resolves against each process's own working directory, so a
+ * child spawned with another cwd (or after a `chdir`) would listen in a different
+ * place and never be collected. Resolve it where it is first read and write the
+ * absolute value back, so every process spawned afterwards inherits the same
+ * directory. Unset or empty stays as it is: that is "no service".
+ */
+export function socketDirFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env[SOCKET_DIR_ENV]
+  if (raw === undefined || raw === '') return raw
+  const absolute = resolve(raw)
+  if (absolute !== raw) env[SOCKET_DIR_ENV] = absolute
+  return absolute
+}
 
 /**
  * A microsecond clock two processes on one host can compare.

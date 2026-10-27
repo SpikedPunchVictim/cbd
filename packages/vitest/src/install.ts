@@ -27,6 +27,7 @@ import {
   readSelection,
   granularityFromEnv,
   scanFromEnv,
+  socketDirFromEnv,
 } from '@spikedpunch/cbd/adapter'
 import { fileOf, shardPathFor, statusOf, titleOf, type VitestTaskLike } from './identity.js'
 import { withSelfRoot } from './self.js'
@@ -71,7 +72,7 @@ export async function installVitest(hooks: VitestHooks): Promise<void> {
   const scope = globalThis as VitestWorkerScope
   const file = scope.__vitest_worker__?.filepath
 
-  const socketDir = process.env.CBD_SOCKET_DIR
+  const socketDir = socketDirFromEnv()
   if (socketDir !== undefined && socketDir !== '' && scope.__cbdVitestNoService !== true) {
     scope.__cbdVitestNoService = true
     process.stderr.write(

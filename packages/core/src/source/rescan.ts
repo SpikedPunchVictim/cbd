@@ -117,7 +117,7 @@ import {
   socketPaths,
   socketSource,
 } from './socket.js'
-import { INSTRUMENT_PROTOCOL, SOCKET_DIR_ENV, nowUs, snapshotPath, type ScriptRow, type SnapshotFile } from '../instrument-protocol.js'
+import { INSTRUMENT_PROTOCOL, SOCKET_DIR_ENV, socketDirFromEnv, nowUs, snapshotPath, type ScriptRow, type SnapshotFile } from '../instrument-protocol.js'
 import type {
   DriftStats,
   PendingTake,
@@ -191,7 +191,7 @@ export async function rescanningSocketSource(
   options: RescanningSocketSourceOptions = {},
 ): Promise<QueuedSource> {
   const timeoutMs = options.timeoutMs ?? DEFAULT_INSPECTOR_TIMEOUT_MS
-  const configured = options.dir ?? process.env[SOCKET_DIR_ENV]
+  const configured = options.dir ?? socketDirFromEnv()
   if (configured === undefined || configured === '') {
     throw new SocketSourceError(
       `no socket directory: pass "dir", or set ${SOCKET_DIR_ENV} to the directory the ` +

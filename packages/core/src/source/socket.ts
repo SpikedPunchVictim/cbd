@@ -90,6 +90,7 @@ import {
   INSTRUMENT_PROTOCOL,
   LineSplitter,
   SOCKET_DIR_ENV,
+  socketDirFromEnv,
   encodeMessage,
   nowUs,
   snapshotPath,
@@ -680,7 +681,7 @@ type Resolved =
   | { kind: 'dir'; dir: string; pid?: number }
 
 function resolveSocket(options: SocketSourceOptions): Resolved {
-  const dir = options.dir ?? process.env[SOCKET_DIR_ENV]
+  const dir = options.dir ?? socketDirFromEnv()
 
   if (options.socket !== undefined) {
     if (options.dir !== undefined || options.pid !== undefined) {

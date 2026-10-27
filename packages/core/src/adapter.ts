@@ -108,7 +108,7 @@ export {
 export { installReadTracking, type ReadSink } from './read-tracker.js'
 export { installProcessTracking, type ProcessSink } from './process-tracker.js'
 
-export { SOCKET_DIR_ENV } from './instrument-protocol.js'
+export { SOCKET_DIR_ENV, socketDirFromEnv } from './instrument-protocol.js'
 
 export { canonicalProjectionRules, projectPath, type ProjectionRule } from './projection.js'
 

@@ -14,12 +14,13 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import net from 'node:net'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from '@japa/runner'
 import {
   LineSplitter,
   encodeMessage,
+  socketDirFromEnv,
   type HelloResult,
   type InstrumentOp,
   type InstrumentRequest,
@@ -707,4 +708,23 @@ test.group('instrument module', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+})
+
+test('a relative CBD_SOCKET_DIR is made absolute for the process and the children it spawns', () => {
+  const relative = `.cbd-test-relative-${String(process.pid)}`
+  const child = spawnSync(
+    process.execPath,
+    ['--import', INSTRUMENT_SPECIFIER, '-e', 'process.stdout.write(process.env.CBD_SOCKET_DIR)'],
+    { cwd: PACKAGE_ROOT, env: { ...process.env, CBD_SOCKET_DIR: relative }, encoding: 'utf8' },
+  )
+  rmSync(join(PACKAGE_ROOT, relative), { recursive: true, force: true })
+  assert.equal(child.stdout, join(PACKAGE_ROOT, relative), child.stderr)
+})
+
+test('socketDirFromEnv resolves a relative value and writes it back', () => {
+  const env: NodeJS.ProcessEnv = { CBD_SOCKET_DIR: 'rel/dir' }
+  assert.equal(socketDirFromEnv(env), resolve('rel/dir'))
+  assert.equal(env.CBD_SOCKET_DIR, resolve('rel/dir'))
+  assert.equal(socketDirFromEnv({}), undefined)
+  assert.equal(socketDirFromEnv({ CBD_SOCKET_DIR: '' }), '')
 })

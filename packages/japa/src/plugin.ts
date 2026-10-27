@@ -63,6 +63,7 @@ import {
   INSPECT_ALLOW_REMOTE_ENV,
   INSPECT_ENV,
   SOCKET_DIR_ENV,
+  socketDirFromEnv,
   allowRemoteFromEnv,
   inProcessSource,
   inspectorSource,
@@ -186,7 +187,7 @@ export async function recordersFor(
   shard: string,
   wiring: Wiring,
 ): Promise<Recorder[]> {
-  const dir = envValue(env[SOCKET_DIR_ENV])
+  const dir = envValue(socketDirFromEnv(env))
   const inspect = envValue(env[INSPECT_ENV])
 
   // Two names for one service. Picking one would decide which process the service
@@ -297,7 +298,7 @@ export async function startRecording(
   // A service is what correlation is for. With none, an id on every request
   // would buy nothing, and patching the process's HTTP client for nothing is
   // exactly the kind of side effect this module exists not to have.
-  const dir = process.env[SOCKET_DIR_ENV]
+  const dir = socketDirFromEnv()
   const correlator =
     dir === undefined || dir === '' || process.env[CORRELATION_ENV] === 'off'
       ? undefined
