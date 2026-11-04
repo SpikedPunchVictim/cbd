@@ -3,6 +3,7 @@
   "version": "0.0.4",
   "type": "module",
   "description": "The cbd binary: build, select, explain and stats over a coverage map.",
+  "license": "MIT",
   "bin": {
     "cbd": "./bin/cbd.js"
   },

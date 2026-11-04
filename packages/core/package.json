@@ -3,6 +3,7 @@
   "version": "0.0.4",
   "type": "module",
   "description": "Framework-neutral core: coverage sources, normalization, and the coverage map.",
+  "license": "MIT",
   "engines": {
     "node": ">=22"
   },
