@@ -239,24 +239,6 @@ function configChain(ts: Ts, tsconfig: string, seen = new Set<string>()): Set<st
   return seen
 }
 
-/** Do all of the refs name one commit (`HEAD` and the map's hash often do)? */
-function singleCommit(root: string, refs: readonly string[]): boolean {
-  try {
-    const commits = new Set(
-      refs.map((ref) =>
-        execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
-          cwd: root,
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore'],
-        }).trim(),
-      ),
-    )
-    return commits.size === 1
-  } catch {
-    return false
-  }
-}
-
 function gitShow(root: string, ref: string, path: string): string | undefined {
   const rel = relative(root, path).split('\\').join('/')
   try {
@@ -343,18 +325,18 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
     )
     if (verdict.unchanged) files.set(change.path, verdict.typescript!)
     else if (verdict.why === 'module scope differs') {
-      // The hunks are in one version's lines and the map is in another's, so only a
-      // single commit (the map's) and a change carrying both sides can be placed.
+      // The hunks are in the lines of the `--since` version and the proof reads the map's.
+      // They are the same lines only when every ref holds the same text of this file, so a
+      // map behind `--since` still narrows while the file is untouched between them.
+      const rel = relative(input.root, change.path).split('\\').join('/')
       const project = loadProject(entry.tsconfig)
       const base = bases[0]
-      if (
-        typeof project !== 'string' &&
-        singleCommit(input.root, input.refs) &&
-        base !== undefined &&
-        change.newHunks !== undefined &&
-        (change.insertions ?? []).length === 0 &&
-        (change.newInsertions ?? []).length === 0
-      ) {
+      if (typeof project === 'string' || base === undefined || change.newHunks === undefined) continue
+      if (bases.some((other) => other !== base)) {
+        warnings.push(`binding-read not attempted: ${rel} differs between the map's commit and --since`)
+      } else if ((change.insertions ?? []).length > 0 || (change.newInsertions ?? []).length > 0) {
+        warnings.push(`binding-read not attempted: ${rel} has inserted lines`)
+      } else {
         const proof = proveBindingRead(project.ts, project.options, change.path, base, head, change.hunks, change.newHunks)
         if (proof.ok) bindingReads.set(change.path, { ...proof.read, typescript: project.version })
       }

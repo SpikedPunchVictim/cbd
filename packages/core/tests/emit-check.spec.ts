@@ -458,14 +458,25 @@ test.group('moduleScopeUnchangedFiles', () => {
 
 test.group('bindingReads: a module-scope edit only functions can see', () => {
   /** Commit `before`, write `after`, and ask what the real git hunks prove. */
-  function proof(before: string, after: string, pin = PIN) {
+  function proof(
+    before: string,
+    after: string,
+    pin = PIN,
+    /** A commit between the map's and `--since`: files to write there. */
+    between?: Record<string, string>,
+  ) {
     const repo = tempRepo()
     mkdirSync(join(repo.root, 'node_modules'), { recursive: true })
     symlinkSync(TYPESCRIPT, join(repo.root, 'node_modules', 'typescript'), 'dir')
     repo.write('tsconfig.json', JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
     repo.write('.gitignore', 'node_modules/\n')
     repo.write('src/a.ts', before)
-    const head = repo.commit('base')
+    const mapCommit = repo.commit('base')
+    let head = mapCommit
+    if (between !== undefined) {
+      for (const [path, text] of Object.entries(between)) repo.write(path, text)
+      head = repo.commit('between')
+    }
     repo.write('src/a.ts', after)
     const file = join(repo.root, 'src/a.ts')
     const changes = changesSince({ root: repo.root, since: head, worktree: true }).map((c) => ({
@@ -476,7 +487,7 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
       root: repo.root,
       changes,
       entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: pin }],
-      refs: [head],
+      refs: [...new Set([head, mapCommit])],
       worktree: true,
     })
     repo.cleanup()
@@ -493,6 +504,29 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
     assert.deepEqual(read?.names, ['U'])
     assert.deepEqual(read?.lines, [3])
     assert.equal(read?.typescript, PIN)
+  })
+
+  test('a map behind --since narrows when the file is the same text at both', () => {
+    const { read, warnings } = proof(
+      withBody('const U = /a/', '  return U.test("x")'),
+      withBody('const U = /b/', '  return U.test("x")'),
+      PIN,
+      { 'src/other.ts': 'export const o = 1\n' },
+    )
+    assert.deepEqual(read?.names, ['U'])
+    assert.deepEqual(warnings, [])
+  })
+
+  test('a map behind --since falls back, and says why, when the file differs between them', () => {
+    const { read, warnings } = proof(
+      withBody('const U = /a/', '  return U.test("x")'),
+      withBody('const U = /c/', '  return U.test("x")'),
+      PIN,
+      { 'src/a.ts': withBody('const U = /b/', '  return U.test("x")') },
+    )
+    assert.equal(read, undefined)
+    assert.equal(warnings.length, 1)
+    assert.match(warnings[0]!, /binding-read not attempted: src\/a\.ts differs between the map's commit and --since/)
   })
 
   test('CRLF line endings still narrow', () => {
