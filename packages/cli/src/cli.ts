@@ -172,6 +172,7 @@ function runSelect(cbd: Cbd, parsed: ParsedArgs, io: Io): number {
     throw error
   }
   for (const warning of result.selection.warnings) io.err(`cbd: warning: ${warning}`)
+  for (const note of result.selection.notes ?? []) io.err(`cbd: note: ${note}`)
   // A patch made at the repository top level has top-level paths; under a nested
   // `--root` they resolve one level too deep and match no include glob. The answer
   // is then "no tests", which is easy to misread as "there is nothing to run".

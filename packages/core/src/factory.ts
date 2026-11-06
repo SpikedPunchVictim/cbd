@@ -239,6 +239,8 @@ export interface ReachesResult {
   target: ExplainTarget
   /** The file is one the map has any evidence for (unknown means select runs all). */
   seen: boolean
+  /** Select would run the whole suite for this file (`seen` false is not enough: reads answer it). */
+  runsAll: boolean
   /**
    * True when the test executed a mapped function of the file. With a line, true
    * when it covers that line — or, for a line outside every function, when it
@@ -338,8 +340,10 @@ export interface ReachRowResult {
   file: string
   start: number
   end: number
-  /** Whether the map has any evidence for the file; false means select answers `all`. */
+  /** Whether code ran in the file. A file read by a test is not seen, yet select does not run all. */
   seen: boolean
+  /** Select would run the whole suite for an edit to this file. */
+  runsAll: boolean
   /** The tests that executed a line in the range, in map order. */
   tests: TestEntry[]
 }
@@ -685,6 +689,21 @@ export function createCbd(config: CbdConfig): Cbd {
     tests: loaded.map.tests.length,
   })
 
+  /**
+   * Would select run the whole suite for an edit to this file? A file no process ran code
+   * in is not unknown by that alone: a test may have read it, or listed its directory.
+   */
+  const selectRunsAll = (file: string, commit: string, seen: boolean): boolean => {
+    if (seen) return false
+    const line = { start: 1, end: wholeFileEnd(file, []) }
+    return (
+      cbd.select({
+        commit,
+        changes: [{ path: file, status: 'M', hunks: [line], newHunks: [line], insertions: [] }],
+      }).selection.mode === 'all'
+    )
+  }
+
   const cbd: Cbd = {
     build(options: BuildOptions = {}): BuildResult {
       const commit = options.commit ?? headCommit(root)
@@ -902,12 +921,15 @@ export function createCbd(config: CbdConfig): Cbd {
       // Caller-supplied `changes` are a what-if: no file was edited, so the file's
       // text at base and head is identical and "unchanged" would be true of any
       // line asked about. There is no new text to compare, so no verdict is given
-      // and selection escalates exactly as it does without the opt-in.
+      // and selection escalates exactly as it does without the opt-in. A note says when the
+      // line is a binding that functions alone read, where an edit could be narrowed.
       const emitChecked = moduleScopeUnchangedFiles({
         root,
         changes,
-        entries: options.changes !== undefined ? [] : (config.select?.emitCheck ?? []),
+        entries: config.select?.emitCheck ?? [],
+        ...(options.changes !== undefined ? { whatIf: true } : {}),
         refs: [...new Set([since, loaded.map.commit])],
+        mapCommit: loaded.map.commit,
         worktree: options.worktree !== false,
       })
       const moduleScopeUnchanged = emitChecked.files
@@ -937,6 +959,7 @@ export function createCbd(config: CbdConfig): Cbd {
         ...(stale.length === 0 && emitChecked.warnings.length === 0
           ? {}
           : { warnings: [...base.warnings, ...stale, ...emitChecked.warnings] }),
+        ...(emitChecked.notes.length === 0 ? {} : { notes: emitChecked.notes }),
       }
       const selected = selection.tests
         .map((index) => loaded.map.tests[index])
@@ -981,21 +1004,19 @@ export function createCbd(config: CbdConfig): Cbd {
       if (map.teardown.some((ref) => ref[0] === parsed.file)) buckets.push('teardown')
       // The reasons come from running select itself on the same one-line change
       // `select --change` builds, so explain cannot drift from what select does.
-      let selection: ExplainSelection | undefined
-      if (parsed.line !== undefined) {
-        const line = { start: parsed.line, end: parsed.line }
-        const result = cbd.select({
-          commit: loaded.map.commit,
-          changes: [
-            { path: parsed.file, status: 'M', hunks: [line], newHunks: [line], insertions: [] },
-          ],
-        })
-        selection = {
-          mode: result.selection.mode,
-          tests:
-            result.selection.mode === 'all' ? loaded.map.tests.length : result.selected.length,
-          reasons: result.selection.reasons.map(explainReason),
-        }
+      // With no line the change is the whole file, so a file that runs no code (a README,
+      // JSON) is answered by the read and directory-listing evidence select would use.
+      const line = { start: parsed.line ?? 1, end: parsed.line ?? wholeFileEnd(parsed.file, functions) }
+      const result = cbd.select({
+        commit: loaded.map.commit,
+        changes: [
+          { path: parsed.file, status: 'M', hunks: [line], newHunks: [line], insertions: [] },
+        ],
+      })
+      const selection: ExplainSelection = {
+        mode: result.selection.mode,
+        tests: result.selection.mode === 'all' ? loaded.map.tests.length : result.selected.length,
+        reasons: result.selection.reasons.map(explainReason),
       }
       return {
         file: parsed.file,
@@ -1004,7 +1025,7 @@ export function createCbd(config: CbdConfig): Cbd {
         buckets,
         functions,
         tests,
-        ...(selection === undefined ? {} : { selection }),
+        selection,
       }
     },
 
@@ -1065,6 +1086,7 @@ export function createCbd(config: CbdConfig): Cbd {
         test: { title: chosen.entry.title, file: chosen.entry.file },
         target: parsed,
         seen: map.seen.includes(parsed.file),
+        runsAll: selectRunsAll(parsed.file, loaded.map.commit, map.seen.includes(parsed.file)),
         reaches,
         functions,
         files: [...new Set(reached.map((fn) => fn.file))].sort(),
@@ -1093,6 +1115,7 @@ export function createCbd(config: CbdConfig): Cbd {
           start: row.start,
           end,
           seen: map.seen.includes(file),
+          runsAll: selectRunsAll(file, loaded.map.commit, map.seen.includes(file)),
           tests: map.tests.filter((entry) => reached.has(entry)),
         }
       })
@@ -1210,6 +1233,15 @@ export function createCbd(config: CbdConfig): Cbd {
     },
   }
   return cbd
+}
+
+/** The last line of a file: its text on disk, else the end of its last mapped function. */
+function wholeFileEnd(path: string, functions: Array<{ endLine: number }>): number {
+  try {
+    return Math.max(1, readFileSync(path, 'utf8').split('\n').length)
+  } catch {
+    return Math.max(1, ...functions.map((fn) => fn.endLine))
+  }
 }
 
 function explainReason(reason: Reason): ExplainReason {

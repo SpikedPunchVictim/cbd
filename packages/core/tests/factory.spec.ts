@@ -1085,8 +1085,51 @@ test.group('createCbd', () => {
         fn.selection?.reasons.map((reason) => [reason.kind, reason.count]),
         [['function', 1]],
       )
-      // Without a line there is no what-if to run.
-      assert.equal(cbd.explain('src/lib.ts').selection, undefined)
+      // Without a line the what-if is the whole file.
+      assert.equal(cbd.explain('src/lib.ts').selection?.mode, 'subset')
+    } finally {
+      repo.cleanup()
+    }
+  })
+
+  test('explain on a file with no code runs select: read and listing evidence answer it', () => {
+    const repo = tempRepo()
+    try {
+      const root = realpath(repo.root)
+      const lib = join(root, 'src/lib.ts')
+      const readme = join(root, 'docs/README.md')
+      const listed = join(root, 'data/rows.json')
+      repo.write('src/lib.ts', 'export function add(a, b) {\n  return a + b;\n}\n')
+      repo.write('docs/README.md', 'docs\n')
+      repo.write('data/rows.json', '[]\n')
+      repo.write('data/other.json', '[]\n')
+      const commit = repo.commit('base')
+      writeShard(
+        repo.root,
+        'run.ndjson',
+        shardText(commit, [
+          {
+            title: 'adds',
+            file: null,
+            touches: [ref(lib, 'add@0', 1, 3)],
+            reads: [readme],
+            dirReads: [join(root, 'data')],
+          },
+        ]),
+      )
+      const cbd = createCbd({ root: repo.root })
+      cbd.build()
+
+      for (const file of ['docs/README.md', 'data/rows.json']) {
+        const result = cbd.explain(file)
+        assert.equal(result.seen, false, file)
+        assert.equal(result.selection?.mode, 'subset', file)
+        assert.equal(result.selection?.tests, 1, file)
+      }
+      // A file nothing read is still unknown: select runs all.
+      repo.write('docs/unread.md', 'x\n')
+      assert.equal(cbd.explain('docs/unread.md').selection?.mode, 'all')
+      assert.equal(lib.length > 0 && listed.length > 0, true)
     } finally {
       repo.cleanup()
     }

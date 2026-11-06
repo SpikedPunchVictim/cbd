@@ -43,7 +43,7 @@ if (selection.mode === 'all') {
 - `selection.mode` — `subset` or `all`;
 - `selection.tests` — indices into the map;
 - `selected` — the resolved `{ title, file }` entries;
-- `selection.reasons`, `unmapped`, `untested`, `warnings` — why, in data;
+- `selection.reasons`, `unmapped`, `untested`, `warnings` — why, in data; `notes` says why an answer is wider than it could be (sound, not doubtful);
 - `map` — the commit, age, path and shard list the answer came from.
 
 Options: `since` (default: the map's commit), `worktree` (default `true`), `strict`, `commit`.

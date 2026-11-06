@@ -206,11 +206,14 @@ export function explainLines(result: ExplainResult, root: string): string[] {
   // A zero answer is ambiguous on its own: the map may have seen the file and
   // found no test in it, or never heard of it at all, and those are opposite
   // instructions to `select`. Say which one this is.
+  // `seen` means code ran; a README or JSON never is, yet select answers it from reads.
   const note = result.seen
     ? result.tests.length === 0
       ? ' (seen, no test reaches it)'
       : ''
-    : ' (not in the map: select runs all)'
+    : result.selection?.mode === 'subset'
+      ? ' (no code ran in it: select answers from read evidence)'
+      : ' (not in the map: select runs all)'
   const lines = [`${where} — ${plural(result.tests.length, 'test')}${note}`]
   if (result.buckets.length > 0) lines.push(`  reached at ${result.buckets.join(', ')}`)
 
@@ -221,6 +224,7 @@ export function explainLines(result: ExplainResult, root: string): string[] {
       const tests = fn.tests.length === 0 ? 'no tests' : fn.tests.join(', ')
       lines.push(`  ${fn.key} (${fn.startLine}-${fn.endLine}): ${tests}`)
     }
+    lines.push(...selectionDetail(result, root))
   } else {
     lines.push(...lineDetail(result, root))
   }
@@ -235,7 +239,7 @@ export function reachesLines(result: ReachesResult, root: string): string[] {
   const who = `${result.test.title}${
     result.test.file === null ? '' : ` (${shown(root, result.test.file)})`
   }`
-  const note = result.seen ? '' : ' (file not in the map: select runs all)'
+  const note = result.runsAll ? ' (file not in the map: select runs all)' : ''
   const lines = [`${who} ${result.reaches ? 'reaches' : 'does not reach'} ${where}${note}`]
 
   if (result.functions.length > 0) {
@@ -273,9 +277,9 @@ export function batchLines(
     const reached =
       row.tests.length > 0
         ? `${plural(row.tests.length, 'test')}: ${row.tests.map((test) => test.title).join(', ')}`
-        : row.seen
-          ? 'no test reaches it'
-          : 'not in the map (select runs all)'
+        : row.runsAll
+          ? 'not in the map (select runs all)'
+          : 'no test reaches it'
     const killers =
       row.killers.length === 0
         ? ''

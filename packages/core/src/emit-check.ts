@@ -20,10 +20,10 @@
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
-import type { Change } from './changes.js'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { changesSince, type Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
-import { proveBindingRead, type BindingRead } from './binding-read.js'
+import { analyzeBindingRead, proveBindingRead, type BindingRead } from './binding-read.js'
 import type { EmitCheckEntry } from './select.js'
 
 /** The slice of the TypeScript compiler API used; `any` because `typescript` is the consumer's. */
@@ -214,6 +214,16 @@ export interface EmitCheckInput {
   entries: readonly EmitCheckEntry[]
   /** Refs whose version of each file must match the current one (the diff's bases). */
   refs: readonly string[]
+  /**
+   * The map's commit, one of `refs`. When the file differs between it and the other refs, the
+   * proof runs against the map's version, with the hunks from the map's commit to the current one.
+   */
+  mapCommit?: string
+  /**
+   * `changes` are a what-if: no file was edited. No verdict is given; a line in a binding that
+   * would qualify gets a note saying so (an edit's new text decides whether it does).
+   */
+  whatIf?: boolean
   /** Compare against the worktree file; otherwise against HEAD. */
   worktree: boolean
 }
@@ -264,6 +274,11 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
   /** One per entry that could not run at all (wrong or missing compiler). */
   warnings: string[]
   /**
+   * Why a proof was not attempted for a file. The answer is the sound, wider one, so
+   * these explain cost and are not doubt about the answer (`warnings` is for that).
+   */
+  notes: string[]
+  /**
    * Modified files whose module-scope hunks only edit a side-effect-free initializer of a
    * binding that functions alone read (see `binding-read.ts`), with the compiler that proved it.
    */
@@ -272,8 +287,9 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
   const files = new Map<string, string>()
   const bindingReads = new Map<string, BindingRead & { typescript: string }>()
   const warnings: string[] = []
+  const notes: string[] = []
   const warned = new Set<string>()
-  if (input.entries.length === 0 || input.refs.length === 0) return { files, warnings, bindingReads }
+  if (input.entries.length === 0 || input.refs.length === 0) return { files, warnings, notes, bindingReads }
   // Both versions of a file are compiled under the tsconfig as it is now, so a
   // tsconfig edited in the range emits the base differently from how the map's run
   // saw it, and identical module scope proves nothing. Any change to a file that
@@ -288,11 +304,36 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
     return false
   }
   const withdrawn = new Map<EmitCheckEntry, boolean>()
+  // The diff from the map's commit to the current version, by absolute path; read at most once.
+  let fromMap: Map<string, Change> | undefined
+  const sinceMap = (): Map<string, Change> => {
+    fromMap ??= new Map(
+      changesSince({ root: input.root, since: input.mapCommit!, worktree: input.worktree }).map((c) => [
+        join(input.root, c.path),
+        c,
+      ]),
+    )
+    return fromMap
+  }
   for (const change of input.changes) {
     if (change.status !== 'M') continue
     if (!TS_SOURCE.test(change.path) || DECLARATION.test(change.path)) continue
     const entry = input.entries.find((candidate) => matchesAnyGlob(change.path, [candidate.glob]) !== null)
     if (entry === undefined) continue
+    if (input.whatIf === true) {
+      const project = loadProject(entry.tsconfig)
+      const text = input.mapCommit === undefined ? undefined : gitShow(input.root, input.mapCommit, change.path)
+      if (typeof project === 'string' || text === undefined) continue
+      const read = analyzeBindingRead(project.ts, project.options, change.path, text, change.hunks)
+      if (read.ok) {
+        const rel = relative(input.root, change.path).split('\\').join('/')
+        notes.push(
+          `binding-read would apply to an edit of ${read.read.names.join(', ')} in ${rel} ` +
+            `(read at line ${read.read.lines.join(', ')}) if the new initializer stays side-effect free`,
+        )
+      }
+      continue
+    }
     if (!withdrawn.has(entry)) withdrawn.set(entry, configChanged(entry))
     if (withdrawn.get(entry) === true) {
       if (!warned.has(entry.glob)) {
@@ -325,25 +366,36 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
     )
     if (verdict.unchanged) files.set(change.path, verdict.typescript!)
     else if (verdict.why === 'module scope differs') {
-      // The hunks are in the lines of the `--since` version and the proof reads the map's.
-      // They are the same lines only when every ref holds the same text of this file, so a
-      // map behind `--since` still narrows while the file is untouched between them.
+      // The proof reads the map's version of the file, and its hunks must be in that version's
+      // lines. `--since` hunks are, when every ref holds the same text. Otherwise the hunks come
+      // from a diff of the map's commit to the current version, which covers the range's edit
+      // and everything the map has not seen.
       const rel = relative(input.root, change.path).split('\\').join('/')
       const project = loadProject(entry.tsconfig)
-      const base = bases[0]
-      if (typeof project === 'string' || base === undefined || change.newHunks === undefined) continue
-      if (bases.some((other) => other !== base)) {
-        warnings.push(`binding-read not attempted: ${rel} differs between the map's commit and --since`)
-      } else if ((change.insertions ?? []).length > 0 || (change.newInsertions ?? []).length > 0) {
-        warnings.push(`binding-read not attempted: ${rel} has inserted lines`)
-      } else {
-        const proof = proveBindingRead(project.ts, project.options, change.path, base, head, change.hunks, change.newHunks)
-        if (proof.ok) bindingReads.set(change.path, { ...proof.read, typescript: project.version })
+      let oldText = bases[0]
+      let hunks = change.hunks
+      let newHunks = change.newHunks
+      let inserted = (change.insertions ?? []).length + (change.newInsertions ?? []).length
+      if (bases.some((other) => other !== oldText)) {
+        const mapText = input.mapCommit === undefined ? undefined : gitShow(input.root, input.mapCommit, change.path)
+        const mapChange = input.mapCommit === undefined ? undefined : sinceMap().get(change.path)
+        if (mapText === undefined || mapChange?.status !== 'M') continue
+        oldText = mapText
+        hunks = mapChange.hunks
+        newHunks = mapChange.newHunks
+        inserted = (mapChange.insertions ?? []).length + (mapChange.newInsertions ?? []).length
       }
+      if (typeof project === 'string' || oldText === undefined || newHunks === undefined) continue
+      if (inserted > 0) {
+        notes.push(`binding-read not attempted: ${rel} has inserted lines`)
+        continue
+      }
+      const proof = proveBindingRead(project.ts, project.options, change.path, oldText, head, hunks, newHunks)
+      if (proof.ok) bindingReads.set(change.path, { ...proof.read, typescript: project.version })
     } else if (verdict.skipped === true && !warned.has(entry.glob)) {
       warned.add(entry.glob)
       warnings.push(`emitCheck skipped for ${entry.glob}: ${verdict.why ?? 'unusable compiler'}`)
     }
   }
-  return { files, warnings, bindingReads }
+  return { files, warnings, notes, bindingReads }
 }

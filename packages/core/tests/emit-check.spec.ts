@@ -488,11 +488,52 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
       changes,
       entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: pin }],
       refs: [...new Set([head, mapCommit])],
+      mapCommit,
       worktree: true,
     })
     repo.cleanup()
-    return { read: result.bindingReads.get(file), warnings: result.warnings, files: result.files }
+    return { read: result.bindingReads.get(file), warnings: result.warnings, notes: result.notes, files: result.files }
   }
+
+  /** A what-if at one line of the map's version of src/a.ts. */
+  function whatIf(text: string, line: number) {
+    const repo = tempRepo()
+    mkdirSync(join(repo.root, 'node_modules'), { recursive: true })
+    symlinkSync(TYPESCRIPT, join(repo.root, 'node_modules', 'typescript'), 'dir')
+    repo.write('tsconfig.json', JSON.stringify({ compilerOptions: { target: 'es2022', module: 'esnext' } }))
+    repo.write('.gitignore', 'node_modules/\n')
+    repo.write('src/a.ts', text)
+    const commit = repo.commit('base')
+    const range = { start: line, end: line }
+    const result = moduleScopeUnchangedFiles({
+      root: repo.root,
+      changes: [{ path: join(repo.root, 'src/a.ts'), status: 'M', hunks: [range], newHunks: [range], insertions: [] }],
+      entries: [{ glob: join(repo.root, 'src/**'), tsconfig: join(repo.root, 'tsconfig.json'), typescript: PIN }],
+      refs: [commit],
+      mapCommit: commit,
+      whatIf: true,
+      worktree: true,
+    })
+    repo.cleanup()
+    return result
+  }
+
+  test('a what-if on a function-read binding says binding-read could apply, and proves nothing', () => {
+    const result = whatIf('const U = /a/\nexport function f() {\n  return U.test("x")\n}\n', 1)
+    assert.deepEqual(result.notes, [
+      'binding-read would apply to an edit of U in src/a.ts (read at line 3) if the new initializer stays side-effect free',
+    ])
+    assert.equal(result.bindingReads.size, 0)
+    assert.equal(result.files.size, 0)
+    assert.deepEqual(result.warnings, [])
+  })
+
+  test('a what-if on a line that could not narrow says nothing', () => {
+    const exported = whatIf('export const U = /a/\nexport function f() {\n  return U.test("x")\n}\n', 1)
+    assert.deepEqual(exported.notes, [])
+    const body = whatIf('const U = /a/\nexport function f() {\n  return U.test("x")\n}\n', 3)
+    assert.deepEqual(body.notes, [])
+  })
 
   const withBody = (decl: string, body: string): string => `${decl}\nexport function f() {\n${body}\n}\n`
 
@@ -507,26 +548,60 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
   })
 
   test('a map behind --since narrows when the file is the same text at both', () => {
-    const { read, warnings } = proof(
+    const { read, warnings, notes } = proof(
       withBody('const U = /a/', '  return U.test("x")'),
       withBody('const U = /b/', '  return U.test("x")'),
       PIN,
       { 'src/other.ts': 'export const o = 1\n' },
     )
     assert.deepEqual(read?.names, ['U'])
-    assert.deepEqual(warnings, [])
+    assert.deepEqual([warnings, notes], [[], []])
   })
 
-  test('a map behind --since falls back, and says why, when the file differs between them', () => {
-    const { read, warnings } = proof(
+  test('a map behind --since narrows against the map when the file differs between them', () => {
+    // The map holds /a/; --since holds /b/; the worktree holds /c/. Hunks since the map are /a/ to /c/.
+    const { read, warnings, notes } = proof(
       withBody('const U = /a/', '  return U.test("x")'),
       withBody('const U = /c/', '  return U.test("x")'),
       PIN,
       { 'src/a.ts': withBody('const U = /b/', '  return U.test("x")') },
     )
+    assert.deepEqual(read?.names, ['U'])
+    assert.deepEqual(read?.lines, [3])
+    assert.deepEqual([warnings, notes], [[], []])
+  })
+
+  test('a map behind --since still escalates when what changed since the map is not a binding read', () => {
+    // --since's own edit is harmless, but the map has not seen the call initializer added after it.
+    const { read, notes } = proof(
+      withBody('const U = 1', '  return U'),
+      withBody('const U = compute()', '  return U'),
+      PIN,
+      { 'src/a.ts': withBody('const U = 2', '  return U') },
+    )
     assert.equal(read, undefined)
-    assert.equal(warnings.length, 1)
-    assert.match(warnings[0]!, /binding-read not attempted: src\/a\.ts differs between the map's commit and --since/)
+    assert.deepEqual(notes, [])
+  })
+
+  test('a map behind --since notes inserted lines made since the map', () => {
+    const { read, notes } = proof(
+      withBody('const U = /a/', '  return U.test("x")'),
+      withBody('const U = /a/\nconst V = 1', '  return U.test("x")'),
+      PIN,
+      { 'src/a.ts': withBody('const U = /b/', '  return U.test("x")') },
+    )
+    assert.equal(read, undefined)
+    assert.deepEqual(notes, ['binding-read not attempted: src/a.ts has inserted lines'])
+  })
+
+  test('an edit that inserts lines falls back with a note, not a warning', () => {
+    const { read, warnings, notes } = proof(
+      withBody('const U = /a/', '  return U.test("x")'),
+      withBody('const U = /a/\nconst V = 1', '  return U.test("x")'),
+    )
+    assert.equal(read, undefined)
+    assert.deepEqual(warnings, [])
+    assert.deepEqual(notes, ['binding-read not attempted: src/a.ts has inserted lines'])
   })
 
   test('CRLF line endings still narrow', () => {

@@ -5,13 +5,25 @@ until a tag is pushed and the publish workflow runs.
 
 ## Unreleased
 
-- **A module-scope edit now narrows to `binding-read` when `--since` is not the map's commit, if the file is the same text at both.**
+- **A module-scope edit now narrows to `binding-read` when `--since` is not the map's commit.**
   The proof was attempted only when `--since` and the map's commit were one commit, so a review loop
-  with the map behind its base always got the shard-wide `file` answer. It now runs whenever every
-  ref holds identical text of the edited file, since the hunks are then in the map's lines too. When
-  the file differs between the map's commit and `--since`, or the edit inserts lines, the fallback
-  stays and a warning says which: `binding-read not attempted: <file> differs between the map's
-  commit and --since` or `… has inserted lines`.
+  with the map behind its base always got the shard-wide `file` answer. When the file is the same
+  text at every ref, the proof now runs on `--since`'s hunks. When it differs between the map's
+  commit and `--since`, the proof runs against the map's version of the file, with the hunks from
+  the map's commit to the current version, which is what the map's line numbers need. An edit that
+  inserts lines still falls back, and `selection.notes` says so: `binding-read not attempted:
+  <file> has inserted lines`. Notes are not `warnings`: the answer is sound, only wider, so a
+  caller that escalates on a warning should not escalate on them. The CLI prints them as
+  `cbd: note: …` on stderr.
+- **`select --change <file>:<line>` now says when `binding-read` could apply.** A what-if has no new
+  text, so it still never narrows, but a line in a side-effect-free binding that only functions
+  read gets a note: `binding-read would apply to an edit of U in <file> (read at line 3) if the
+  new initializer stays side-effect free`.
+- **`explain <file>` without a line, and `reaches`, no longer claim `select runs all` for a file
+  that runs no code.** A README or JSON file is never "seen", but select answers it from the tests
+  that read it or listed its directory. `explain` now runs select on a whole-file change and
+  reports its mode and reasons; `reaches` and its batch rows say `select runs all` only when
+  select would (`runsAll` in the result).
 
 ## 0.0.7 — 2026-10-27
 

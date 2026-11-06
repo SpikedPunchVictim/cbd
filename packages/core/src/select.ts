@@ -106,6 +106,11 @@ export interface Selection {
    */
   ignored: string[]
   warnings: string[]
+  /**
+   * Why an answer is wider than it could be (a proof not attempted). The answer is sound;
+   * a caller that treats `warnings` as distrust should not treat these so. Absent when empty.
+   */
+  notes?: string[]
   map: MapInfo
 }
 

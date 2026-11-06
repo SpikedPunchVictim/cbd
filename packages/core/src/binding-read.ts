@@ -391,6 +391,26 @@ function insideFunctionBody(ts: Ts, node: Ts): boolean {
 }
 
 /**
+ * Does the edited binding at these lines qualify, judged on one text alone? A what-if has no
+ * new text, so this cannot prove an edit: it says only that the binding as written is a pure
+ * initializer that functions alone read.
+ */
+export function analyzeBindingRead(
+  ts: Ts,
+  options: object,
+  fileName: string,
+  text: string,
+  hunks: readonly LineRange[],
+): BindingVerdict {
+  try {
+    const result = analyze(ts, options, fileName, text, hunks)
+    return typeof result === 'string' ? fail(result) : { ok: true, read: { names: result.names, lines: result.lines } }
+  } catch (error) {
+    return fail(`binding analysis failed: ${String(error)}`)
+  }
+}
+
+/**
  * Prove the case for the old and the new text, `bases` being every text the old
  * side must hold for (the range's base and the map's own commit).
  *
