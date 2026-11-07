@@ -3,7 +3,7 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
-## Unreleased
+## 0.1.1 — 2026-11-06
 
 - **A comment or blank-line edit no longer blocks the `binding-read` proof.** A comment edit between
   the map and `--since`, or beside the binding edit, put a hunk on no module-scope statement (git
