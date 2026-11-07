@@ -30,7 +30,7 @@
  * decorator, a default parameter value and a computed key of a module-level class
  * or object. The file uses none of `eval`, `with` or `arguments`.
  */
-import type { LineRange } from './changes.js'
+import type { HunkEdit, LineRange } from './changes.js'
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Ts = any
@@ -388,6 +388,109 @@ function insideFunctionBody(ts: Ts, node: Ts): boolean {
     if (ts.isFunctionLike(parent) && parent.body !== undefined && parent.body === child) return true
   }
   return false
+}
+
+interface Token {
+  text: string
+  first: number
+  last: number
+}
+
+/** The leaf tokens of a parsed file with the lines each spans; comments and blanks are not tokens. */
+function tokensOf(ts: Ts, fileName: string, text: string): Token[] | undefined {
+  const kind = /x$/i.test(fileName) ? ts.ScriptKind.TSX : ts.ScriptKind.TS
+  const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, kind)
+  const lineOf = (pos: number): number => sf.getLineAndCharacterOfPosition(pos).line + 1
+  const tokens: Token[] = []
+  const walk = (node: Ts): void => {
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return
+    const children = node.getChildren(sf)
+    if (children.length === 0) {
+      if (node.kind === ts.SyntaxKind.EndOfFileToken) return
+      tokens.push({ text: node.getText(sf), first: lineOf(node.getStart(sf)), last: lineOf(node.end) })
+      return
+    }
+    for (const child of children) walk(child)
+  }
+  walk(sf)
+  return tokens
+}
+
+export interface KeptEdits {
+  hunks: LineRange[]
+  newHunks: LineRange[]
+  /** Kept edits that only add or only remove lines. */
+  inserted: number
+}
+
+/**
+ * Take the comment and blank-line parts off the edges of each edit, so they cannot block a
+ * proof that is about the code. Git puts a comment and the code under it in one hunk when the
+ * lines touch, so each side of an edit is trimmed of lines that hold no token, as the project's
+ * own parser sees tokens; an edit left with nothing on either side is dropped.
+ *
+ * This is sound only if the tokens outside the kept edits are the same on both sides: a comment
+ * edit can turn code into comment (`//` to `/*`), and that edit is not harmless. When they
+ * differ nothing is trimmed. Returns undefined when nothing can be trimmed.
+ */
+export function withoutTriviaEdits(
+  ts: Ts,
+  fileName: string,
+  oldText: string,
+  newText: string,
+  edits: readonly HunkEdit[],
+): KeptEdits | undefined {
+  try {
+    if (edits.length === 0) return undefined
+    // The same guard `analyze` has: lines TypeScript counts that git does not.
+    const odd = /\r(?!\n)|[\u2028\u2029]/
+    if (odd.test(oldText) || odd.test(newText)) return undefined
+    const before = tokensOf(ts, fileName, oldText)
+    const after = tokensOf(ts, fileName, newText)
+    if (before === undefined || after === undefined) return undefined
+    const linesOf = (tokens: Token[]): Set<number> => {
+      const lines = new Set<number>()
+      for (const token of tokens) for (let line = token.first; line <= token.last; line += 1) lines.add(line)
+      return lines
+    }
+    const oldCode = linesOf(before)
+    const newCode = linesOf(after)
+    const trim = (code: Set<number>, start: number, count: number): [number, number] => {
+      let first = start
+      let length = count
+      while (length > 0 && !code.has(first)) {
+        first += 1
+        length -= 1
+      }
+      while (length > 0 && !code.has(first + length - 1)) length -= 1
+      return [first, length]
+    }
+    const trimmed = edits.map((edit) => {
+      const [oldStart, oldCount] = trim(oldCode, edit.oldStart, edit.oldCount)
+      const [newStart, newCount] = trim(newCode, edit.newStart, edit.newCount)
+      return { oldStart, oldCount, newStart, newCount, was: edit }
+    })
+    if (trimmed.every((edit) => edit.oldCount === edit.was.oldCount && edit.newCount === edit.was.newCount)) {
+      return undefined
+    }
+    const kept = trimmed.filter((edit) => edit.oldCount > 0 || edit.newCount > 0)
+    const outside = (tokens: Token[], ranges: Array<[number, number]>): string =>
+      tokens
+        .filter((token) => !ranges.some(([start, count]) => token.last >= start && token.first <= start + count - 1))
+        .map((token) => token.text)
+        .join('\u0000')
+    const same =
+      outside(before, kept.filter((edit) => edit.oldCount > 0).map((edit) => [edit.oldStart, edit.oldCount])) ===
+      outside(after, kept.filter((edit) => edit.newCount > 0).map((edit) => [edit.newStart, edit.newCount]))
+    if (!same) return undefined
+    return {
+      hunks: kept.filter((edit) => edit.oldCount > 0).map((edit) => ({ start: edit.oldStart, end: edit.oldStart + edit.oldCount - 1 })),
+      newHunks: kept.filter((edit) => edit.newCount > 0).map((edit) => ({ start: edit.newStart, end: edit.newStart + edit.newCount - 1 })),
+      inserted: kept.filter((edit) => edit.oldCount === 0 || edit.newCount === 0).length,
+    }
+  } catch {
+    return undefined
+  }
 }
 
 /**

@@ -3,6 +3,17 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
+## Unreleased
+
+- **A comment or blank-line edit no longer blocks the `binding-read` proof.** A comment edit between
+  the map and `--since`, or beside the binding edit, put a hunk on no module-scope statement (git
+  merges it with the code under it), so the proof failed and the answer was the shard-wide `file`
+  one. Lines at the edges of each hunk that hold no token, as the project's own parser sees tokens,
+  are now set aside before the proof, and a pure comment insertion or deletion no longer counts as
+  inserted lines. This applies only if the tokens outside the kept hunks are the same on both
+  sides: a comment edit that turns code into comment (`//` to `/*`) is not harmless, and the proof
+  falls back with its note as before.
+
 ## 0.1.0 — 2026-11-06
 
 - **A module-scope edit now narrows to `binding-read` when `--since` is not the map's commit.**

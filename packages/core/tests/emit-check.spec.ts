@@ -584,6 +584,44 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
     assert.match(notes[0]!, /^binding-read not proved: src\/a\.ts: \S/)
   })
 
+  test('a comment added between the map and --since does not block the proof, and lines stay in the map', () => {
+    const { read, warnings, notes } = proof(
+      withBody('const U = /a/', '  return U.test("x")'),
+      `/** doc */\n${withBody('const U = /c/', '  return U.test("x")')}`,
+      PIN,
+      { 'src/a.ts': `/** doc */\n${withBody('const U = /a/', '  return U.test("x")')}` },
+    )
+    assert.deepEqual(read?.names, ['U'])
+    assert.deepEqual(read?.lines, [3])
+    assert.deepEqual([warnings, notes], [[], []])
+  })
+
+  test('a comment edited beside the binding edit does not block the proof', () => {
+    const text = (note: string, re: string): string => `// ${note}\n${withBody(`const U = ${re}`, '  return U.test("x")')}`
+    const { read, notes } = proof(text('old', '/a/'), text('new', '/b/'))
+    assert.deepEqual(read?.names, ['U'])
+    assert.deepEqual(notes, [])
+  })
+
+  test('a blank line removed beside the binding edit does not block the proof', () => {
+    const { read, notes } = proof(
+      `\n\n${withBody('const U = /a/', '  return U.test("x")')}`,
+      `\n${withBody('const U = /b/', '  return U.test("x")')}`,
+    )
+    assert.deepEqual(read?.names, ['U'])
+    assert.deepEqual(notes, [])
+  })
+
+  test('a comment edit that turns code into comment is not dropped', () => {
+    // `// a` becomes `/* a`: the comment now runs to the `*/` on line 4 and swallows X.
+    const before = 'const U = /a/\n// a\nexport const X = 1\n/* b */ export function f() { return U.test("x") }\n'
+    const after = 'const U = /b/\n/* a\nexport const X = 1\n/* b */ export function f() { return U.test("x") }\n'
+    const { read, notes } = proof(before, after)
+    assert.equal(read, undefined)
+    assert.equal(notes.length, 1)
+    assert.match(notes[0]!, /^binding-read not proved: src\/a\.ts: \S/)
+  })
+
   test('a map behind --since notes inserted lines made since the map', () => {
     const { read, notes } = proof(
       withBody('const U = /a/', '  return U.test("x")'),

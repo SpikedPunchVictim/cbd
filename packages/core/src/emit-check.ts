@@ -23,7 +23,7 @@ import { createRequire } from 'node:module'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { changesSince, type Change } from './changes.js'
 import { matchesAnyGlob } from './glob.js'
-import { analyzeBindingRead, proveBindingRead, type BindingRead } from './binding-read.js'
+import { analyzeBindingRead, proveBindingRead, withoutTriviaEdits, type BindingRead } from './binding-read.js'
 import type { EmitCheckEntry } from './select.js'
 
 /** The slice of the TypeScript compiler API used; `any` because `typescript` is the consumer's. */
@@ -376,6 +376,7 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
       let hunks = change.hunks
       let newHunks = change.newHunks
       let inserted = (change.insertions ?? []).length + (change.newInsertions ?? []).length
+      let edits = change.hunkEdits ?? []
       if (bases.some((other) => other !== oldText)) {
         const mapText = input.mapCommit === undefined ? undefined : gitShow(input.root, input.mapCommit, change.path)
         const mapChange = input.mapCommit === undefined ? undefined : sinceMap().get(change.path)
@@ -384,8 +385,16 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
         hunks = mapChange.hunks
         newHunks = mapChange.newHunks
         inserted = (mapChange.insertions ?? []).length + (mapChange.newInsertions ?? []).length
+        edits = mapChange.hunkEdits ?? []
       }
       if (typeof project === 'string' || oldText === undefined || newHunks === undefined) continue
+      // Comment and blank-line edits cannot change what runs, and would block a proof of the code.
+      const trimmed = withoutTriviaEdits(project.ts, change.path, oldText, head, edits)
+      if (trimmed !== undefined) {
+        hunks = trimmed.hunks
+        newHunks = trimmed.newHunks
+        inserted = trimmed.inserted
+      }
       if (inserted > 0) {
         notes.push(`binding-read not attempted: ${rel} has inserted lines`)
         continue
