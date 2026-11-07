@@ -3,7 +3,7 @@
 All packages share a version. Dates are release dates; the working tree is `unreleased`
 until a tag is pushed and the publish workflow runs.
 
-## Unreleased
+## 0.1.0 — 2026-11-06
 
 - **A module-scope edit now narrows to `binding-read` when `--since` is not the map's commit.**
   The proof was attempted only when `--since` and the map's commit were one commit, so a review loop
