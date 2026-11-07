@@ -12,7 +12,8 @@ until a tag is pushed and the publish workflow runs.
   commit and `--since`, the proof runs against the map's version of the file, with the hunks from
   the map's commit to the current version, which is what the map's line numbers need. An edit that
   inserts lines still falls back, and `selection.notes` says so: `binding-read not attempted:
-  <file> has inserted lines`. Notes are not `warnings`: the answer is sound, only wider, so a
+  <file> has inserted lines`. A proof that was attempted and failed says why too: `binding-read not
+  proved: <file>: <reason>`. Notes are not `warnings`: the answer is sound, only wider, so a
   caller that escalates on a warning should not escalate on them. The CLI prints them as
   `cbd: note: …` on stderr.
 - **`select --change <file>:<line>` now says when `binding-read` could apply.** A what-if has no new

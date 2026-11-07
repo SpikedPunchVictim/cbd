@@ -580,7 +580,8 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
       { 'src/a.ts': withBody('const U = 2', '  return U') },
     )
     assert.equal(read, undefined)
-    assert.deepEqual(notes, [])
+    assert.equal(notes.length, 1)
+    assert.match(notes[0]!, /^binding-read not proved: src\/a\.ts: \S/)
   })
 
   test('a map behind --since notes inserted lines made since the map', () => {
@@ -624,8 +625,17 @@ test.group('bindingReads: a module-scope edit only functions can see', () => {
 
   const escalates = (name: string, before: string, after: string): void => {
     test(`escalates: ${name}`, () => {
-      const { read } = proof(before, after)
+      const { read, notes, warnings, files } = proof(before, after)
       assert.equal(read, undefined)
+      assert.deepEqual(warnings, [])
+      // A module scope proven unchanged needs no proof. Otherwise the wider, sound answer says
+      // why, apart from `warnings`.
+      if (files.size === 0) {
+        assert.equal(notes.length, 1)
+        assert.match(notes[0]!, /^binding-read not proved: src\/a\.ts: \S/)
+      } else {
+        assert.deepEqual(notes, [])
+      }
     })
   }
   const fnReads = (decl: string, extra = ''): string => `${decl}\nexport function f() { return U }\n${extra}`

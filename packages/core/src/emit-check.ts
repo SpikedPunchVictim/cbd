@@ -392,6 +392,7 @@ export function moduleScopeUnchangedFiles(input: EmitCheckInput): {
       }
       const proof = proveBindingRead(project.ts, project.options, change.path, oldText, head, hunks, newHunks)
       if (proof.ok) bindingReads.set(change.path, { ...proof.read, typescript: project.version })
+      else notes.push(`binding-read not proved: ${rel}: ${proof.why}`)
     } else if (verdict.skipped === true && !warned.has(entry.glob)) {
       warned.add(entry.glob)
       warnings.push(`emitCheck skipped for ${entry.glob}: ${verdict.why ?? 'unusable compiler'}`)
